@@ -24,7 +24,9 @@
   <a href="https://github.com/HKUDS/.github/blob/main/profile/README.md"><img src="https://img.shields.io/badge/WeChat-Group-C5EAB4?style=flat&logo=wechat&logoColor=white" alt="WeChat"></a>
 </p>
 
-One Command (**oh**) to Launch **OpenHarness** and Unlock All Agent Harnesses. Supports CLI agent integration including OpenClaw, nanobot, Cursor, and more.
+One Command (**oh**) to Launch **OpenHarness** and Unlock All Agent Harnesses. 
+
+Supports CLI agent integration including OpenClaw, nanobot, Cursor, and more.
 
 <p align="center">
   <img src="assets/cli-typing.gif" alt="OpenHarness Terminal Demo" width="800">
