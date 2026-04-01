@@ -75,7 +75,7 @@ OpenHarness is an open-source Python implementation designed for **researchers, 
 
 ## 📰 What's New
 
-- **2025-04-01** 🎨 **v0.1.0** — Initial open-source release featuring complete Harness architecture: **OpenHarness**
+- **2025-04-01** 🎨 **v0.1.0** — Initial **OpenHarness** open-source release featuring complete Harness architecture: 
 
 ---
 
