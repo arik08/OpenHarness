@@ -69,7 +69,7 @@ OpenHarness is an open-source Python implementation designed for **researchers, 
 - **Understand** how production AI agents work under the hood
 - **Experiment** with cutting-edge tools, skills, and agent coordination patterns
 - **Extend** the harness with custom plugins, providers, and domain knowledge
-- **Build** Build specialized agents on top of proven architecture
+- **Build** specialized agents on top of proven architecture
 
 ---
 
