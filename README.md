@@ -33,6 +33,24 @@
 
 ---
 
+### 🪶 Lightweight, Not a Toy
+
+<table>
+<tr><th></th><th>Claude Code</th><th>OpenHarness</th></tr>
+<tr><td><strong>Lines of Code</strong></td><td>512,664</td><td><strong>11,733</strong> (44x lighter)</td></tr>
+<tr><td><strong>Files</strong></td><td>1,884</td><td><strong>163</strong></td></tr>
+<tr><td><strong>Language</strong></td><td>TypeScript</td><td>Python</td></tr>
+<tr><td><strong>Tools</strong></td><td>~44</td><td>43 (98%)</td></tr>
+<tr><td><strong>Commands</strong></td><td>~88</td><td>54 (61%)</td></tr>
+<tr><td><strong>Skills Compatible</strong></td><td>✅</td><td>✅ anthropics/skills</td></tr>
+<tr><td><strong>Plugin Compatible</strong></td><td>✅</td><td>✅ claude-code/plugins</td></tr>
+<tr><td><strong>Tests</strong></td><td>—</td><td>114 unit + 6 E2E suites</td></tr>
+</table>
+
+**2.3% of the codebase, 98% of the core tools.** Python's expressiveness + focus on the Harness architecture (no enterprise telemetry, OAuth flows, or 140 React components). Research-ready, not a demo.
+
+---
+
 ## 🤔 What is an Agent Harness?
 
 An **Agent Harness** is the complete infrastructure that wraps around an LLM to make it a functional agent. The model provides intelligence; the harness provides **hands, eyes, memory, and safety boundaries**.
@@ -49,22 +67,6 @@ OpenHarness is an open-source Python implementation of this architecture, inspir
 - **Build** domain-specific agents on top of a proven architecture
 
 > *"Prompt plumbing 'agents' are the fantasy of programmers who don't train models. Agency is learned, not programmed. The engineer's job is the harness — not the intelligence."*
-
-### 🪶 Lightweight, Not a Toy
-
-<table>
-<tr><th></th><th>Claude Code</th><th>OpenHarness</th></tr>
-<tr><td><strong>Lines of Code</strong></td><td>512,664</td><td><strong>11,733</strong> (44x lighter)</td></tr>
-<tr><td><strong>Files</strong></td><td>1,884</td><td><strong>163</strong></td></tr>
-<tr><td><strong>Language</strong></td><td>TypeScript</td><td>Python</td></tr>
-<tr><td><strong>Tools</strong></td><td>~44</td><td>43 (98%)</td></tr>
-<tr><td><strong>Commands</strong></td><td>~88</td><td>54 (61%)</td></tr>
-<tr><td><strong>Skills Compatible</strong></td><td>✅</td><td>✅ anthropics/skills</td></tr>
-<tr><td><strong>Plugin Compatible</strong></td><td>✅</td><td>✅ claude-code/plugins</td></tr>
-<tr><td><strong>Tests</strong></td><td>—</td><td>114 unit + 6 E2E suites</td></tr>
-</table>
-
-**2.3% of the codebase, 98% of the core tools.** Python's expressiveness + focus on the Harness architecture (no enterprise telemetry, OAuth flows, or 140 React components). Research-ready, not a demo.
 
 ---
 
