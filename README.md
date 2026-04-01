@@ -25,7 +25,7 @@
 </p>
 
 <p align="center">
-One Command to Launch All Agent Harnesses.
+One Command (**oh**) to Launch **OpenHarness** and Unlock All Agent Harnesses
 </p>
 
 <p align="center">
