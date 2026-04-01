@@ -1,5 +1,11 @@
 <h1 align="center"><img src="assets/logo.png" alt="OpenHarness" width="64" style="vertical-align: middle;">&nbsp; <code>oh</code> — OpenHarness: Open Agent Harness</h1>
 
+Ultra-Lightweight of Claude Code
+
+oh delivers ~80% of key agent functionality
+
+Just 3% of the lines of code compared to Claude Code
+
 <p align="center">
   <strong>Ultra-Lightweight of Claude Code<br>
   <code>oh</code> delivers ~80% of key agent functionality with just 3% of the lines of code compared to Claude Code.</strong>
