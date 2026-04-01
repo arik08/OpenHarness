@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Ultra-Lightweight of Claude Code<br>
-  <code>oh</code> delivers ~80% key agent functionality with XXX% fewer lines of code than Claude Code.</strong>
+  <code>oh</code> oh delivers ~80% of key agent functionality with just 3% of the lines of code compared to Claude Code.</strong>
 </p>
 
 <p align="center">
