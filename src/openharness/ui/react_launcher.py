@@ -5,8 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
+
+
+def _resolve_npm() -> str:
+    """Resolve the npm executable (npm.cmd on Windows)."""
+    return shutil.which("npm") or "npm"
 
 
 def _repo_root() -> Path:
@@ -56,9 +62,11 @@ async def launch_react_tui(
     if not package_json.exists():
         raise RuntimeError(f"React terminal frontend is missing: {package_json}")
 
+    npm = _resolve_npm()
+
     if not (frontend_dir / "node_modules").exists():
         install = await asyncio.create_subprocess_exec(
-            "npm",
+            npm,
             "install",
             "--no-fund",
             "--no-audit",
@@ -81,7 +89,7 @@ async def launch_react_tui(
         }
     )
     process = await asyncio.create_subprocess_exec(
-        "npm",
+        npm,
         "exec",
         "--",
         "tsx",
