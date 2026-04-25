@@ -30,6 +30,7 @@ frontend/terminal/node_modules/
 # User data (never commit API keys or session data)
 .openharness/
 react_tui_smoke.txt
+.playwright-mcp/
 
 # OS
 .DS_Store
