@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from openharness.api.client import SupportsStreamingMessages
+from openharness.api.client import ApiMessageCompleteEvent, ApiMessageRequest, SupportsStreamingMessages
 from openharness.auth.manager import AuthManager
 from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, resolve_model_setting
 from openharness.bridge import get_bridge_manager
@@ -42,7 +42,7 @@ log = logging.getLogger(__name__)
 log = logging.getLogger(__name__)
 
 _PROTOCOL_PREFIX = "OHJSON:"
-_BUILT_IN_SKILL_SOURCES = {"bundled", "program"}
+_BUILT_IN_SKILL_SOURCES = {"bundled"}
 
 
 @dataclass(frozen=True)
@@ -361,8 +361,87 @@ class ReactBackendHost:
                 self._set_saved_session_id(parts[1].strip().split()[0])
         if first_token == "/reload-plugins":
             await self._emit(BackendEvent.skills_snapshot(self._skill_snapshots()))
+        if first_token != "/clear":
+            await self._maybe_update_session_title()
         await self._emit(BackendEvent(type="line_complete"))
         return should_continue
+
+    async def _maybe_update_session_title(self) -> None:
+        assert self._bundle is not None
+        metadata = self._bundle.engine.tool_metadata
+        if str(metadata.get("session_title") or "").strip():
+            return
+        messages = self._bundle.engine.messages
+        user_messages = [message for message in messages if message.role == "user" and message.text.strip()]
+        assistant_messages = [message for message in messages if message.role == "assistant" and message.text.strip()]
+        if not user_messages or not assistant_messages:
+            return
+        try:
+            title = await asyncio.wait_for(self._generate_session_title(messages), timeout=8)
+        except Exception as exc:
+            log.debug("Could not generate session title: %s", exc)
+            return
+        if not title:
+            return
+        metadata["session_title"] = title
+        await self._emit(BackendEvent(type="session_title", message=title))
+        self._bundle.session_backend.save_snapshot(
+            cwd=self._bundle.cwd,
+            model=self._bundle.engine.model,
+            system_prompt=self._bundle.engine.system_prompt,
+            messages=self._bundle.engine.messages,
+            usage=self._bundle.engine.total_usage,
+            session_id=self._bundle.session_id,
+            tool_metadata=metadata,
+        )
+
+    async def _generate_session_title(self, messages: list[ConversationMessage]) -> str:
+        assert self._bundle is not None
+        snippets: list[str] = []
+        for message in messages:
+            if message.role not in {"user", "assistant"}:
+                continue
+            text = " ".join(message.text.strip().split())
+            if not text:
+                continue
+            snippets.append(f"{message.role}: {text[:700]}")
+            if len(snippets) >= 6:
+                break
+        if not snippets:
+            return ""
+        prompt = (
+            "Create a short chat history title for the conversation below.\n"
+            "Rules:\n"
+            "- Reply with only the title text.\n"
+            "- Korean is preferred if the conversation is Korean.\n"
+            "- Keep it under 24 Korean characters or 7 English words.\n"
+            "- Do not use quotes, punctuation-heavy phrasing, or generic words like '대화'.\n\n"
+            + "\n".join(snippets)
+        )
+        request = ApiMessageRequest(
+            model=self._bundle.engine.model,
+            messages=[ConversationMessage.from_user_text(prompt)],
+            system_prompt="You write concise, specific chat history titles.",
+            max_tokens=32,
+            tools=[],
+        )
+        title = ""
+        async for event in self._bundle.api_client.stream_message(request):
+            if isinstance(event, ApiMessageCompleteEvent):
+                title = event.message.text.strip()
+                break
+        return self._clean_session_title(title)
+
+    def _clean_session_title(self, title: str) -> str:
+        cleaned = " ".join(str(title or "").strip().split())
+        cleaned = cleaned.strip("\"'`“”‘’ ")
+        cleaned = cleaned.replace("\n", " ").replace("\r", " ")
+        if not cleaned:
+            return ""
+        for prefix in ("제목:", "Title:", "title:"):
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix):].strip()
+        return cleaned[:80]
 
     def _set_saved_session_id(self, session_id: str) -> None:
         assert self._bundle is not None

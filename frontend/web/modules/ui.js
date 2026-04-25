@@ -86,7 +86,11 @@ function finishScrollRestore() {
   window.clearTimeout(scrollRestoreTimer);
   const hasSavedPosition = restoreScrollPosition();
   if (!hasSavedPosition) {
-    scrollMessagesToBottom();
+    if (state.restoringHistory) {
+      els.messages.scrollTop = 0;
+    } else {
+      scrollMessagesToBottom();
+    }
   }
   state.pendingScrollRestoreId = null;
   state.restoringHistory = false;
@@ -379,10 +383,76 @@ function updateComposerTokenFromInput() {
 
 function buildComposerLine(value = els.input.value) {
   const rest = String(value || "").trim();
+  const pasted = state.pastedTexts.map((item) => item.text).filter(Boolean);
+  const body = [rest, ...pasted].filter(Boolean).join("\n\n");
   if (!state.composerToken) {
-    return rest;
+    return body;
   }
-  return [state.composerToken.raw, rest].filter(Boolean).join(" ");
+  return [state.composerToken.raw, body].filter(Boolean).join(" ");
+}
+
+function pastedTextId() {
+  return globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function countTextLines(value) {
+  return String(value || "").replace(/\r\n/g, "\n").split("\n").length;
+}
+
+function renderPastedTexts() {
+  if (!els.pastedTextTray) {
+    return;
+  }
+  els.pastedTextTray.textContent = "";
+  els.pastedTextTray.classList.toggle("hidden", state.pastedTexts.length === 0);
+  state.pastedTexts.forEach((item, index) => {
+    const chip = document.createElement("div");
+    chip.className = "pasted-text-chip";
+    chip.title = item.text.slice(0, 500);
+
+    const label = document.createElement("span");
+    const lineCount = item.lineCount || countTextLines(item.text);
+    label.textContent = `[Pasted text #${index + 1} +${lineCount} lines]`;
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "pasted-text-remove";
+    remove.dataset.id = item.id;
+    remove.setAttribute("aria-label", "Remove pasted text");
+    remove.textContent = "x";
+
+    chip.append(label, remove);
+    els.pastedTextTray.append(chip);
+  });
+}
+
+function addPastedText(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return false;
+  }
+  state.pastedTexts.push({
+    id: pastedTextId(),
+    text: normalized,
+    lineCount: countTextLines(normalized),
+  });
+  renderPastedTexts();
+  updateSendState();
+  return true;
+}
+
+function removePastedText(id) {
+  state.pastedTexts = state.pastedTexts.filter((item) => item.id !== id);
+  renderPastedTexts();
+  updateSendState();
+}
+
+function clearPastedTexts() {
+  state.pastedTexts = [];
+  renderPastedTexts();
+  updateSendState();
 }
 
 function renderAttachments() {
@@ -449,6 +519,10 @@ els.composerToken?.addEventListener("click", () => {
     setComposerTokenFromSelection,
     updateComposerTokenFromInput,
     buildComposerLine,
+    addPastedText,
+    removePastedText,
+    renderPastedTexts,
+    clearPastedTexts,
     renderAttachments,
     clearAttachments,
   };

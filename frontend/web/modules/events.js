@@ -19,6 +19,8 @@ export function createEvents(ctx) {
   function showModal(...args) { return ctx.showModal(...args); }
   function showSelect(...args) { return ctx.showSelect(...args); }
   function updateSlashMenu(...args) { return ctx.updateSlashMenu(...args); }
+  function extractAndRenderArtifacts(...args) { return ctx.extractAndRenderArtifacts?.(...args); }
+  function resetArtifacts(...args) { return ctx.resetArtifacts?.(...args); }
 
 let streamingRenderTimer = 0;
 let streamingFlushTimer = 0;
@@ -27,12 +29,10 @@ let streamingTextBuffer = "";
 let streamingLiveNode = null;
 let streamingRenderedTextLength = 0;
 let streamingDisplayStarted = false;
-const STREAMING_FLUSH_INTERVAL_MS = 30;
-const STREAMING_START_BUFFER_MS = 250;
-const STREAMING_MARKDOWN_RENDER_DELAY_MS = 250;
-const STREAMING_REVEAL_CHAR_DELAY_MS = 5;
-const STREAMING_MIN_CHARS_PER_FLUSH = 2;
-const STREAMING_MAX_CHARS_PER_FLUSH = 14;
+const STREAMING_FLUSH_INTERVAL_MS = 120;
+const STREAMING_START_BUFFER_MS = 300;
+const STREAMING_MIN_CHARS_PER_FLUSH = 18;
+const STREAMING_MAX_CHARS_PER_FLUSH = 72;
 
 function normalizeSkills(skills) {
   return Array.isArray(skills)
@@ -79,7 +79,6 @@ function revealRenderedStreamingContent(startIndex, endIndex) {
   });
   const replacements = [];
   let cursor = 0;
-  let revealIndex = 0;
 
   while (walker.nextNode() && cursor < endIndex) {
     const node = walker.currentNode;
@@ -93,8 +92,7 @@ function revealRenderedStreamingContent(startIndex, endIndex) {
     const localStart = Math.max(0, startIndex - cursor);
     const localEnd = Math.min(chars.length, endIndex - cursor);
     if (localEnd > localStart) {
-      replacements.push({ node, chars, localStart, localEnd, revealOffset: revealIndex });
-      revealIndex += localEnd - localStart;
+      replacements.push({ node, chars, localStart, localEnd });
     }
     cursor = nextCursor;
   }
@@ -109,8 +107,7 @@ function revealRenderedStreamingContent(startIndex, endIndex) {
     const revealText = replacement.chars.slice(replacement.localStart, replacement.localEnd).join("");
     if (revealText) {
       const span = document.createElement("span");
-      span.className = "stream-reveal-segment";
-      span.style.animationDelay = `${replacement.revealOffset * STREAMING_REVEAL_CHAR_DELAY_MS}ms`;
+      span.className = "stream-reveal-sentence";
       span.textContent = revealText;
       fragment.append(span);
     }
@@ -119,7 +116,87 @@ function revealRenderedStreamingContent(startIndex, endIndex) {
     }
     replacement.node.replaceWith(fragment);
   }
-  return revealIndex;
+  return replacements.length;
+}
+
+function streamingRevealCount(pendingChars, flushAll = false) {
+  if (flushAll) {
+    return pendingChars.length;
+  }
+  const text = pendingChars.join("");
+  const sentenceMatch = text.match(/^.{18,}?[.!?。！？…]\s*/u);
+  if (sentenceMatch && sentenceMatch[0].length <= STREAMING_MAX_CHARS_PER_FLUSH) {
+    return sentenceMatch[0].length;
+  }
+  const lineBreakIndex = text.slice(STREAMING_MIN_CHARS_PER_FLUSH).search(/\n/);
+  if (lineBreakIndex >= 0) {
+    return Math.min(STREAMING_MAX_CHARS_PER_FLUSH, STREAMING_MIN_CHARS_PER_FLUSH + lineBreakIndex + 1);
+  }
+  return Math.min(
+    pendingChars.length,
+    Math.max(STREAMING_MIN_CHARS_PER_FLUSH, Math.min(STREAMING_MAX_CHARS_PER_FLUSH, Math.ceil(pendingChars.length / 2))),
+  );
+}
+
+function isMarkdownTableDivider(line) {
+  return String(line || "")
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter(Boolean)
+    .length >= 2
+    && String(line || "")
+      .trim()
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map((cell) => cell.trim())
+      .filter(Boolean)
+      .every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function isMarkdownTableLine(line) {
+  return String(line || "").includes("|") && String(line || "").trim().length > 0;
+}
+
+function escapeMarkdownTablePipes(line) {
+  return String(line || "").replace(/\|/g, "\\|");
+}
+
+function stabilizeStreamingTableRows(markdown) {
+  const source = String(markdown || "");
+  const lines = source.split("\n");
+  if (lines.length < 2) {
+    return source;
+  }
+
+  let tableStart = -1;
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    if (isMarkdownTableLine(lines[index]) && isMarkdownTableDivider(lines[index + 1])) {
+      tableStart = index;
+    }
+  }
+  if (tableStart < 0) {
+    return source;
+  }
+
+  if (!source.endsWith("\n")) {
+    const lastIndex = lines.length - 1;
+    if (lastIndex === tableStart || lastIndex === tableStart + 1) {
+      return lines
+        .map((line, index) => (index >= tableStart ? escapeMarkdownTablePipes(line) : line))
+        .join("\n");
+    }
+    if (lastIndex > tableStart + 1 && isMarkdownTableLine(lines[lastIndex])) {
+      return lines
+        .map((line, index) => (index === lastIndex ? escapeMarkdownTablePipes(line) : line))
+        .join("\n");
+    }
+  }
+
+  return source;
 }
 
 function keepStreamingTailVisible() {
@@ -137,36 +214,28 @@ function keepStreamingTailVisible() {
   }, 160);
 }
 
-function renderStreamingAssistant(immediate = false, reveal = true) {
+function renderStreamingAssistant(revealStart = null) {
   if (!state.assistantNode) {
     return;
   }
   window.clearTimeout(streamingRenderTimer);
-  const render = () => {
-    streamingRenderTimer = 0;
-    if (!state.assistantNode) {
-      return;
-    }
-    const displayText = state.assistantNode.dataset.displayText || "";
-    const previousLength = streamingRenderedTextLength;
-    const rawText = state.assistantNode.dataset.rawText || "";
-    setMarkdown(state.assistantNode, displayText);
-    state.assistantNode.dataset.rawText = rawText;
-    state.assistantNode.dataset.displayText = displayText;
-    streamingLiveNode = null;
-    streamingRenderedTextLength = countRenderedStreamingText(state.assistantNode);
-    if (reveal) {
-      revealRenderedStreamingContent(previousLength, streamingRenderedTextLength);
-    }
-    if (!state.restoringHistory && state.autoFollowMessages) {
-      keepStreamingTailVisible();
-    }
-  };
-  if (immediate) {
-    render();
+  streamingRenderTimer = 0;
+  if (!state.assistantNode) {
     return;
   }
-  streamingRenderTimer = window.setTimeout(render, STREAMING_MARKDOWN_RENDER_DELAY_MS);
+  const displayText = state.assistantNode.dataset.displayText || "";
+  const renderText = stabilizeStreamingTableRows(displayText);
+  const previousLength = Number.isFinite(revealStart) ? revealStart : streamingRenderedTextLength;
+  const rawText = state.assistantNode.dataset.rawText || "";
+  setMarkdown(state.assistantNode, renderText);
+  state.assistantNode.dataset.rawText = rawText;
+  state.assistantNode.dataset.displayText = displayText;
+  streamingLiveNode = null;
+  streamingRenderedTextLength = countRenderedStreamingText(state.assistantNode);
+  revealRenderedStreamingContent(previousLength, streamingRenderedTextLength);
+  if (!state.restoringHistory && state.autoFollowMessages) {
+    keepStreamingTailVisible();
+  }
 }
 
 function flushStreamingText(options = {}) {
@@ -176,33 +245,14 @@ function flushStreamingText(options = {}) {
   if (!state.assistantNode || !streamingTextBuffer) {
     return;
   }
-  if (!streamingLiveNode?.isConnected) {
-    streamingLiveNode = document.createElement("span");
-    streamingLiveNode.className = "stream-live-text";
-    state.assistantNode.append(streamingLiveNode);
-  }
   streamingDisplayStarted = true;
   const pendingChars = Array.from(streamingTextBuffer);
-  const revealCount = flushAll
-    ? pendingChars.length
-    : Math.min(
-        STREAMING_MAX_CHARS_PER_FLUSH,
-        Math.max(STREAMING_MIN_CHARS_PER_FLUSH, Math.ceil(pendingChars.length / 10)),
-      );
+  const revealCount = streamingRevealCount(pendingChars, flushAll);
   const nextText = pendingChars.slice(0, revealCount).join("");
-  const fragment = document.createDocumentFragment();
-  const revealSegments = nextText.match(/\s+|[^\s]{1,12}/g) || [nextText];
-  revealSegments.forEach((segment, index) => {
-    const span = document.createElement("span");
-    span.className = "stream-reveal-segment";
-    span.style.animationDelay = `${index * STREAMING_REVEAL_CHAR_DELAY_MS}ms`;
-    span.textContent = segment;
-    fragment.append(span);
-  });
-  streamingLiveNode.append(fragment);
+  const previousLength = streamingRenderedTextLength;
   state.assistantNode.dataset.displayText = `${state.assistantNode.dataset.displayText || ""}${nextText}`;
-  streamingRenderedTextLength += pendingChars.slice(0, revealCount).length;
   streamingTextBuffer = pendingChars.slice(revealCount).join("");
+  renderStreamingAssistant(previousLength);
   if (!state.restoringHistory && state.autoFollowMessages) {
     keepStreamingTailVisible();
   }
@@ -217,13 +267,6 @@ function scheduleStreamingFlush() {
   }
   const delay = streamingDisplayStarted ? STREAMING_FLUSH_INTERVAL_MS : STREAMING_START_BUFFER_MS;
   streamingFlushTimer = window.setTimeout(flushStreamingText, delay);
-}
-
-function scheduleStreamingMarkdownRender() {
-  if (streamingRenderTimer) {
-    return;
-  }
-  renderStreamingAssistant(false, true);
 }
 
 function resetStreamingState() {
@@ -305,7 +348,8 @@ function handleEvent(event) {
       if (!String(event.item.text || "").trim()) {
         return;
       }
-      appendMessage("assistant", event.item.text || "");
+      const node = appendMessage("assistant", event.item.text || "");
+      extractAndRenderArtifacts(event.item.text || "", node);
       return;
     }
     if (event.item.role === "system" && String(event.item.text || "").startsWith("> ")) {
@@ -331,6 +375,15 @@ function handleEvent(event) {
     renderWelcome();
     state.assistantNode = null;
     resetWorkflowPanel();
+    resetArtifacts();
+    return;
+  }
+
+  if (event.type === "session_title") {
+    const title = String(event.message || "").trim();
+    if (title) {
+      setChatTitle(title);
+    }
     return;
   }
 
@@ -348,7 +401,6 @@ function handleEvent(event) {
     state.assistantNode.dataset.rawText = nextText;
     streamingTextBuffer += message;
     scheduleStreamingFlush();
-    scheduleStreamingMarkdownRender();
     return;
   }
 
@@ -357,10 +409,13 @@ function handleEvent(event) {
       flushStreamingText({ flushAll: true });
       resetStreamingState();
       state.assistantNode.classList.remove("streaming-text");
-      setMarkdown(state.assistantNode, event.message || state.assistantNode.dataset.rawText || "");
+      const finalText = event.message || state.assistantNode.dataset.rawText || "";
+      setMarkdown(state.assistantNode, finalText);
+      extractAndRenderArtifacts(finalText, state.assistantNode);
       state.assistantNode = null;
     } else if (event.message) {
-      appendMessage("assistant", event.message);
+      const node = appendMessage("assistant", event.message);
+      extractAndRenderArtifacts(event.message, node);
     }
     return;
   }
@@ -368,6 +423,7 @@ function handleEvent(event) {
   if (event.type === "line_complete") {
     resetStreamingState();
     state.assistantNode = null;
+    state.projectFilesLoadedForSession = "";
     finalizeWorkflowSummary();
     collapseWorkflowPanel();
     if (state.restoringHistory) {

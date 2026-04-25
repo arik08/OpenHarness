@@ -103,6 +103,7 @@ class BackendEvent(BaseModel):
         "todo_update",
         "plan_mode_change",
         "swarm_status",
+        "session_title",
         "error",
         "shutdown",
     ]

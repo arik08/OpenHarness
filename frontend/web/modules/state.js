@@ -8,6 +8,8 @@ export const state = {
   activeHistoryId: null,
   commands: [],
   skills: [],
+  projectFiles: [],
+  projectFilesLoadedForSession: "",
   slashMenuOpen: false,
   slashMenuIndex: 0,
   slashMenuMode: "command",
@@ -31,7 +33,12 @@ export const state = {
   workflowList: null,
   workflowSummary: null,
   workflowSteps: [],
+  workflowTimer: 0,
+  artifacts: [],
+  activeArtifact: null,
+  artifactPanelOpen: false,
   attachments: [],
+  pastedTexts: [],
   composerToken: null,
 };
 
@@ -54,11 +61,19 @@ export const els = {
   historyList: document.querySelector("#historyList"),
   chatTitleButton: document.querySelector("#chatTitle"),
   chatTitle: document.querySelector("#chatTitle span"),
+  projectFilesButton: document.querySelector("#projectFilesButton"),
   themeToggle: document.querySelector("[data-action='toggle-theme']"),
   slashMenu: document.querySelector("#slashMenu"),
   attachmentTray: document.querySelector("#attachmentTray"),
+  pastedTextTray: document.querySelector("#pastedTextTray"),
   composerToken: document.querySelector("#composerToken"),
   workspaceNames: document.querySelectorAll("[data-workspace-name]"),
+  artifactPanel: document.querySelector("#artifactPanel"),
+  artifactPanelTitle: document.querySelector("#artifactPanelTitle"),
+  artifactPanelMeta: document.querySelector("#artifactPanelMeta"),
+  artifactPanelClose: document.querySelector("#artifactPanelClose"),
+  artifactResizeHandle: document.querySelector("#artifactResizeHandle"),
+  artifactViewer: document.querySelector("#artifactViewer"),
 };
 
 if (els.input) {

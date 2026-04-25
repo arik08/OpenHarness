@@ -15,6 +15,7 @@ import { createCommands } from "./modules/commands.js";
 import { createEvents } from "./modules/events.js";
 import { createHistory } from "./modules/history.js";
 import { createMarkdown } from "./modules/markdown.js";
+import { createArtifacts } from "./modules/artifacts.js";
 import { createMessages } from "./modules/messages.js";
 import { createModals } from "./modules/modals.js";
 import { createUI } from "./modules/ui.js";
@@ -33,15 +34,18 @@ const ctx = {
 
 Object.assign(ctx, createUI(ctx));
 Object.assign(ctx, createMarkdown(ctx));
+Object.assign(ctx, createArtifacts(ctx));
 Object.assign(ctx, createMessages(ctx));
 Object.assign(ctx, createCommands(ctx));
 Object.assign(ctx, createApi(ctx));
 Object.assign(ctx, createHistory(ctx));
 Object.assign(ctx, createModals(ctx));
 Object.assign(ctx, createEvents(ctx));
+ctx.initializeArtifactPanel();
 
 const {
   appendMessage,
+  addPastedText,
   autoSizeInput,
   buildComposerLine,
   clearChat,
@@ -55,6 +59,7 @@ const {
   requestHistory,
   requestSelectCommand,
   renderAttachments,
+  removePastedText,
   scheduleScrollPositionSave,
   selectSlashCommand,
   sendLine,
@@ -72,6 +77,7 @@ const {
 } = ctx;
 
 const maxImageBytes = 10 * 1024 * 1024;
+const longPastedTextLineThreshold = 5;
 const themeOptions = [
   { id: "light", label: "Light" },
   { id: "posco", label: "POSCO" },
@@ -154,6 +160,27 @@ function imageFilesFromClipboard(dataTransfer) {
     .filter(Boolean);
 }
 
+function countTextLines(value) {
+  return String(value || "").replace(/\r\n/g, "\n").split("\n").length;
+}
+
+function isLongPastedText(value) {
+  return countTextLines(value) >= longPastedTextLineThreshold;
+}
+
+function captureLongInputIfNeeded() {
+  const value = els.input.value;
+  if (!isLongPastedText(value)) {
+    return false;
+  }
+  addPastedText(value);
+  els.input.value = "";
+  closeSlashMenu();
+  autoSizeInput();
+  updateSendState();
+  return true;
+}
+
 els.composer.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -166,6 +193,9 @@ els.composer.addEventListener("submit", async (event) => {
 
 els.input.addEventListener("input", () => {
   updateComposerTokenFromInput();
+  if (captureLongInputIfNeeded()) {
+    return;
+  }
   autoSizeInput();
   updateSendState();
   state.slashMenuIndex = 0;
@@ -225,13 +255,30 @@ els.attachmentTray?.addEventListener("click", (event) => {
   updateSendState();
 });
 
-els.composer.addEventListener("paste", (event) => {
-  const files = imageFilesFromClipboard(event.clipboardData);
-  if (!files.length) {
+els.pastedTextTray?.addEventListener("click", (event) => {
+  const remove = event.target.closest(".pasted-text-remove");
+  if (!remove) {
     return;
   }
-  event.preventDefault();
-  addImageFiles(files);
+  removePastedText(remove.dataset.id);
+  els.input.focus();
+});
+
+els.composer.addEventListener("paste", (event) => {
+  const files = imageFilesFromClipboard(event.clipboardData);
+  if (files.length) {
+    event.preventDefault();
+    addImageFiles(files);
+    return;
+  }
+  const text = event.clipboardData?.getData("text/plain") || "";
+  if (isLongPastedText(text)) {
+    event.preventDefault();
+    addPastedText(text);
+    closeSlashMenu();
+    autoSizeInput();
+    updateSendState();
+  }
 });
 
 els.messages.addEventListener("scroll", () => {

@@ -43,6 +43,14 @@
   --code-copy-border: rgba(255, 250, 241, 0.2);
   --code-copy-border-hover: rgba(255, 250, 241, 0.32);
   --code-copy-ink: #fff7e8;
+  --skill-token-bg: #efe6ff;
+  --skill-token-ink: #6f3dc6;
+  --skill-token-mark-bg: #7a4ed8;
+  --skill-token-mark-ink: #fff;
+  --command-token-bg: #e8f0ff;
+  --command-token-ink: #2f5aa8;
+  --command-token-mark-bg: #4775d1;
+  --command-token-mark-ink: #fff;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -91,6 +99,14 @@
   --code-copy-border: rgba(243, 248, 252, 0.18);
   --code-copy-border-hover: rgba(243, 248, 252, 0.3);
   --code-copy-ink: #f6fbff;
+  --skill-token-bg: #e8edff;
+  --skill-token-ink: #3457b5;
+  --skill-token-mark-bg: #3157c5;
+  --skill-token-mark-ink: #fff;
+  --command-token-bg: #e0f1ff;
+  --command-token-ink: #0065a8;
+  --command-token-mark-bg: #0072bc;
+  --command-token-mark-ink: #fff;
 }
 
 :root[data-theme="dark"] {
@@ -138,6 +154,14 @@
   --code-copy-border: rgba(234, 245, 255, 0.2);
   --code-copy-border-hover: rgba(234, 245, 255, 0.32);
   --code-copy-ink: #eaf5ff;
+  --skill-token-bg: rgba(53, 168, 255, 0.16);
+  --skill-token-ink: #b9e2ff;
+  --skill-token-mark-bg: #35a8ff;
+  --skill-token-mark-ink: #07111d;
+  --command-token-bg: rgba(91, 208, 182, 0.15);
+  --command-token-ink: #c0f5e9;
+  --command-token-mark-bg: #5bd0b6;
+  --command-token-mark-ink: #07111d;
 }
 
 :root[data-theme="mono"] {
@@ -185,6 +209,14 @@
   --code-copy-border: rgba(109, 255, 176, 0.24);
   --code-copy-border-hover: rgba(109, 255, 176, 0.42);
   --code-copy-ink: #d8ffeb;
+  --skill-token-bg: rgba(109, 255, 176, 0.15);
+  --skill-token-ink: #c9ffe2;
+  --skill-token-mark-bg: #6dffb0;
+  --skill-token-mark-ink: #02100b;
+  --command-token-bg: rgba(185, 240, 138, 0.14);
+  --command-token-ink: #dcffc5;
+  --command-token-mark-bg: #b9f08a;
+  --command-token-mark-ink: #02100b;
 }
 
 * {
@@ -287,6 +319,7 @@ a:focus-visible {
 .app-shell {
   display: grid;
   grid-template-columns: 286px minmax(0, 1fr);
+  --artifact-panel-width: clamp(360px, 38vw, 680px);
   width: 100vw;
   height: 100dvh;
   min-height: 620px;
@@ -296,6 +329,24 @@ a:focus-visible {
 
 .app-shell.sidebar-collapsed {
   grid-template-columns: 32px minmax(0, 1fr);
+}
+
+.app-shell.artifact-open {
+  grid-template-columns: 286px minmax(0, 1fr) var(--artifact-panel-width);
+}
+
+.app-shell.sidebar-collapsed.artifact-open {
+  grid-template-columns: 32px minmax(0, 1fr) var(--artifact-panel-width);
+}
+
+.app-shell.resizing-artifact,
+.app-shell.resizing-artifact * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+.app-shell.resizing-artifact {
+  transition: none;
 }
 
 .sidebar {
@@ -703,11 +754,10 @@ a:focus-visible {
   place-items: center;
   width: 20px;
   height: 24px;
-  border-radius: 7px;
+  border-radius: 0;
   color: rgba(92, 84, 74, 0.36);
   opacity: 0;
   transition:
-    background 0.15s ease,
     color 0.15s ease,
     opacity 0.15s ease;
 }
@@ -718,7 +768,6 @@ a:focus-visible {
 }
 
 .history-delete:hover {
-  background: var(--danger-soft);
   color: var(--danger);
 }
 
@@ -818,6 +867,169 @@ a:focus-visible {
   background: var(--panel);
 }
 
+.artifact-panel {
+  display: flex;
+  position: relative;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+}
+
+.artifact-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  z-index: 4;
+  width: 10px;
+  cursor: col-resize;
+}
+
+.artifact-resize-handle::after {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 4px;
+  width: 1px;
+  background: transparent;
+  content: "";
+  transition: background 0.14s ease;
+}
+
+.artifact-resize-handle:hover::after,
+.app-shell.resizing-artifact .artifact-resize-handle::after {
+  background: var(--accent);
+}
+
+.artifact-panel.hidden {
+  display: none;
+}
+
+.artifact-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 58px;
+  padding: 9px 12px 9px 16px;
+  background: var(--panel-glass);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+}
+
+.artifact-panel-header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.artifact-panel-header strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-panel-header small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 590;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-close {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.artifact-close:hover {
+  background: var(--sidebar-hover);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.artifact-close svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.artifact-viewer {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 14px;
+}
+
+.artifact-empty {
+  margin: 0;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.artifact-empty.error {
+  color: var(--danger);
+}
+
+.artifact-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: calc(100dvh - 94px);
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.artifact-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-raised);
+}
+
+.artifact-text,
+.artifact-markdown {
+  min-height: 100%;
+  margin: 0;
+  padding: 14px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.62;
+}
+
+.artifact-text {
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .chat-header {
   display: flex;
   align-items: center;
@@ -835,6 +1047,42 @@ a:focus-visible {
   align-items: center;
   min-width: 0;
   gap: 8px;
+}
+
+.header-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.header-icon-button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.header-icon-button:hover {
+  background: var(--sidebar-hover);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.header-icon-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.9;
 }
 
 .chat-title {
@@ -987,19 +1235,21 @@ a:focus-visible {
   white-space: pre-wrap;
 }
 
-.stream-reveal-segment {
+.stream-reveal-sentence {
   display: inline-block;
-  animation: revealStreamSegment 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  max-width: 100%;
+  animation: revealStreamSentence 460ms cubic-bezier(0.16, 1, 0.3, 1) both;
   transform-origin: left center;
+  vertical-align: baseline;
   white-space: pre-wrap;
 }
 
-@keyframes revealStreamSegment {
+@keyframes revealStreamSentence {
   from {
     opacity: 0;
     clip-path: inset(0 100% 0 0);
-    filter: blur(2px);
-    transform: translateX(-2px);
+    filter: blur(1.5px);
+    transform: translateX(-1px);
   }
 
   to {
@@ -1011,7 +1261,7 @@ a:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .stream-reveal-segment {
+  .stream-reveal-sentence {
     animation: none;
   }
 }
@@ -1030,6 +1280,48 @@ a:focus-visible {
 .message.user .bubble:has(.message-attachments) {
   border-radius: 18px;
   padding: 9px 12px;
+}
+
+.user-collapsed-message {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.user-message-preview {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-message-toggle {
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 0 8px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.user-message-toggle:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.user-expanded-message {
+  display: grid;
+  gap: 8px;
+}
+
+.message.user .bubble:has(.user-expanded-message) {
+  max-width: min(680px, 86%);
+  border-radius: 18px;
 }
 
 .message-attachments {
@@ -1084,26 +1376,26 @@ a:focus-visible {
 }
 
 .prompt-token.skill {
-  background: #efe6ff;
-  color: #6f3dc6;
+  background: var(--skill-token-bg);
+  color: var(--skill-token-ink);
 }
 
 .prompt-token.skill::before {
   content: "$";
-  background: #7a4ed8;
-  color: #fff;
+  background: var(--skill-token-mark-bg);
+  color: var(--skill-token-mark-ink);
 }
 
 .prompt-token.command {
-  background: #e8f0ff;
-  color: #2f5aa8;
+  background: var(--command-token-bg);
+  color: var(--command-token-ink);
   font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
 }
 
 .prompt-token.command::before {
   content: "/";
-  background: #4775d1;
-  color: #fff;
+  background: var(--command-token-mark-bg);
+  color: var(--command-token-mark-ink);
 }
 
 .prompt-rest {
@@ -1133,6 +1425,96 @@ a:focus-visible {
   width: 100%;
   padding: 0;
   overflow: hidden;
+}
+
+.artifact-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.artifact-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(340px, 100%);
+  min-width: 220px;
+  min-height: 58px;
+  padding: 9px 11px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.artifact-card:hover {
+  background: var(--sidebar-hover);
+  border-color: var(--line-strong);
+}
+
+.artifact-card-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  background: var(--sidebar-hover);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--accent);
+  font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+  font-size: 11px;
+  font-weight: 780;
+}
+
+.artifact-card-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.artifact-card-copy strong,
+.artifact-card-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-card-copy strong {
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.artifact-card-copy small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-file-list {
+  display: grid;
+  gap: 8px;
+}
+
+.project-file-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 56px;
+  width: 100%;
+  padding: 9px 10px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.project-file-item:hover {
+  background: var(--sidebar-hover);
+  border-color: var(--line-strong);
 }
 
 .workflow-message {
@@ -1186,6 +1568,16 @@ a:focus-visible {
   min-height: 28px;
   color: var(--muted);
   font-size: 13px;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 260ms ease,
+    transform 260ms ease;
+}
+
+.workflow-step.entering {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 .workflow-dot {
@@ -1497,7 +1889,7 @@ a:focus-visible {
   right: 0;
   bottom: 10px;
   left: 0;
-  padding: 0 0 10px;
+  padding: 0 18px 10px;
   background: transparent;
   z-index: 2;
   pointer-events: none;
@@ -1539,6 +1931,70 @@ a:focus-visible {
 
 .attachment-tray.hidden {
   display: none;
+}
+
+.pasted-text-tray {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 0 2px 1px;
+  pointer-events: auto;
+  scrollbar-width: none;
+}
+
+.pasted-text-tray::-webkit-scrollbar {
+  display: none;
+}
+
+.pasted-text-tray.hidden {
+  display: none;
+}
+
+.pasted-text-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(280px, 100%);
+  min-height: 24px;
+  padding: 3px 5px 3px 9px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--panel) 78%, var(--line) 22%);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.pasted-text-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pasted-text-remove {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.pasted-text-remove:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .attachment-chip {
@@ -1596,7 +2052,7 @@ a:focus-visible {
   column-gap: 8px;
   row-gap: 6px;
   align-items: center;
-  width: min(804px, calc(100% + 2px));
+  width: min(804px, 100%);
   min-height: 42px;
   margin: 0 auto;
   padding: 4px 5px 4px 14px;
@@ -1663,7 +2119,7 @@ a:focus-visible {
 .slash-menu {
   position: absolute;
   right: 0;
-  bottom: calc(100% - 4px);
+  bottom: calc(100% + 8px);
   left: 0;
   display: grid;
   gap: 2px;
@@ -1966,22 +2422,22 @@ a:focus-visible {
   padding: 0;
   background: transparent;
   border: 0;
-  border-radius: 7px;
+  border-radius: 0;
   color: var(--muted);
 }
 
 .modal-card .workspace-delete:hover {
-  background: color-mix(in srgb, var(--danger-soft) 62%, transparent);
+  background: transparent;
   color: var(--danger);
 }
 
 .workspace-row.delete-ready .workspace-delete {
-  background: color-mix(in srgb, var(--danger-soft) 74%, transparent);
+  background: transparent;
   color: var(--danger);
 }
 
 .workspace-row.delete-ready .workspace-delete:hover {
-  background: color-mix(in srgb, var(--danger-soft) 100%, transparent);
+  background: transparent;
 }
 
 .modal-card .workspace-delete:disabled {
@@ -2293,8 +2749,21 @@ a:focus-visible {
     min-height: 100dvh;
   }
 
+  .app-shell.artifact-open,
+  .app-shell.sidebar-collapsed.artifact-open {
+    grid-template-columns: 1fr;
+  }
+
   .sidebar {
     display: none;
+  }
+
+  .artifact-panel {
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: 20;
+    width: min(92vw, 540px);
+    box-shadow: -18px 0 50px rgba(0, 0, 0, 0.18);
   }
 
   .chat-header {

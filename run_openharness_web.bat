@@ -100,19 +100,28 @@ if not exist "frontend\web\node_modules\.package-lock.json" (
   echo [INFO] Web dependencies are already available.
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$portNumber = [int]$env:PORT; if (Get-NetTCPConnection -LocalPort $portNumber -State Listen -ErrorAction SilentlyContinue) { exit 0 } exit 1" >nul 2>nul
-if not errorlevel 1 (
-  echo [INFO] Port %PORT% is already in use.
-  echo [INFO] Open this link manually if you want to use the existing server:
-  echo   %OPENHARNESS_URL%
-  if not "%OPENHARNESS_LAN_URL%"=="" echo   %OPENHARNESS_LAN_URL%
-  echo.
-  echo If this is not OpenHarness, close the process using port %PORT% or run:
-  echo   set PORT=4174
-  echo   run_openharness_web.bat
-  echo.
-  pause
-  exit /b 0
+set "OPENHARNESS_PORT_PID="
+for /f "usebackq delims=" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$conn = Get-NetTCPConnection -LocalPort ([int]$env:PORT) -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { Write-Output $conn.OwningProcess }"`) do (
+  set "OPENHARNESS_PORT_PID=%%A"
+)
+
+if not "%OPENHARNESS_PORT_PID%"=="" (
+  echo [INFO] Port %PORT% is already in use by PID %OPENHARNESS_PORT_PID%.
+  echo [INFO] Closing the existing process and starting MyHarness fresh...
+  taskkill /PID %OPENHARNESS_PORT_PID% /T /F >nul 2>nul
+  timeout /t 1 /nobreak >nul
+
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-NetTCPConnection -LocalPort ([int]$env:PORT) -State Listen -ErrorAction SilentlyContinue) { exit 0 } exit 1" >nul 2>nul
+  if not errorlevel 1 (
+    echo.
+    echo [ERROR] Port %PORT% is still in use after trying to close PID %OPENHARNESS_PORT_PID%.
+    echo Try running this launcher as Administrator, or use another port:
+    echo   set PORT=4174
+    echo   run_openharness_web.bat
+    echo.
+    pause
+    exit /b 1
+  )
 )
 
 echo [INFO] Starting server...

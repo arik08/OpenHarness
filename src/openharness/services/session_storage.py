@@ -27,6 +27,7 @@ _PERSISTED_TOOL_METADATA_KEYS = (
     "task_focus_state",
     "compact_checkpoints",
     "compact_last",
+    "session_title",
 )
 
 
@@ -50,6 +51,14 @@ def _persistable_tool_metadata(tool_metadata: dict[str, object] | None) -> dict[
         if key in tool_metadata:
             payload[key] = _sanitize_metadata(tool_metadata[key])
     return payload
+
+
+def _session_title_from_metadata(tool_metadata: dict[str, object] | None) -> str:
+    if not isinstance(tool_metadata, dict):
+        return ""
+    title = str(tool_metadata.get("session_title") or "").strip()
+    title = " ".join(title.split())
+    return title[:80]
 
 
 def _with_image_marker(text: str, has_image: bool) -> str:
@@ -102,13 +111,15 @@ def save_session_snapshot(
     sid = session_id or uuid4().hex[:12]
     now = time.time()
     messages = sanitize_conversation_messages(messages)
+    metadata_title = _session_title_from_metadata(tool_metadata)
     # Extract a summary from the first user message
-    summary = ""
-    for msg in messages:
-        if msg.role == "user":
-            summary = _message_summary(msg)[:80]
-            if summary:
-                break
+    summary = metadata_title
+    if not summary:
+        for msg in messages:
+            if msg.role == "user":
+                summary = _message_summary(msg)[:80]
+                if summary:
+                    break
 
     payload = {
         "session_id": sid,

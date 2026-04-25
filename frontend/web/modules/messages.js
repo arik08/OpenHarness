@@ -1,5 +1,8 @@
 export function createMessages(ctx) {
   const { state, els, STATUS_LABELS, commandDescription } = ctx;
+  let workflowEventQueue = [];
+  let workflowEventQueueTimer = 0;
+  const WORKFLOW_EVENT_STAGGER_MS = 90;
   function removeWelcome(...args) { return ctx.removeWelcome(...args); }
   function setMarkdown(...args) { return ctx.setMarkdown(...args); }
   function scrollMessagesToBottom(...args) { return ctx.scrollMessagesToBottom(...args); }
@@ -133,6 +136,41 @@ function createPromptTokenContent(text) {
   return wrap;
 }
 
+function shouldCollapseUserMessage(text) {
+  const value = String(text || "").trim();
+  if (!value) {
+    return false;
+  }
+  return value.length > 180 || value.split(/\r?\n/).length > 2;
+}
+
+function renderCollapsedUserMessage(content, text, expanded = false) {
+  const value = String(text || "");
+  content.dataset.rawText = value;
+  content.classList.toggle("user-collapsed-message", !expanded);
+  content.classList.toggle("user-expanded-message", expanded);
+  content.textContent = "";
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "user-message-toggle";
+  toggle.textContent = expanded ? "접기" : "더 보기";
+  toggle.addEventListener("click", () => renderCollapsedUserMessage(content, value, !expanded));
+
+  if (expanded) {
+    setMarkdown(content, value);
+    content.classList.add("user-expanded-message");
+    content.classList.remove("user-collapsed-message");
+    content.append(toggle);
+    return;
+  }
+
+  const preview = document.createElement("span");
+  preview.className = "user-message-preview";
+  preview.textContent = value.replace(/\s+/g, " ").trim();
+  content.append(preview, toggle);
+}
+
 function appendMessage(role, text, attachments = []) {
   removeWelcome();
   const article = document.createElement("article");
@@ -154,6 +192,8 @@ function appendMessage(role, text, attachments = []) {
     const promptContent = role === "user" ? createPromptTokenContent(text) : null;
     if (promptContent) {
       content.append(promptContent);
+    } else if (role === "user" && shouldCollapseUserMessage(text)) {
+      renderCollapsedUserMessage(content, text, false);
     } else {
       setMarkdown(content, text);
     }
@@ -174,6 +214,10 @@ function appendMessage(role, text, attachments = []) {
 }
 
 function resetWorkflowPanel() {
+  workflowEventQueue = [];
+  window.clearTimeout(workflowEventQueueTimer);
+  workflowEventQueueTimer = 0;
+  stopWorkflowTimer();
   state.workflowNode = null;
   state.workflowList = null;
   state.workflowSummary = null;
@@ -190,6 +234,7 @@ function collapseWorkflowPanel() {
 
 function finalizeWorkflowSummary() {
   updateWorkflowSummary();
+  stopWorkflowTimer();
 }
 
 function ensureWorkflowPanel() {
@@ -225,14 +270,28 @@ function ensureWorkflowPanel() {
   state.workflowSummary = count;
   state.workflowSteps = [];
   state.workflowStartedAt = performance.now();
+  startWorkflowTimer();
   appendWorkflowStep("요청 이해", "사용자 요청을 확인했습니다.", "done");
   appendWorkflowStep("작업 계획", "필요한 정보와 도구를 판단합니다.", "running");
   scrollMessagesToBottom();
 }
 
+function startWorkflowTimer() {
+  stopWorkflowTimer();
+  state.workflowTimer = window.setInterval(updateWorkflowSummary, 1000);
+}
+
+function stopWorkflowTimer() {
+  if (!state.workflowTimer) {
+    return;
+  }
+  window.clearInterval(state.workflowTimer);
+  state.workflowTimer = 0;
+}
+
 function appendWorkflowStep(titleText, detailText, status = "done", toolName = "") {
   const row = document.createElement("div");
-  row.className = `workflow-step ${status}`;
+  row.className = `workflow-step ${status}${state.restoringHistory ? "" : " entering"}`;
   if (toolName) {
     row.dataset.toolName = toolName;
   }
@@ -247,12 +306,45 @@ function appendWorkflowStep(titleText, detailText, status = "done", toolName = "
   copy.append(title, detail);
   row.append(dot, copy);
   state.workflowList.append(row);
+  if (!state.restoringHistory) {
+    window.requestAnimationFrame(() => {
+      row.classList.remove("entering");
+    });
+  }
   state.workflowSteps.push(row);
   updateWorkflowSummary();
   return row;
 }
 
 function appendWorkflowEvent(event) {
+  if (state.restoringHistory) {
+    appendWorkflowEventNow(event);
+    return;
+  }
+  workflowEventQueue.push(event);
+  scheduleWorkflowEventQueue();
+}
+
+function scheduleWorkflowEventQueue() {
+  if (workflowEventQueueTimer) {
+    return;
+  }
+  workflowEventQueueTimer = window.setTimeout(processNextWorkflowEvent, WORKFLOW_EVENT_STAGGER_MS);
+}
+
+function processNextWorkflowEvent() {
+  workflowEventQueueTimer = 0;
+  const event = workflowEventQueue.shift();
+  if (!event) {
+    return;
+  }
+  appendWorkflowEventNow(event);
+  if (workflowEventQueue.length) {
+    scheduleWorkflowEventQueue();
+  }
+}
+
+function appendWorkflowEventNow(event) {
   ensureWorkflowPanel();
   markPlanningStepDone();
   const isStart = event.type === "tool_started";
@@ -392,6 +484,8 @@ function updateTasks(tasks) {
     resetWorkflowPanel,
     collapseWorkflowPanel,
     finalizeWorkflowSummary,
+    startWorkflowTimer,
+    stopWorkflowTimer,
     ensureWorkflowPanel,
     appendWorkflowEvent,
     markPlanningStepDone,

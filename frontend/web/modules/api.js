@@ -14,8 +14,10 @@ export function createApi(ctx) {
   function updateSendState(...args) { return ctx.updateSendState(...args); }
   function forgetScrollPosition(...args) { return ctx.forgetScrollPosition(...args); }
   function clearAttachments(...args) { return ctx.clearAttachments(...args); }
+  function clearPastedTexts(...args) { return ctx.clearPastedTexts(...args); }
   function clearComposerToken(...args) { return ctx.clearComposerToken(...args); }
   function updateWorkspaceDisplay(...args) { return ctx.updateWorkspaceDisplay(...args); }
+  function resetArtifacts(...args) { return ctx.resetArtifacts?.(...args); }
 
 async function postJson(url, payload) {
   const response = await fetch(url, {
@@ -95,6 +97,8 @@ async function startSession() {
   const { sessionId } = session;
   setActiveWorkspace(session.workspace);
   state.sessionId = sessionId;
+  state.projectFiles = [];
+  state.projectFilesLoadedForSession = "";
   if (els.sessionId) {
     els.sessionId.textContent = sessionId;
   }
@@ -119,6 +123,7 @@ async function sendLine(line) {
     return;
   }
   resetWorkflowPanel();
+  resetArtifacts();
   if (state.chatTitle === "MyHarness" && !text.startsWith("/")) {
     setChatTitle(text || "이미지 첨부");
   }
@@ -128,6 +133,7 @@ async function sendLine(line) {
   }
   els.input.value = "";
   clearComposerToken();
+  clearPastedTexts();
   clearAttachments();
   autoSizeInput();
   setBusy(true, STATUS_LABELS.sending);
@@ -171,7 +177,9 @@ async function restartSessionForWorkspace(workspace) {
   renderWelcome();
   markActiveHistory();
   resetWorkflowPanel();
+  resetArtifacts();
   clearComposerToken();
+  clearPastedTexts();
   clearAttachments();
   try {
     await startSession();
@@ -225,6 +233,7 @@ async function clearChat() {
   saveScrollPosition();
   els.input.value = "";
   clearComposerToken();
+  clearPastedTexts();
   clearAttachments();
   autoSizeInput();
   state.assistantNode = null;
@@ -233,6 +242,7 @@ async function clearChat() {
   state.restoringHistory = false;
   state.ignoreScrollSave = false;
   renderWelcome();
+  resetArtifacts();
   markActiveHistory();
   updateSendState();
   if (state.sessionId) {

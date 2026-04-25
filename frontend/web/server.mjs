@@ -18,6 +18,10 @@ const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const protocolPrefix = "OHJSON:";
 const sessions = new Map();
+let server = null;
+let serverIdleTimer = null;
+let hasCreatedBackendSession = false;
+const serverIdleShutdownMs = 5000;
 const reservedWorkspaceNames = new Set([
   "CON",
   "PRN",
@@ -55,6 +59,25 @@ const types = {
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
 };
+const artifactPreviewMaxBytes = 8 * 1024 * 1024;
+const artifactTypes = {
+  ".html": { kind: "html", mime: "text/html; charset=utf-8", encoding: "text" },
+  ".htm": { kind: "html", mime: "text/html; charset=utf-8", encoding: "text" },
+  ".md": { kind: "text", mime: "text/markdown; charset=utf-8", encoding: "text" },
+  ".markdown": { kind: "text", mime: "text/markdown; charset=utf-8", encoding: "text" },
+  ".txt": { kind: "text", mime: "text/plain; charset=utf-8", encoding: "text" },
+  ".json": { kind: "text", mime: "application/json; charset=utf-8", encoding: "text" },
+  ".csv": { kind: "text", mime: "text/csv; charset=utf-8", encoding: "text" },
+  ".png": { kind: "image", mime: "image/png", encoding: "base64" },
+  ".jpg": { kind: "image", mime: "image/jpeg", encoding: "base64" },
+  ".jpeg": { kind: "image", mime: "image/jpeg", encoding: "base64" },
+  ".webp": { kind: "image", mime: "image/webp", encoding: "base64" },
+  ".svg": { kind: "image", mime: "image/svg+xml", encoding: "base64" },
+  ".pdf": { kind: "pdf", mime: "application/pdf", encoding: "base64" },
+};
+const artifactListSkipDirs = new Set([".git", ".openharness", "node_modules", "__pycache__", ".venv", "venv"]);
+const artifactListMaxItems = 300;
+const projectFileListMaxItems = 600;
 
 function resolvePath(url) {
   const pathname = decodeURIComponent(new URL(url, `http://localhost:${port}`).pathname);
@@ -108,6 +131,165 @@ async function readJson(request) {
     return {};
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function workspaceRelativeTarget(workspacePath, candidate) {
+  const raw = String(candidate || "").trim();
+  if (!raw) {
+    throw new Error("Artifact path is required");
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) && !raw.toLowerCase().startsWith("file://")) {
+    throw new Error("External URLs cannot be previewed");
+  }
+  const withoutFileScheme = raw
+    .replace(/^file:\/\/\/?/i, "")
+    .replace(/^\/([A-Za-z]:\/)/, "$1")
+    .replace(/\\/g, "/");
+  const target = isAbsolute(withoutFileScheme)
+    ? normalize(withoutFileScheme)
+    : normalize(join(workspacePath, withoutFileScheme));
+  const rel = relative(workspacePath, target);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error("Artifact must stay inside the current project");
+  }
+  return { target, rel };
+}
+
+async function readArtifactPreview(session, artifactPath) {
+  const { target, rel } = workspaceRelativeTarget(session.workspace.path, artifactPath);
+  const ext = extname(target).toLowerCase();
+  const type = artifactTypes[ext];
+  if (!type) {
+    throw new Error("Unsupported artifact type");
+  }
+  const info = await stat(target);
+  if (!info.isFile()) {
+    throw new Error("Artifact is not a file");
+  }
+  if (info.size > artifactPreviewMaxBytes) {
+    throw new Error("Artifact is too large to preview");
+  }
+  const body = await readFile(target);
+  const payload = {
+    path: rel,
+    name: rel.split(/[\\/]/).pop() || rel,
+    kind: type.kind,
+    mime: type.mime,
+    size: info.size,
+  };
+  if (type.encoding === "base64") {
+    payload.dataUrl = `data:${type.mime};base64,${body.toString("base64")}`;
+  } else {
+    payload.content = body.toString("utf8");
+  }
+  return payload;
+}
+
+async function readArtifactMetadata(session, artifactPath) {
+  const { target, rel } = workspaceRelativeTarget(session.workspace.path, artifactPath);
+  const ext = extname(target).toLowerCase();
+  const type = artifactTypes[ext];
+  if (!type) {
+    throw new Error("Unsupported artifact type");
+  }
+  const info = await stat(target);
+  if (!info.isFile()) {
+    throw new Error("Artifact is not a file");
+  }
+  return {
+    path: rel,
+    name: rel.split(/[\\/]/).pop() || rel,
+    kind: type.kind,
+    mime: type.mime,
+    size: info.size,
+  };
+}
+
+async function listProjectArtifacts(session) {
+  const files = [];
+  async function walk(directory) {
+    if (files.length >= artifactListMaxItems) {
+      return;
+    }
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (files.length >= artifactListMaxItems) {
+        return;
+      }
+      if (entry.isDirectory()) {
+        if (!artifactListSkipDirs.has(entry.name)) {
+          await walk(join(directory, entry.name));
+        }
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      const ext = extname(entry.name).toLowerCase();
+      const type = artifactTypes[ext];
+      if (!type) {
+        continue;
+      }
+      const target = join(directory, entry.name);
+      const rel = relative(session.workspace.path, target);
+      if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+        continue;
+      }
+      const info = await stat(target);
+      files.push({
+        path: rel,
+        name: entry.name,
+        kind: type.kind,
+        mime: type.mime,
+        size: info.size,
+      });
+    }
+  }
+  await walk(session.workspace.path);
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return files;
+}
+
+async function listProjectFiles(session) {
+  const files = [];
+  async function walk(directory) {
+    if (files.length >= projectFileListMaxItems) {
+      return;
+    }
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (files.length >= projectFileListMaxItems) {
+        return;
+      }
+      if (entry.isDirectory()) {
+        if (!artifactListSkipDirs.has(entry.name)) {
+          await walk(join(directory, entry.name));
+        }
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      const target = join(directory, entry.name);
+      const rel = relative(session.workspace.path, target);
+      if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+        continue;
+      }
+      const info = await stat(target);
+      const ext = extname(entry.name).toLowerCase();
+      const type = artifactTypes[ext] || { kind: "file", mime: "application/octet-stream" };
+      files.push({
+        path: rel,
+        name: entry.name,
+        kind: type.kind,
+        mime: type.mime,
+        size: info.size,
+      });
+    }
+  }
+  await walk(session.workspace.path);
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return files;
 }
 
 function validateWorkspaceName(value) {
@@ -191,17 +373,25 @@ async function deleteWorkspace(name) {
 async function listWorkspaces() {
   await mkdir(playgroundRoot, { recursive: true });
   const entries = await readdir(playgroundRoot, { withFileTypes: true });
-  const directories = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => {
+  const directories = (
+    await Promise.all(entries
+      .filter((entry) => entry.isDirectory())
+      .map(async (entry) => {
       try {
-        return workspaceFromDirectoryName(entry.name);
+        const workspace = workspaceFromDirectoryName(entry.name);
+        const info = await stat(workspace.path);
+        return { ...workspace, createdAt: info.birthtimeMs || info.ctimeMs || 0 };
       } catch {
         return null;
       }
-    })
+    }))
+  )
     .filter(Boolean)
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .sort((left, right) => {
+      const byCreated = left.createdAt - right.createdAt;
+      return byCreated || left.name.localeCompare(right.name);
+    })
+    .map(({ createdAt, ...workspace }) => workspace);
   if (!directories.length) {
     return [await ensureWorkspace(defaultWorkspaceName)];
   }
@@ -258,6 +448,87 @@ function emit(session, event) {
   }
 }
 
+function killProcessTree(child) {
+  if (!child || child.killed || !child.pid) {
+    return;
+  }
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    return;
+  }
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // Process already exited.
+  }
+}
+
+function shutdownSession(session, reason = "shutdown") {
+  if (!session || session.shuttingDown) {
+    return;
+  }
+  session.shuttingDown = true;
+  if (session.clientCloseTimer) {
+    clearTimeout(session.clientCloseTimer);
+    session.clientCloseTimer = null;
+  }
+  sendBackend(session, { type: "shutdown", reason });
+  try {
+    session.process.stdin.end();
+  } catch {
+    // stdin may already be closed.
+  }
+  session.forceKillTimer = setTimeout(() => {
+    killProcessTree(session.process);
+  }, 1200);
+  session.forceKillTimer.unref?.();
+}
+
+function shutdownAllSessions(reason = "server shutdown") {
+  for (const session of sessions.values()) {
+    shutdownSession(session, reason);
+  }
+}
+
+function cancelServerIdleShutdown() {
+  if (serverIdleTimer) {
+    clearTimeout(serverIdleTimer);
+    serverIdleTimer = null;
+  }
+}
+
+function scheduleServerIdleShutdown() {
+  if (!hasCreatedBackendSession || sessions.size > 0 || serverIdleTimer) {
+    return;
+  }
+  serverIdleTimer = setTimeout(() => {
+    serverIdleTimer = null;
+    if (sessions.size === 0) {
+      stopServer("idle");
+    }
+  }, serverIdleShutdownMs);
+  serverIdleTimer.unref?.();
+}
+
+function scheduleClientlessShutdown(session) {
+  if (!session || session.shuttingDown || session.clients.size > 0) {
+    return;
+  }
+  if (session.clientCloseTimer) {
+    clearTimeout(session.clientCloseTimer);
+  }
+  session.clientCloseTimer = setTimeout(() => {
+    session.clientCloseTimer = null;
+    if (session.clients.size === 0) {
+      shutdownSession(session, "browser disconnected");
+    }
+  }, 2500);
+  session.clientCloseTimer.unref?.();
+}
+
 function getLanUrl() {
   for (const addresses of Object.values(networkInterfaces())) {
     for (const address of addresses || []) {
@@ -301,8 +572,14 @@ async function createBackendSession(options = {}) {
     events: [],
     createdAt: Date.now(),
     workspace,
+    shuttingDown: false,
+    clientCloseTimer: null,
+    forceKillTimer: null,
   };
   sessions.set(id, session);
+  hasCreatedBackendSession = true;
+  cancelServerIdleShutdown();
+  scheduleClientlessShutdown(session);
 
   emit(session, {
     type: "web_session",
@@ -332,8 +609,17 @@ async function createBackendSession(options = {}) {
   });
 
   child.on("exit", (code) => {
+    if (session.forceKillTimer) {
+      clearTimeout(session.forceKillTimer);
+      session.forceKillTimer = null;
+    }
+    if (session.clientCloseTimer) {
+      clearTimeout(session.clientCloseTimer);
+      session.clientCloseTimer = null;
+    }
     emit(session, { type: "shutdown", code, message: `Backend exited with code ${code ?? 0}` });
     sessions.delete(id);
+    scheduleServerIdleShutdown();
   });
 
   return session;
@@ -394,12 +680,85 @@ async function handleApi(request, response, pathname) {
       Connection: "keep-alive",
     });
     session.clients.add(response);
+    if (session.clientCloseTimer) {
+      clearTimeout(session.clientCloseTimer);
+      session.clientCloseTimer = null;
+    }
     for (const event of session.events) {
       response.write(`data: ${JSON.stringify(event)}\n\n`);
     }
     request.on("close", () => {
       session.clients.delete(response);
+      scheduleClientlessShutdown(session);
     });
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/artifact") {
+    const params = new URL(request.url, `http://localhost:${port}`).searchParams;
+    const session = sessions.get(params.get("session"));
+    if (!session) {
+      json(response, 404, { error: "Unknown session" });
+      return true;
+    }
+    try {
+      const payload = await readArtifactPreview(session, params.get("path"));
+      json(response, 200, payload);
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not preview artifact" });
+    }
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/artifact/resolve") {
+    const params = new URL(request.url, `http://localhost:${port}`).searchParams;
+    const session = sessions.get(params.get("session"));
+    if (!session) {
+      json(response, 404, { error: "Unknown session" });
+      return true;
+    }
+    try {
+      const payload = await readArtifactMetadata(session, params.get("path"));
+      json(response, 200, payload);
+    } catch (error) {
+      json(response, 404, { error: error.message || "Artifact not found" });
+    }
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/artifacts") {
+    const params = new URL(request.url, `http://localhost:${port}`).searchParams;
+    const session = sessions.get(params.get("session"));
+    if (!session) {
+      json(response, 404, { error: "Unknown session" });
+      return true;
+    }
+    try {
+      json(response, 200, {
+        workspace: session.workspace,
+        files: await listProjectArtifacts(session),
+      });
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not list project files" });
+    }
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/project-files") {
+    const params = new URL(request.url, `http://localhost:${port}`).searchParams;
+    const session = sessions.get(params.get("session"));
+    if (!session) {
+      json(response, 404, { error: "Unknown session" });
+      return true;
+    }
+    try {
+      json(response, 200, {
+        workspace: session.workspace,
+        files: await listProjectFiles(session),
+      });
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not list project files" });
+    }
     return true;
   }
 
@@ -439,8 +798,7 @@ async function handleApi(request, response, pathname) {
     const body = await readJson(request);
     const session = sessions.get(body.sessionId);
     if (session) {
-      sendBackend(session, { type: "shutdown" });
-      session.process.kill();
+      shutdownSession(session, "api shutdown");
     }
     json(response, 200, { ok: true });
     return true;
@@ -449,7 +807,7 @@ async function handleApi(request, response, pathname) {
   return false;
 }
 
-createServer(async (request, response) => {
+server = createServer(async (request, response) => {
   const pathname = new URL(request.url || "/", `http://localhost:${port}`).pathname;
   if (pathname.startsWith("/api/") && (await handleApi(request, response, pathname))) {
     return;
@@ -474,7 +832,28 @@ createServer(async (request, response) => {
     response.writeHead(404);
     response.end("Not found");
   }
-}).listen(port, host, () => {
+});
+
+function stopServer(signal = "shutdown") {
+  shutdownAllSessions(signal);
+  if (!server) {
+    process.exit(0);
+    return;
+  }
+  server.close(() => {
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(0), 1500).unref?.();
+}
+
+process.once("SIGINT", () => stopServer("SIGINT"));
+process.once("SIGTERM", () => stopServer("SIGTERM"));
+process.once("SIGHUP", () => stopServer("SIGHUP"));
+process.once("exit", () => {
+  shutdownAllSessions("process exit");
+});
+
+server.listen(port, host, () => {
   const localUrl = `http://localhost:${port}`;
   const lanUrl = getLanUrl();
   if (host === "0.0.0.0" || host === "::") {
