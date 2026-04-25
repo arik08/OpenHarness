@@ -2,7 +2,20 @@ export function createMessages(ctx) {
   const { state, els, STATUS_LABELS, commandDescription } = ctx;
   let workflowEventQueue = [];
   let workflowEventQueueTimer = 0;
+  let workflowWaitingTimer = 0;
+  let workflowWaitingIndex = 0;
+  let workflowIntent = "default";
+  let workflowPreviewNode = null;
+  let workflowPreviewBody = null;
+  let workflowPreviewTimer = 0;
+  let workflowPreviewText = "";
+  let workflowPreviewOffset = 0;
+  const workflowToolArgBuffers = new Map();
   const WORKFLOW_EVENT_STAGGER_MS = 90;
+  const WORKFLOW_WAITING_FIRST_MS = 4500;
+  const WORKFLOW_WAITING_NEXT_MS = 12000;
+  const WORKFLOW_PREVIEW_CHARS_PER_TICK = 180;
+  const WORKFLOW_PREVIEW_TICK_MS = 45;
   function removeWelcome(...args) { return ctx.removeWelcome(...args); }
   function setMarkdown(...args) { return ctx.setMarkdown(...args); }
   function scrollMessagesToBottom(...args) { return ctx.scrollMessagesToBottom(...args); }
@@ -244,13 +257,25 @@ function appendMessage(role, text, attachments = []) {
 function resetWorkflowPanel() {
   workflowEventQueue = [];
   window.clearTimeout(workflowEventQueueTimer);
+  window.clearTimeout(workflowWaitingTimer);
+  window.clearTimeout(workflowPreviewTimer);
   workflowEventQueueTimer = 0;
+  workflowWaitingTimer = 0;
+  workflowWaitingIndex = 0;
+  workflowIntent = "default";
+  workflowPreviewNode = null;
+  workflowPreviewBody = null;
+  workflowPreviewTimer = 0;
+  workflowPreviewText = "";
+  workflowPreviewOffset = 0;
+  workflowToolArgBuffers.clear();
   stopWorkflowTimer();
   state.workflowNode = null;
   state.workflowList = null;
   state.workflowSummary = null;
   state.workflowSteps = [];
   state.workflowStartedAt = 0;
+  state.workflowRestoredElapsedMs = 0;
 }
 
 function collapseWorkflowPanel() {
@@ -262,13 +287,30 @@ function collapseWorkflowPanel() {
 
 function finalizeWorkflowSummary() {
   updateWorkflowSummary();
+  stopWorkflowWaitingTimer();
+  flushWorkflowOutputPreview();
   stopWorkflowTimer();
 }
 
-function ensureWorkflowPanel() {
+function detectWorkflowIntent(promptText = "") {
+  const value = String(promptText || "").toLowerCase();
+  if (
+    value.includes(".md")
+    || value.includes("markdown")
+    || value.includes("md 파일")
+    || value.includes("문서")
+    || value.includes("파일")
+  ) {
+    return "file";
+  }
+  return "default";
+}
+
+function ensureWorkflowPanel(promptText = "") {
   if (state.workflowNode && state.workflowList && state.workflowSummary) {
     return;
   }
+  workflowIntent = detectWorkflowIntent(promptText);
   removeWelcome();
   const article = document.createElement("article");
   article.className = "message assistant workflow-message";
@@ -289,19 +331,46 @@ function ensureWorkflowPanel() {
   const list = document.createElement("div");
   list.className = "workflow-list";
 
-  details.append(summary, list);
+  const preview = document.createElement("div");
+  preview.className = "workflow-output-preview hidden";
+  const previewTitle = document.createElement("div");
+  previewTitle.className = "workflow-output-title";
+  previewTitle.textContent = "작성 중인 결과물";
+  const previewBody = document.createElement("pre");
+  previewBody.className = "workflow-output-body";
+  preview.append(previewTitle, previewBody);
+
+  details.append(summary, list, preview);
   article.append(details);
-  els.messages.append(article);
+  if (state.restoringHistory) {
+    const firstUserMessage = els.messages.querySelector(".message.user");
+    if (firstUserMessage?.parentElement === els.messages) {
+      firstUserMessage.after(article);
+    } else {
+      els.messages.prepend(article);
+    }
+  } else {
+    els.messages.append(article);
+  }
 
   state.workflowNode = details;
   state.workflowList = list;
   state.workflowSummary = count;
+  workflowPreviewNode = preview;
+  workflowPreviewBody = previewBody;
   state.workflowSteps = [];
   state.workflowStartedAt = performance.now();
   startWorkflowTimer();
   appendWorkflowStep("요청 이해", "사용자 요청을 확인했습니다.", "done");
-  appendWorkflowStep("작업 계획", "필요한 정보와 도구를 판단합니다.", "running");
-  scrollMessagesToBottom();
+  appendWorkflowStep(
+    "작업 계획",
+    workflowIntent === "file" ? "파일 생성 방법과 저장 위치를 정하는 중입니다." : "필요한 정보와 도구를 판단합니다.",
+    "running",
+  );
+  if (!state.restoringHistory) {
+    startWorkflowWaitingTimer();
+    scrollMessagesToBottom();
+  }
 }
 
 function startWorkflowTimer() {
@@ -315,6 +384,209 @@ function stopWorkflowTimer() {
   }
   window.clearInterval(state.workflowTimer);
   state.workflowTimer = 0;
+}
+
+function stopWorkflowWaitingTimer() {
+  if (!workflowWaitingTimer) {
+    return;
+  }
+  window.clearTimeout(workflowWaitingTimer);
+  workflowWaitingTimer = 0;
+}
+
+function flushWorkflowOutputPreview() {
+  if (!workflowPreviewBody || !workflowPreviewText) {
+    return;
+  }
+  window.clearTimeout(workflowPreviewTimer);
+  workflowPreviewTimer = 0;
+  workflowPreviewBody.textContent = workflowPreviewText;
+  workflowPreviewOffset = workflowPreviewText.length;
+}
+
+function revealWorkflowOutputPreview() {
+  workflowPreviewTimer = 0;
+  if (!workflowPreviewBody || !workflowPreviewText) {
+    return;
+  }
+  workflowPreviewOffset = Math.min(
+    workflowPreviewText.length,
+    workflowPreviewOffset + WORKFLOW_PREVIEW_CHARS_PER_TICK,
+  );
+  workflowPreviewBody.textContent = workflowPreviewText.slice(0, workflowPreviewOffset);
+  if (!state.restoringHistory && state.autoFollowMessages) {
+    workflowPreviewBody.scrollTop = workflowPreviewBody.scrollHeight;
+    scrollMessagesToBottom({ smooth: true, duration: 900 });
+  }
+  if (workflowPreviewOffset < workflowPreviewText.length) {
+    workflowPreviewTimer = window.setTimeout(revealWorkflowOutputPreview, WORKFLOW_PREVIEW_TICK_MS);
+  }
+}
+
+function startWorkflowOutputPreview(toolName, input = {}) {
+  const lower = String(toolName || "").toLowerCase();
+  const content = String(input?.content || input?.new_string || "");
+  if (!content || !(lower.includes("write") || lower.includes("edit"))) {
+    return;
+  }
+  ensureWorkflowPanel();
+  if (!workflowPreviewNode || !workflowPreviewBody) {
+    return;
+  }
+  const path = String(input?.file_path || input?.path || "").trim();
+  workflowPreviewNode.classList.remove("hidden");
+  const title = workflowPreviewNode.querySelector(".workflow-output-title");
+  if (title) {
+    title.textContent = path ? `작성 중인 결과물 - ${path}` : "작성 중인 결과물";
+  }
+  if (workflowPreviewText && content.startsWith(workflowPreviewText.replace(/\n\n\.\.\.$/, ""))) {
+    window.clearTimeout(workflowPreviewTimer);
+    workflowPreviewTimer = 0;
+    workflowPreviewText = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
+    workflowPreviewOffset = workflowPreviewText.length;
+    workflowPreviewBody.textContent = workflowPreviewText;
+    return;
+  }
+  window.clearTimeout(workflowPreviewTimer);
+  workflowPreviewTimer = 0;
+  workflowPreviewText = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
+  if (state.restoringHistory) {
+    workflowPreviewOffset = workflowPreviewText.length;
+    workflowPreviewBody.textContent = workflowPreviewText;
+    return;
+  }
+  workflowPreviewOffset = 0;
+  workflowPreviewBody.textContent = "";
+  revealWorkflowOutputPreview();
+}
+
+function decodeJsonStringFragment(value) {
+  let result = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char !== "\\") {
+      result += char;
+      continue;
+    }
+    const next = value[index + 1];
+    if (next === undefined) {
+      break;
+    }
+    index += 1;
+    if (next === "n") result += "\n";
+    else if (next === "r") result += "\r";
+    else if (next === "t") result += "\t";
+    else if (next === "b") result += "\b";
+    else if (next === "f") result += "\f";
+    else if (next === "u" && /^[0-9a-fA-F]{4}$/.test(value.slice(index + 1, index + 5))) {
+      result += String.fromCharCode(Number.parseInt(value.slice(index + 1, index + 5), 16));
+      index += 4;
+    } else {
+      result += next;
+    }
+  }
+  return result;
+}
+
+function extractPartialJsonStringValue(source, key) {
+  const marker = `"${key}"`;
+  const keyIndex = source.indexOf(marker);
+  if (keyIndex < 0) {
+    return "";
+  }
+  const colonIndex = source.indexOf(":", keyIndex + marker.length);
+  if (colonIndex < 0) {
+    return "";
+  }
+  let quoteIndex = colonIndex + 1;
+  while (quoteIndex < source.length && /\s/.test(source[quoteIndex])) {
+    quoteIndex += 1;
+  }
+  if (source[quoteIndex] !== "\"") {
+    return "";
+  }
+  let cursor = quoteIndex + 1;
+  let escaped = false;
+  let raw = "";
+  while (cursor < source.length) {
+    const char = source[cursor];
+    if (!escaped && char === "\"") {
+      break;
+    }
+    raw += char;
+    escaped = !escaped && char === "\\";
+    if (char !== "\\") {
+      escaped = false;
+    }
+    cursor += 1;
+  }
+  return decodeJsonStringFragment(raw);
+}
+
+function appendWorkflowInputDelta(event) {
+  const delta = String(event.arguments_delta || "");
+  if (!delta) {
+    return;
+  }
+  ensureWorkflowPanel();
+  const key = Number.isFinite(event.tool_call_index) ? event.tool_call_index : 0;
+  const current = workflowToolArgBuffers.get(key) || "";
+  const next = current + delta;
+  workflowToolArgBuffers.set(key, next);
+  const content = extractPartialJsonStringValue(next, "content") || extractPartialJsonStringValue(next, "new_string");
+  if (!content) {
+    return;
+  }
+  if (!workflowPreviewNode || !workflowPreviewBody) {
+    return;
+  }
+  workflowPreviewNode.classList.remove("hidden");
+  const title = workflowPreviewNode.querySelector(".workflow-output-title");
+  if (title) {
+    title.textContent = "작성 중인 결과물";
+  }
+  window.clearTimeout(workflowPreviewTimer);
+  workflowPreviewTimer = 0;
+  workflowPreviewText = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
+  workflowPreviewOffset = workflowPreviewText.length;
+  workflowPreviewBody.textContent = workflowPreviewText;
+  if (!state.restoringHistory && state.autoFollowMessages) {
+    workflowPreviewBody.scrollTop = workflowPreviewBody.scrollHeight;
+    scrollMessagesToBottom({ smooth: true, duration: 900 });
+  }
+}
+
+function startWorkflowWaitingTimer() {
+  stopWorkflowWaitingTimer();
+  workflowWaitingIndex = 0;
+  workflowWaitingTimer = window.setTimeout(appendWorkflowWaitingStep, WORKFLOW_WAITING_FIRST_MS);
+}
+
+function appendWorkflowWaitingStep() {
+  workflowWaitingTimer = 0;
+  if (!state.workflowNode || !state.workflowList || state.restoringHistory) {
+    return;
+  }
+  const fileSteps = [
+    ["초안 구성 중", "문서에 들어갈 내용과 구조를 정리하고 있습니다."],
+    ["파일 작성 준비 중", "Markdown 파일로 저장할 내용을 준비하고 있습니다."],
+    ["저장 대기 중", "파일 쓰기 도구가 실행되면 경로와 결과를 표시합니다."],
+  ];
+  const defaultSteps = [
+    ["응답 준비 중", "필요한 맥락을 정리하고 있습니다."],
+    ["실행 대기 중", "다음 도구 실행이나 답변 생성을 기다리고 있습니다."],
+    ["처리 계속 중", "작업이 아직 진행 중입니다."],
+  ];
+  const steps = workflowIntent === "file" ? fileSteps : defaultSteps;
+  const [title, detail] = steps[Math.min(workflowWaitingIndex, steps.length - 1)];
+  const hasSameRunning = state.workflowSteps.some((row) =>
+    row.classList.contains("running") && row.querySelector("strong")?.textContent === title
+  );
+  if (!hasSameRunning) {
+    appendWorkflowStep(title, detail, "running");
+  }
+  workflowWaitingIndex += 1;
+  workflowWaitingTimer = window.setTimeout(appendWorkflowWaitingStep, WORKFLOW_WAITING_NEXT_MS);
 }
 
 function appendWorkflowStep(titleText, detailText, status = "done", toolName = "") {
@@ -374,9 +646,13 @@ function processNextWorkflowEvent() {
 
 function appendWorkflowEventNow(event) {
   ensureWorkflowPanel();
+  stopWorkflowWaitingTimer();
   markPlanningStepDone();
   const isStart = event.type === "tool_started";
   const toolName = event.tool_name || "도구";
+  if (isStart) {
+    startWorkflowOutputPreview(toolName, event.tool_input || {});
+  }
   if (!isStart) {
     [...state.workflowList.querySelectorAll(".workflow-step.running")]
       .filter((item) => item.dataset.toolName === toolName)
@@ -446,7 +722,8 @@ function updateWorkflowSummary() {
     return;
   }
   const total = state.workflowSteps.length;
-  const elapsed = state.workflowStartedAt ? `(${formatDuration(performance.now() - state.workflowStartedAt)})` : "";
+  const elapsedMs = state.workflowRestoredElapsedMs || (state.workflowStartedAt ? performance.now() - state.workflowStartedAt : 0);
+  const elapsed = elapsedMs ? `(${formatDuration(elapsedMs)})` : "";
   state.workflowSummary.textContent = elapsed ? `${elapsed} ${total} 단계` : `${total} 단계`;
 }
 
@@ -516,6 +793,7 @@ function updateTasks(tasks) {
     stopWorkflowTimer,
     ensureWorkflowPanel,
     appendWorkflowEvent,
+    appendWorkflowInputDelta,
     markPlanningStepDone,
     truncateText,
     appendToolEvent,

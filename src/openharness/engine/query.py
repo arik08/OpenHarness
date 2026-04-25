@@ -15,6 +15,7 @@ from openharness.api.client import (
     ApiMessageRequest,
     ApiRetryEvent,
     ApiTextDeltaEvent,
+    ApiToolCallDeltaEvent,
     SupportsStreamingMessages,
 )
 from openharness.api.usage import UsageSnapshot
@@ -28,6 +29,7 @@ from openharness.engine.stream_events import (
     StreamEvent,
     ToolExecutionCompleted,
     ToolExecutionStarted,
+    ToolInputDelta,
 )
 from openharness.hooks import HookEvent, HookExecutor
 from openharness.learning import run_auto_skill_learning
@@ -548,6 +550,13 @@ async def run_query(
             ):
                 if isinstance(event, ApiTextDeltaEvent):
                     yield AssistantTextDelta(text=event.text), None
+                    continue
+                if isinstance(event, ApiToolCallDeltaEvent):
+                    yield ToolInputDelta(
+                        index=event.index,
+                        name=event.name,
+                        arguments_delta=event.arguments_delta,
+                    ), None
                     continue
                 if isinstance(event, ApiRetryEvent):
                     yield StatusEvent(

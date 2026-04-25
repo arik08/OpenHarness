@@ -33,6 +33,7 @@ class FrontendRequest(BaseModel):
         "set_system_prompt",
         "select_command",
         "apply_select_command",
+        "cancel_current",
         "shutdown",
     ]
     line: str | None = None
@@ -104,6 +105,7 @@ class BackendEvent(BaseModel):
         "transcript_item",
         "compact_progress",
         "assistant_delta",
+        "tool_input_delta",
         "assistant_complete",
         "line_complete",
         "tool_started",
@@ -115,11 +117,14 @@ class BackendEvent(BaseModel):
         "plan_mode_change",
         "swarm_status",
         "session_title",
+        "active_session",
+        "history_snapshot",
         "error",
         "shutdown",
     ]
     select_options: list[dict[str, Any]] | None = None
     message: str | None = None
+    value: str | None = None
     item: TranscriptItem | None = None
     state: dict[str, Any] | None = None
     tasks: list[TaskSnapshot] | None = None
@@ -128,8 +133,11 @@ class BackendEvent(BaseModel):
     bridge_sessions: list[dict[str, Any]] | None = None
     commands: list[str | dict[str, Any]] | None = None
     skills: list[SkillSnapshot] | None = None
+    history_events: list[dict[str, Any]] | None = None
     modal: dict[str, Any] | None = None
     tool_name: str | None = None
+    tool_call_index: int | None = None
+    arguments_delta: str | None = None
     tool_input: dict[str, Any] | None = None
     output: str | None = None
     is_error: bool | None = None

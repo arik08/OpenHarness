@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,7 +26,7 @@ from openharness.engine.messages import (
     sanitize_conversation_messages,
 )
 from openharness.engine.query import MaxTurnsExceeded
-from openharness.engine.stream_events import StreamEvent
+from openharness.engine.stream_events import StreamEvent, ToolExecutionCompleted, ToolExecutionStarted
 from openharness.hooks import HookEvent, HookExecutionContext, HookExecutor, load_hook_registry
 from openharness.hooks.hot_reload import HookReloader
 from openharness.mcp.client import McpClientManager
@@ -35,7 +36,7 @@ from openharness.plugins import load_plugins
 from openharness.prompts import build_runtime_system_prompt
 from openharness.state import AppState, AppStateStore
 from openharness.services.session_backend import DEFAULT_SESSION_BACKEND, SessionBackend
-from openharness.tools import ToolRegistry, create_default_tool_registry
+from openharness.tools import ToolExecutionContext, ToolRegistry, create_default_tool_registry
 from openharness.keybindings import load_keybindings
 
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
@@ -517,6 +518,11 @@ async def handle_line(
         getattr(block, "type", "") == "image" for block in line.content
     )
 
+    if not has_attachments and line_text.startswith("!"):
+        await _run_shell_shortcut(bundle, line_text[1:].strip(), print_system, render_event)
+        sync_app_state(bundle)
+        return True
+
     parsed = None if has_attachments else bundle.commands.lookup(line_text)
     if parsed is not None:
         command, args = parsed
@@ -647,6 +653,55 @@ async def handle_line(
     )
     sync_app_state(bundle)
     return True
+
+
+async def _run_shell_shortcut(
+    bundle: RuntimeBundle,
+    command: str,
+    print_system: SystemPrinter,
+    render_event: StreamRenderer,
+) -> None:
+    if not command:
+        await print_system("Usage: !<command>")
+        return
+    tool = bundle.tool_registry.get("bash")
+    if tool is None:
+        await print_system("bash tool is not available.")
+        return
+
+    tool_input = {"command": command}
+    await render_event(ToolExecutionStarted(tool_name="bash", tool_input=tool_input))
+    try:
+        result = await tool.execute(
+            tool.input_model(**tool_input),
+            ToolExecutionContext(cwd=Path(bundle.cwd), hook_executor=bundle.hook_executor),
+        )
+    except asyncio.CancelledError:
+        await render_event(
+            ToolExecutionCompleted(
+                tool_name="bash",
+                output="Command cancelled.",
+                is_error=True,
+            )
+        )
+        raise
+    except Exception as exc:
+        await render_event(
+            ToolExecutionCompleted(
+                tool_name="bash",
+                output=str(exc),
+                is_error=True,
+            )
+        )
+        return
+
+    await render_event(
+        ToolExecutionCompleted(
+            tool_name="bash",
+            output=result.output,
+            is_error=result.is_error,
+        )
+    )
 
 
 async def _render_command_result(

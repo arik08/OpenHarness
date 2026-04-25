@@ -50,6 +50,7 @@ const {
   addPastedText,
   autoSizeInput,
   buildComposerLine,
+  cancelCurrent,
   clearChat,
   clearComposerToken,
   closeModal,
@@ -202,6 +203,9 @@ function handlePlanModeShortcut(event) {
 
 els.composer.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (state.busy) {
+    return;
+  }
   try {
     await sendLine(buildComposerLine());
   } catch (error) {
@@ -221,6 +225,17 @@ els.input.addEventListener("input", () => {
   updateSlashMenu();
 });
 
+els.send?.addEventListener("click", (event) => {
+  if (!state.busy) {
+    return;
+  }
+  event.preventDefault();
+  cancelCurrent().catch((error) => {
+    appendMessage("system", `중단 실패: ${error.message}`);
+    setBusy(false, STATUS_LABELS.error);
+  });
+});
+
 els.input.addEventListener("keydown", (event) => {
   if (handlePlanModeShortcut(event)) {
     event.stopPropagation();
@@ -232,6 +247,20 @@ els.input.addEventListener("keydown", (event) => {
     return;
   }
   if (state.slashMenuOpen && ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
+    if (state.slashMenuMode === "cli") {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSlashMenu();
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        closeSlashMenu();
+        els.composer.requestSubmit();
+        return;
+      }
+      return;
+    }
     const commands = filteredSlashCommands();
     if (event.key === "Escape") {
       event.preventDefault();

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -28,8 +29,9 @@ from openharness.engine.stream_events import (
     StreamEvent,
     ToolExecutionCompleted,
     ToolExecutionStarted,
+    ToolInputDelta,
 )
-from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock
+from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock, ToolResultBlock, sanitize_conversation_messages
 from openharness.output_styles import load_output_styles
 from openharness.prompts import build_runtime_system_prompt
 from openharness.skills import load_skill_registry
@@ -82,6 +84,7 @@ class ReactBackendHost:
         self._question_requests: dict[str, asyncio.Future[str]] = {}
         self._permission_lock = asyncio.Lock()
         self._busy = False
+        self._active_request_task: asyncio.Task[bool] | None = None
         self._running = True
         # Track last tool input per name for rich event emission
         self._last_tool_inputs: dict[str, dict] = {}
@@ -131,6 +134,9 @@ class ReactBackendHost:
                     break
                 if request.type in ("permission_response", "question_response"):
                     continue
+                if request.type == "cancel_current":
+                    await self._cancel_current_request()
+                    continue
                 if request.type == "list_sessions":
                     await self._handle_list_sessions()
                     continue
@@ -153,11 +159,25 @@ class ReactBackendHost:
                         continue
                     self._busy = True
                     try:
-                        should_continue = await self._apply_select_command(
-                            request.command or "",
-                            request.value or "",
+                        self._active_request_task = asyncio.create_task(
+                            self._apply_select_command(
+                                request.command or "",
+                                request.value or "",
+                            )
                         )
+                        should_continue = await self._active_request_task
+                    except asyncio.CancelledError:
+                        should_continue = True
+                        await self._emit(
+                            BackendEvent(
+                                type="transcript_item",
+                                item=TranscriptItem(role="system", text="작업을 중단했습니다."),
+                            )
+                        )
+                        await self._emit(self._status_snapshot())
+                        await self._emit(BackendEvent(type="line_complete"))
                     finally:
+                        self._active_request_task = None
                         self._busy = False
                     if not should_continue:
                         await self._emit(BackendEvent(type="shutdown"))
@@ -174,8 +194,19 @@ class ReactBackendHost:
                     continue
                 self._busy = True
                 try:
-                    should_continue = await self._process_line(line, attachments=request.attachments)
+                    self._active_request_task = asyncio.create_task(
+                        self._process_line(line, attachments=request.attachments)
+                    )
+                    should_continue = await self._active_request_task
+                except asyncio.CancelledError:
+                    should_continue = True
+                    await self._emit(
+                        BackendEvent(type="transcript_item", item=TranscriptItem(role="system", text="작업을 중단했습니다."))
+                    )
+                    await self._emit(self._status_snapshot())
+                    await self._emit(BackendEvent(type="line_complete"))
                 finally:
+                    self._active_request_task = None
                     self._busy = False
                 if not should_continue:
                     await self._emit(BackendEvent(type="shutdown"))
@@ -187,6 +218,12 @@ class ReactBackendHost:
             if self._bundle is not None:
                 await close_runtime(self._bundle)
         return 0
+
+    async def _cancel_current_request(self) -> None:
+        task = self._active_request_task
+        if task is None or task.done():
+            return
+        task.cancel()
 
     async def _read_requests(self) -> None:
         while True:
@@ -211,6 +248,9 @@ class ReactBackendHost:
                 future = self._question_requests[request.request_id]
                 if not future.done():
                     future.set_result(request.answer or "")
+                continue
+            if request.type == "cancel_current":
+                await self._cancel_current_request()
                 continue
             await self._request_queue.put(request)
 
@@ -252,6 +292,16 @@ class ReactBackendHost:
         async def _render_event(event: StreamEvent) -> None:
             if isinstance(event, AssistantTextDelta):
                 await self._emit(BackendEvent(type="assistant_delta", message=event.text))
+                return
+            if isinstance(event, ToolInputDelta):
+                await self._emit(
+                    BackendEvent(
+                        type="tool_input_delta",
+                        tool_call_index=event.index,
+                        tool_name=event.name,
+                        arguments_delta=event.arguments_delta,
+                    )
+                )
                 return
             if isinstance(event, CompactProgressEvent):
                 await self._emit(
@@ -346,6 +396,8 @@ class ReactBackendHost:
         async def _clear_output() -> None:
             await self._emit(BackendEvent(type="clear_transcript"))
 
+        first_token = (line.strip().split(maxsplit=1) or [""])[0].lower()
+        started_at = time.monotonic()
         should_continue = await handle_line(
             self._bundle,
             effective_prompt,
@@ -353,11 +405,16 @@ class ReactBackendHost:
             render_event=_render_event,
             clear_output=_clear_output,
         )
+        self._bundle.engine.tool_metadata["workflow_duration_seconds"] = max(1, round(time.monotonic() - started_at))
+        if first_token != "/clear":
+            self._save_current_session_snapshot()
         await self._emit(self._status_snapshot())
         await self._emit(BackendEvent.tasks_snapshot(get_task_manager().list_tasks()))
-        first_token = (line.strip().split(maxsplit=1) or [""])[0].lower()
         if first_token == "/clear":
-            self._start_new_saved_session()
+            session_id = self._start_new_saved_session()
+            self._save_empty_session_snapshot("새 채팅")
+            await self._emit(BackendEvent(type="active_session", value=session_id))
+            await self._handle_list_sessions()
         elif first_token == "/resume":
             parts = line.strip().split(maxsplit=1)
             if len(parts) > 1 and parts[1].strip():
@@ -454,8 +511,36 @@ class ReactBackendHost:
         self._bundle.session_id = clean_id
         self._bundle.engine.tool_metadata["session_id"] = clean_id
 
-    def _start_new_saved_session(self) -> None:
-        self._set_saved_session_id(uuid4().hex[:12])
+    def _start_new_saved_session(self) -> str:
+        session_id = uuid4().hex[:12]
+        self._set_saved_session_id(session_id)
+        return session_id
+
+    def _save_empty_session_snapshot(self, title: str) -> None:
+        assert self._bundle is not None
+        metadata = dict(self._bundle.engine.tool_metadata)
+        metadata["session_title"] = title
+        self._bundle.session_backend.save_snapshot(
+            cwd=self._bundle.cwd,
+            model=self._bundle.engine.model,
+            system_prompt=self._bundle.engine.system_prompt,
+            messages=self._bundle.engine.messages,
+            usage=self._bundle.engine.total_usage,
+            session_id=self._bundle.session_id,
+            tool_metadata=metadata,
+        )
+
+    def _save_current_session_snapshot(self) -> None:
+        assert self._bundle is not None
+        self._bundle.session_backend.save_snapshot(
+            cwd=self._bundle.cwd,
+            model=self._bundle.engine.model,
+            system_prompt=self._bundle.engine.system_prompt,
+            messages=self._bundle.engine.messages,
+            usage=self._bundle.engine.total_usage,
+            session_id=self._bundle.session_id,
+            tool_metadata=self._bundle.engine.tool_metadata,
+        )
 
     def _skill_snapshots(self) -> list[SkillSnapshot]:
         assert self._bundle is not None
@@ -536,6 +621,9 @@ class ReactBackendHost:
     async def _apply_select_command(self, command_name: str, value: str) -> bool:
         command = command_name.strip().lstrip("/").lower()
         selected = value.strip()
+        if command == "resume":
+            await self._restore_history_snapshot(selected)
+            return True
         line = self._build_select_command_line(command, selected)
         if line is None:
             await self._emit(BackendEvent(type="error", message=f"Unknown select command: {command_name}"))
@@ -569,6 +657,80 @@ class ReactBackendHost:
         if command == "model":
             return f"/model {value}"
         return None
+
+    async def _restore_history_snapshot(self, session_id: str) -> None:
+        assert self._bundle is not None
+        selected = session_id.strip()
+        if not selected:
+            await self._emit(BackendEvent(type="error", message="Missing session id"))
+            await self._emit(BackendEvent(type="line_complete"))
+            return
+        snapshot = self._bundle.session_backend.load_by_id(self._bundle.cwd, selected)
+        if snapshot is None:
+            await self._emit(BackendEvent(type="error", message=f"Session not found: {selected}"))
+            await self._emit(BackendEvent(type="line_complete"))
+            return
+        messages = sanitize_conversation_messages(
+            [ConversationMessage.model_validate(item) for item in snapshot.get("messages", [])]
+        )
+        self._bundle.engine.load_messages(messages)
+        self._set_saved_session_id(selected)
+        await self._emit(BackendEvent(type="clear_transcript"))
+        await self._emit(
+            BackendEvent(
+                type="history_snapshot",
+                value=selected,
+                message=str(snapshot.get("summary") or "").strip(),
+                compact_metadata={
+                    "workflow_duration_seconds": (
+                        snapshot.get("tool_metadata", {}) if isinstance(snapshot.get("tool_metadata"), dict) else {}
+                    ).get("workflow_duration_seconds")
+                },
+                history_events=self._history_events_from_messages(messages),
+            )
+        )
+        await self._emit(self._status_snapshot())
+        await self._emit(BackendEvent.tasks_snapshot(get_task_manager().list_tasks()))
+        await self._emit(BackendEvent(type="line_complete"))
+
+    def _history_events_from_messages(self, messages: list[ConversationMessage]) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        pending_tools: dict[str, tuple[str, dict[str, object]]] = {}
+        for message in messages:
+            if message.role == "user":
+                user_text = message.text.strip()
+                has_image = any(isinstance(block, ImageBlock) for block in message.content)
+                if has_image and "[image]" not in user_text:
+                    user_text = f"{user_text} [image]".strip()
+                if user_text:
+                    events.append({"type": "user", "text": user_text})
+                for block in message.content:
+                    if not isinstance(block, ToolResultBlock):
+                        continue
+                    tool_name, tool_input = pending_tools.pop(block.tool_use_id, ("tool", {}))
+                    events.append(
+                        {
+                            "type": "tool_completed",
+                            "tool_name": tool_name,
+                            "tool_input": tool_input,
+                            "output": block.content,
+                            "is_error": block.is_error,
+                        }
+                    )
+            elif message.role == "assistant":
+                for tool_use in message.tool_uses:
+                    tool_input = dict(tool_use.input)
+                    pending_tools[tool_use.id] = (tool_use.name, tool_input)
+                    events.append(
+                        {
+                            "type": "tool_started",
+                            "tool_name": tool_use.name,
+                            "tool_input": tool_input,
+                        }
+                    )
+                if message.text.strip():
+                    events.append({"type": "assistant", "text": message.text.strip()})
+        return events
 
     def _status_snapshot(self) -> BackendEvent:
         assert self._bundle is not None

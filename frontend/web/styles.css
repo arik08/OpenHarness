@@ -846,14 +846,13 @@ a:focus-visible {
   gap: 1px;
   min-height: 0;
   overflow: auto;
-  padding: 3px 3px 8px 4px;
-  scrollbar-gutter: stable;
+  padding: 3px 4px 8px;
 }
 
 .history-item {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 22px;
+  grid-template-columns: minmax(0, 1fr) 24px 26px;
   align-items: center;
   gap: 0;
   width: 100%;
@@ -896,11 +895,27 @@ a:focus-visible {
   display: none;
 }
 
+.history-busy-spinner {
+  justify-self: center;
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(92, 84, 74, 0.2);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.history-item.busy .history-busy-spinner {
+  animation: historyBusySpin 0.9s linear infinite;
+  opacity: 0.95;
+}
+
 .history-delete {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 24px;
+  width: 24px;
+  height: 28px;
   border-radius: 0;
   color: rgba(92, 84, 74, 0.36);
   opacity: 0;
@@ -919,13 +934,13 @@ a:focus-visible {
 }
 
 .history-delete svg {
-  width: 13px;
-  height: 13px;
+  width: 20px;
+  height: 20px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.8;
+  stroke-width: 1.9;
 }
 
 .history-item.deleting {
@@ -1082,6 +1097,27 @@ a:focus-visible {
 
 .artifact-panel.hidden {
   display: none;
+}
+
+.artifact-panel.fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  width: auto;
+  max-width: none;
+  border-left: 0;
+}
+
+.artifact-panel.fullscreen .artifact-resize-handle {
+  display: none;
+}
+
+.artifact-panel.fullscreen .artifact-viewer {
+  padding: 18px;
+}
+
+.artifact-panel.fullscreen .artifact-frame {
+  min-height: calc(100dvh - 95px);
 }
 
 .artifact-panel-header {
@@ -1271,16 +1307,20 @@ a:focus-visible {
 .header-left {
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
   gap: 8px;
 }
 
 .header-actions {
   display: inline-flex;
+  position: relative;
   align-items: center;
   flex: 0 0 auto;
   gap: 8px;
   margin-left: auto;
+  z-index: 3;
 }
 
 .header-icon-button {
@@ -1345,7 +1385,8 @@ a:focus-visible {
 .chat-title {
   display: inline-flex;
   align-items: center;
-  max-width: min(520px, 58vw);
+  min-width: 0;
+  max-width: 100%;
   min-height: 38px;
   padding: 0 9px;
   background: transparent;
@@ -1365,6 +1406,7 @@ a:focus-visible {
 }
 
 .chat-title span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1529,7 +1571,7 @@ a:focus-visible {
   max-width: min(560px, 78%);
   padding: 9px 14px;
   background: var(--user);
-  border-radius: 999px;
+  border-radius: 22px;
   line-height: 1.55;
   white-space: pre-wrap;
 }
@@ -1664,7 +1706,7 @@ a:focus-visible {
 .prompt-token.command {
   background: var(--command-token-bg);
   color: var(--command-token-ink);
-  font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+  font-family: inherit;
 }
 
 .prompt-token.command::before {
@@ -1694,6 +1736,16 @@ a:focus-visible {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.55;
+}
+
+.message.log .bubble:has(.markdown-body > pre:only-child) {
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.message.log .bubble:has(.markdown-body > pre:only-child) .code-copy {
+  display: none;
 }
 
 .message.command-output .bubble {
@@ -1739,7 +1791,7 @@ a:focus-visible {
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--accent);
-  font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+  font-family: inherit;
   font-size: 11px;
   font-weight: 780;
 }
@@ -1900,6 +1952,40 @@ a:focus-visible {
   white-space: nowrap;
 }
 
+.workflow-output-preview {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 2px 18px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--panel-raised) 84%, var(--accent-soft) 16%);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.workflow-output-preview.hidden {
+  display: none;
+}
+
+.workflow-output-title {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-output-body {
+  max-height: min(38vh, 360px);
+  margin: 0;
+  overflow: auto;
+  color: var(--ink);
+  font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.48;
+  white-space: pre-wrap;
+}
+
 .command-card {
   width: 100%;
 }
@@ -2028,12 +2114,13 @@ a:focus-visible {
 }
 
 .markdown-body code {
-  padding: 2px 5px;
+  padding: 1px 5px;
   background: var(--sidebar-hover);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 5px;
   font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
-  font-size: 0.9em;
+  font-size: 0.86em;
+  font-weight: 760;
 }
 
 .markdown-body pre {
@@ -2055,6 +2142,8 @@ a:focus-visible {
   background: transparent;
   border: 0;
   color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -2471,6 +2560,22 @@ a:focus-visible {
   display: none;
 }
 
+.slash-menu.cli-hint {
+  width: min(520px, calc(100% - 40px));
+  overflow: hidden;
+}
+
+.slash-menu.cli-hint .slash-menu-item {
+  grid-template-columns: 38px 42px minmax(0, 1fr);
+  cursor: default;
+}
+
+.slash-menu.cli-hint .slash-menu-item:hover,
+.slash-menu.cli-hint .slash-menu-item.active {
+  background: var(--sidebar-hover);
+  border-color: var(--line);
+}
+
 .composer-box > #sendButton {
   display: grid;
   place-items: center;
@@ -2488,6 +2593,16 @@ a:focus-visible {
 
 .composer-box > #sendButton {
   grid-column: 4;
+}
+
+.composer-box > #sendButton.is-stop {
+  background: var(--danger);
+  color: #fff;
+}
+
+.composer-box > #sendButton.is-stop svg {
+  fill: currentColor;
+  stroke: none;
 }
 
 .composer-box > #sendButton svg {
@@ -3088,6 +3203,12 @@ a:focus-visible {
   }
   50% {
     transform: scale(1.55);
+  }
+}
+
+@keyframes historyBusySpin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

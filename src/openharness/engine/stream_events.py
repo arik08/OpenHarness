@@ -17,6 +17,15 @@ class AssistantTextDelta:
 
 
 @dataclass(frozen=True)
+class ToolInputDelta:
+    """Incremental tool input generated before tool execution starts."""
+
+    index: int
+    name: str | None = None
+    arguments_delta: str = ""
+
+
+@dataclass(frozen=True)
 class AssistantTurnComplete:
     """Completed assistant turn."""
 
@@ -80,6 +89,7 @@ class CompactProgressEvent:
 
 StreamEvent = (
     AssistantTextDelta
+    | ToolInputDelta
     | AssistantTurnComplete
     | ToolExecutionStarted
     | ToolExecutionCompleted

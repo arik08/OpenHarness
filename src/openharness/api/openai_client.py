@@ -17,6 +17,7 @@ from openharness.api.client import (
     ApiRetryEvent,
     ApiStreamEvent,
     ApiTextDeltaEvent,
+    ApiToolCallDeltaEvent,
 )
 from openharness.api.errors import (
     AuthenticationFailure,
@@ -350,6 +351,11 @@ class OpenAICompatibleClient:
                             entry["name"] = tc_delta.function.name
                         if tc_delta.function.arguments:
                             entry["arguments"] += tc_delta.function.arguments
+                            yield ApiToolCallDeltaEvent(
+                                index=idx,
+                                name=entry["name"] or None,
+                                arguments_delta=tc_delta.function.arguments,
+                            )
 
             # Usage in chunk (if provider sends it)
             if chunk.usage:

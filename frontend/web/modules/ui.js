@@ -94,6 +94,7 @@ function finishScrollRestore() {
   }
   state.pendingScrollRestoreId = null;
   state.restoringHistory = false;
+  state.batchingHistoryRestore = false;
   requestAnimationFrame(() => {
     state.ignoreScrollSave = false;
   });
@@ -228,15 +229,26 @@ function removeWelcome() {
 }
 
 function updateSendState() {
-  const hasText = buildComposerLine().trim().length > 0;
+  const composerText = buildComposerLine().trim();
+  const hasText = composerText.length > 0;
+  const shellCommand = /^!(?!\s*$)/.test(composerText);
   els.input.disabled = Boolean(state.switchingWorkspace);
-  els.send.disabled = state.switchingWorkspace || !state.ready || state.busy || (!hasText && state.attachments.length === 0);
+  els.send.disabled =
+    state.switchingWorkspace
+    || (!shellCommand && !state.ready)
+    || (!state.busy && !hasText && state.attachments.length === 0);
+  els.send.classList.toggle("is-stop", state.busy);
+  els.send.setAttribute("aria-label", state.busy ? "작업 중단" : "메시지 보내기");
+  els.send.innerHTML = state.busy
+    ? '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"></rect></svg>'
+    : '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"></path><path d="M22 2 11 13"></path></svg>';
 }
 
 function setBusy(value, label = value ? STATUS_LABELS.thinking : STATUS_LABELS.ready) {
   state.busy = value;
   setStatus(label, value ? "busy" : state.ready ? "ready" : "");
   updateSendState();
+  markActiveHistory();
 }
 
 function autoSizeInput() {

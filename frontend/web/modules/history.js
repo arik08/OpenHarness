@@ -20,7 +20,8 @@ function renderHistory(options) {
 
   for (const option of options) {
     const item = document.createElement("div");
-    item.className = `history-item${state.activeHistoryId === option.value ? " active" : ""}`;
+    const isActive = state.activeHistoryId === option.value;
+    item.className = `history-item${isActive ? " active" : ""}${isActive && state.busy ? " busy" : ""}`;
     item.dataset.sessionId = option.value || "";
 
     const formattedTitle = formatHistoryTitle(option.label || option.value || "저장된 세션");
@@ -42,12 +43,17 @@ function renderHistory(options) {
       state.activeHistoryId = option.value || null;
       state.pendingScrollRestoreId = state.activeHistoryId;
       state.restoringHistory = true;
+      state.batchingHistoryRestore = true;
       state.ignoreScrollSave = true;
       setChatTitle(formattedTitle);
       markActiveHistory();
       setBusy(true, STATUS_LABELS.restoring);
       await sendBackendRequest({ type: "apply_select_command", command: "resume", value: option.value });
     });
+
+    const busySpinner = document.createElement("span");
+    busySpinner.className = "history-busy-spinner";
+    busySpinner.setAttribute("aria-hidden", "true");
 
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
@@ -56,11 +62,11 @@ function renderHistory(options) {
     deleteButton.title = "기록 삭제";
     deleteButton.innerHTML = `
       <svg aria-hidden="true" viewBox="0 0 24 24">
-        <path d="M3 6h18"></path>
-        <path d="M8 6V4h8v2"></path>
-        <path d="M19 6l-1 14H6L5 6"></path>
-        <path d="M10 11v5"></path>
-        <path d="M14 11v5"></path>
+        <path d="M10 11v6"></path>
+        <path d="M14 11v6"></path>
+        <path d="M4 7h16"></path>
+        <path d="M6 7l1 14h10l1-14"></path>
+        <path d="M9 7V4h6v3"></path>
       </svg>
     `;
     deleteButton.addEventListener("click", (event) => {
@@ -72,7 +78,7 @@ function renderHistory(options) {
       });
     });
 
-    item.append(openButton, deleteButton);
+    item.append(openButton, busySpinner, deleteButton);
     els.historyList.append(item);
   }
 }
@@ -87,7 +93,9 @@ function formatHistoryTitle(label) {
 
 function markActiveHistory() {
   els.historyList.querySelectorAll(".history-item").forEach((item) => {
-    item.classList.toggle("active", item.dataset.sessionId === state.activeHistoryId);
+    const isActive = item.dataset.sessionId === state.activeHistoryId;
+    item.classList.toggle("active", isActive);
+    item.classList.toggle("busy", isActive && state.busy);
   });
 }
 

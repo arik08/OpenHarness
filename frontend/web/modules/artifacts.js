@@ -135,7 +135,9 @@ function renderArtifactCards(container, artifacts) {
       </span>
     `;
     button.querySelector("strong").textContent = artifact.name;
-    button.querySelector("small").textContent = `${labelForArtifact(artifact)} · ${artifact.path}`;
+    button.querySelector("small").textContent = typeof artifact.size === "number"
+      ? `${labelForArtifact(artifact)} · ${formatBytes(artifact.size)}`
+      : labelForArtifact(artifact);
     button.addEventListener("click", () => openArtifact(artifact));
     wrap.append(button);
   }
@@ -180,9 +182,46 @@ function setArtifactPanel(open) {
   state.artifactPanelOpen = open;
   if (open) {
     applyStoredArtifactPanelWidth();
+  } else {
+    setArtifactFullscreen(false);
   }
   els.appShell?.classList.toggle("artifact-open", open);
   els.artifactPanel?.classList.toggle("hidden", !open);
+}
+
+function setArtifactFullscreen(enabled) {
+  els.artifactPanel?.classList.toggle("fullscreen", enabled);
+  if (!els.artifactPanelFullscreen) {
+    return;
+  }
+  els.artifactPanelFullscreen.setAttribute("aria-pressed", enabled ? "true" : "false");
+  els.artifactPanelFullscreen.setAttribute(
+    "aria-label",
+    enabled ? "전체화면 해제" : "전체화면으로 보기",
+  );
+  els.artifactPanelFullscreen.dataset.tooltip = enabled ? "전체화면 해제" : "전체화면";
+  els.artifactPanelFullscreen.innerHTML = enabled
+    ? `
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M8 3v3a2 2 0 0 1-2 2H3"></path>
+        <path d="M16 3v3a2 2 0 0 0 2 2h3"></path>
+        <path d="M8 21v-3a2 2 0 0 0-2-2H3"></path>
+        <path d="M16 21v-3a2 2 0 0 1 2-2h3"></path>
+      </svg>
+    `
+    : `
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3"></path>
+        <path d="M16 3h3a2 2 0 0 1 2 2v3"></path>
+        <path d="M8 21H5a2 2 0 0 1-2-2v-3"></path>
+        <path d="M16 21h3a2 2 0 0 0 2-2v-3"></path>
+      </svg>
+    `;
+}
+
+function toggleArtifactFullscreen() {
+  const enabled = !els.artifactPanel?.classList.contains("fullscreen");
+  setArtifactFullscreen(enabled);
 }
 
 function clampArtifactPanelWidth(value) {
@@ -389,6 +428,7 @@ function closeArtifactPanel() {
   state.activeArtifact = null;
   state.activeArtifactRaw = "";
   updateArtifactCopyButton(false);
+  setArtifactFullscreen(false);
   setArtifactPanel(false);
 }
 
@@ -397,6 +437,7 @@ function resetArtifacts() {
   state.activeArtifact = null;
   state.activeArtifactRaw = "";
   updateArtifactCopyButton(false);
+  setArtifactFullscreen(false);
   setArtifactPanel(false);
   if (els.artifactPanelTitle) {
     els.artifactPanelTitle.textContent = "산출물";
@@ -472,6 +513,7 @@ async function copyActiveArtifactRaw() {
 
 function initializeArtifactPanel() {
   els.artifactPanelCopy?.addEventListener("click", copyActiveArtifactRaw);
+  els.artifactPanelFullscreen?.addEventListener("click", toggleArtifactFullscreen);
   els.artifactPanelClose?.addEventListener("click", closeArtifactPanel);
   els.projectFilesButton?.addEventListener("click", openProjectFiles);
   applyStoredArtifactPanelWidth();

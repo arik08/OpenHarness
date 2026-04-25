@@ -49,6 +49,56 @@ def test_full_auto_allows_mutating_tools():
     assert decision.allowed is True
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "format C:",
+        "diskpart /s wipe.txt",
+        "Clear-Disk -Number 1 -RemoveData",
+        "Remove-Partition -DriveLetter D",
+        "Remove-Volume -DriveLetter D",
+        "Remove-Item -Recurse -Force C:\\",
+        "Remove-Item C:\\Users\\me -Recurse -Force",
+        "rm -rf /",
+        "rm -fr ~",
+        "rmdir /s /q C:\\",
+        "del /s /q C:\\Users\\me",
+        "mkfs.ext4 /dev/sdb1",
+        "dd if=/dev/zero of=/dev/sda",
+    ],
+)
+def test_builtin_safety_blocks_destructive_commands_even_in_full_auto(command):
+    checker = PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO))
+    decision = checker.evaluate("bash", is_read_only=False, command=command)
+    assert decision.allowed is False
+    assert "built-in safety policy" in decision.reason
+
+
+def test_allowed_tools_does_not_bypass_destructive_command_policy():
+    checker = PermissionChecker(
+        PermissionSettings(mode=PermissionMode.FULL_AUTO, allowed_tools=["bash"])
+    )
+    decision = checker.evaluate("bash", is_read_only=False, command="Remove-Item -Recurse C:\\")
+    assert decision.allowed is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Remove-Item -Recurse -Force .\\dist",
+        "Remove-Item .\\build -Recurse -Force",
+        "rm -rf build",
+        "rm -fr ./dist",
+        "rmdir /s /q .\\dist",
+        "del /q temp.txt",
+    ],
+)
+def test_builtin_safety_allows_project_scoped_cleanup_commands(command):
+    checker = PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO))
+    decision = checker.evaluate("bash", is_read_only=False, command=command)
+    assert decision.allowed is True
+
+
 # --- path_rules parsing tests ---
 
 

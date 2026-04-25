@@ -15,6 +15,7 @@ from openharness.api.client import (
     ApiRetryEvent,
     ApiStreamEvent,
     ApiTextDeltaEvent,
+    ApiToolCallDeltaEvent,
 )
 from openharness.api.errors import AuthenticationFailure, OpenHarnessApiError, RateLimitFailure, RequestFailure
 from openharness.api.usage import UsageSnapshot
@@ -284,6 +285,10 @@ class CodexApiClient:
                         if isinstance(delta, str) and delta:
                             current_text_parts.append(delta)
                             yield ApiTextDeltaEvent(text=delta)
+                    elif event_type == "response.function_call_arguments.delta":
+                        delta = event.get("delta")
+                        if isinstance(delta, str) and delta:
+                            yield ApiToolCallDeltaEvent(index=0, arguments_delta=delta)
                     elif event_type == "response.output_item.done":
                         item = event.get("item")
                         if not isinstance(item, dict):

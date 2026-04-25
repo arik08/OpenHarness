@@ -1,5 +1,7 @@
 export function createEvents(ctx) {
-  const { state, STATUS_LABELS, commandDescription, updateState } = ctx;
+  const { state, els, STATUS_LABELS, commandDescription, updateState } = ctx;
+  let restoringWorkflowEvents = [];
+  let restoringWorkflowInputDeltas = [];
   function setStatus(...args) { return ctx.setStatus(...args); }
   function setBusy(...args) { return ctx.setBusy(...args); }
   function updateTasks(...args) { return ctx.updateTasks(...args); }
@@ -16,6 +18,7 @@ export function createEvents(ctx) {
   function scrollMessagesToBottom(...args) { return ctx.scrollMessagesToBottom(...args); }
   function finishScrollRestore(...args) { return ctx.finishScrollRestore(...args); }
   function appendWorkflowEvent(...args) { return ctx.appendWorkflowEvent(...args); }
+  function appendWorkflowInputDelta(...args) { return ctx.appendWorkflowInputDelta?.(...args); }
   function showModal(...args) { return ctx.showModal(...args); }
   function showSelect(...args) { return ctx.showSelect(...args); }
   function updateSlashMenu(...args) { return ctx.updateSlashMenu(...args); }
@@ -421,6 +424,8 @@ function handleEvent(event) {
 
   if (event.type === "clear_transcript") {
     resetStreamingState();
+    restoringWorkflowEvents = [];
+    restoringWorkflowInputDeltas = [];
     renderWelcome();
     state.assistantNode = null;
     resetWorkflowPanel();
@@ -436,6 +441,58 @@ function handleEvent(event) {
     return;
   }
 
+  if (event.type === "active_session") {
+    state.activeHistoryId = String(event.value || "").trim() || null;
+    state.pendingScrollRestoreId = null;
+    state.restoringHistory = false;
+    state.batchingHistoryRestore = false;
+    markActiveHistory();
+    return;
+  }
+
+  if (event.type === "history_snapshot") {
+    resetStreamingState();
+    restoringWorkflowEvents = [];
+    restoringWorkflowInputDeltas = [];
+    state.activeHistoryId = String(event.value || "").trim() || null;
+    state.pendingScrollRestoreId = state.activeHistoryId;
+    state.restoringHistory = true;
+    state.batchingHistoryRestore = false;
+    state.ignoreScrollSave = true;
+    if (event.message) {
+      setChatTitle(event.message);
+    }
+    resetWorkflowPanel();
+    resetArtifacts();
+    const restoredSeconds = Number(event.compact_metadata?.workflow_duration_seconds || 0);
+    state.workflowRestoredElapsedMs = Number.isFinite(restoredSeconds) && restoredSeconds > 0
+      ? restoredSeconds * 1000
+      : 0;
+    els.messages.textContent = "";
+    for (const item of event.history_events || []) {
+      if (item.type === "user") {
+        appendMessage("user", item.text || "");
+      } else if (item.type === "assistant") {
+        const node = appendMessage("assistant", item.text || "");
+        extractAndRenderArtifacts(item.text || "", node);
+      } else if (item.type === "tool_started" || item.type === "tool_completed") {
+        appendWorkflowEvent({
+          type: item.type,
+          tool_name: item.tool_name,
+          tool_input: item.tool_input || {},
+          output: item.output || "",
+          is_error: Boolean(item.is_error),
+        });
+      }
+    }
+    finalizeWorkflowSummary();
+    collapseWorkflowPanel();
+    markActiveHistory();
+    requestAnimationFrame(finishScrollRestore);
+    setBusy(false, STATUS_LABELS.ready);
+    return;
+  }
+
   if (event.type === "assistant_delta") {
     if (!state.assistantNode) {
       state.assistantNode = appendMessage("assistant", "");
@@ -448,8 +505,23 @@ function handleEvent(event) {
     const message = event.message || "";
     const nextText = (state.assistantNode.dataset.rawText || "") + message;
     state.assistantNode.dataset.rawText = nextText;
+    if (state.restoringHistory) {
+      state.assistantNode.classList.remove("streaming-text");
+      setMarkdown(state.assistantNode, nextText);
+      state.assistantNode.dataset.displayText = nextText;
+      return;
+    }
     streamingTextBuffer += message;
     scheduleStreamingFlush();
+    return;
+  }
+
+  if (event.type === "tool_input_delta") {
+    if (state.batchingHistoryRestore) {
+      restoringWorkflowInputDeltas.push(event);
+      return;
+    }
+    appendWorkflowInputDelta(event);
     return;
   }
 
@@ -473,6 +545,17 @@ function handleEvent(event) {
     resetStreamingState();
     state.assistantNode = null;
     state.projectFilesLoadedForSession = "";
+    if (state.batchingHistoryRestore && (restoringWorkflowEvents.length || restoringWorkflowInputDeltas.length)) {
+      for (const workflowEvent of restoringWorkflowEvents) {
+        appendWorkflowEvent(workflowEvent);
+      }
+      for (const deltaEvent of restoringWorkflowInputDeltas) {
+        appendWorkflowInputDelta(deltaEvent);
+      }
+      restoringWorkflowEvents = [];
+      restoringWorkflowInputDeltas = [];
+      state.batchingHistoryRestore = false;
+    }
     finalizeWorkflowSummary();
     collapseWorkflowPanel();
     if (state.restoringHistory) {
@@ -485,6 +568,10 @@ function handleEvent(event) {
 
   if (event.type === "tool_started" || event.type === "tool_completed") {
     setBusy(true, STATUS_LABELS.processing);
+    if (state.batchingHistoryRestore) {
+      restoringWorkflowEvents.push(event);
+      return;
+    }
     appendWorkflowEvent(event);
     return;
   }
@@ -505,6 +592,9 @@ function handleEvent(event) {
 
   if (event.type === "error") {
     state.switchingWorkspace = false;
+    state.batchingHistoryRestore = false;
+    restoringWorkflowEvents = [];
+    restoringWorkflowInputDeltas = [];
     appendMessage("system", `오류: ${event.message || "알 수 없는 오류"}`);
     setBusy(false, STATUS_LABELS.error);
     return;
@@ -512,6 +602,9 @@ function handleEvent(event) {
 
   if (event.type === "shutdown") {
     state.switchingWorkspace = false;
+    state.batchingHistoryRestore = false;
+    restoringWorkflowEvents = [];
+    restoringWorkflowInputDeltas = [];
     state.ready = false;
     setStatus(STATUS_LABELS.stopped);
     updateSendState();

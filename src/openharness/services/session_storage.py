@@ -28,6 +28,7 @@ _PERSISTED_TOOL_METADATA_KEYS = (
     "compact_checkpoints",
     "compact_last",
     "session_title",
+    "workflow_duration_seconds",
 )
 
 

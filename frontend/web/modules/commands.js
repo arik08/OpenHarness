@@ -9,6 +9,14 @@ function getSlashQuery() {
   const value = els.input.value;
   const beforeCursor = value.slice(0, els.input.selectionStart || 0);
   const trigger = beforeCursor[0] || "";
+  if (trigger === "!") {
+    return {
+      trigger,
+      value: beforeCursor.slice(1),
+      start: 0,
+      end: beforeCursor.length,
+    };
+  }
   if (["/", "$"].includes(trigger) && !beforeCursor.includes(" ")) {
     return {
       trigger,
@@ -128,6 +136,13 @@ function filteredSlashCommands() {
       }))
       .slice(0, 14);
   }
+  if (query.trigger === "!") {
+    return [{
+      name: "!",
+      description: "CLI에 명령어를 입력합니다.",
+      kind: "cli",
+    }];
+  }
   return state.commands
     .filter((command) => command.name.slice(1).toLowerCase().includes(query.value))
     .map((command) => ({ ...command, kind: "command" }))
@@ -139,6 +154,7 @@ function closeSlashMenu() {
   state.slashMenuIndex = 0;
   state.slashMenuMode = "command";
   els.slashMenu.classList.add("hidden");
+  els.slashMenu.classList.remove("cli-hint");
   els.slashMenu.textContent = "";
 }
 
@@ -187,6 +203,7 @@ function renderSlashMenu() {
   state.slashMenuOpen = true;
   state.slashMenuIndex = Math.min(state.slashMenuIndex, commands.length - 1);
   els.slashMenu.textContent = "";
+  els.slashMenu.classList.toggle("cli-hint", state.slashMenuMode === "cli");
   for (const [index, command] of commands.entries()) {
     const item = document.createElement("button");
     item.type = "button";
@@ -196,7 +213,7 @@ function renderSlashMenu() {
     const name = document.createElement("strong");
     name.textContent = command.name;
     const badge = document.createElement("small");
-    badge.textContent = command.kind === "mcp" ? "MCP" : command.kind === "plugin" ? "Plugin" : command.kind === "skill" ? "Skill" : "";
+    badge.textContent = command.kind === "mcp" ? "MCP" : command.kind === "plugin" ? "Plugin" : command.kind === "skill" ? "Skill" : command.kind === "cli" ? "CLI" : "";
     const description = document.createElement("span");
     description.textContent =
       ["skill", "mcp", "plugin"].includes(command.kind)
@@ -212,6 +229,10 @@ function renderSlashMenu() {
     }
     item.addEventListener("mousedown", (event) => {
       event.preventDefault();
+      if (command.kind === "cli") {
+        els.input.focus();
+        return;
+      }
       selectSlashCommand(command);
     });
     els.slashMenu.append(item);
@@ -224,6 +245,11 @@ function updateSlashMenu() {
   const query = getSlashQuery();
   if (query === null) {
     closeSlashMenu();
+    return;
+  }
+  if (query.trigger === "!") {
+    state.slashMenuMode = "cli";
+    renderSlashMenu();
     return;
   }
   if (query.trigger === "@" && state.projectFilesLoadedForSession !== state.sessionId) {

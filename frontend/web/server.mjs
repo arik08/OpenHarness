@@ -78,6 +78,8 @@ const artifactTypes = {
 const artifactListSkipDirs = new Set([".git", ".openharness", "node_modules", "__pycache__", ".venv", "venv"]);
 const artifactListMaxItems = 300;
 const projectFileListMaxItems = 600;
+const shellCommandTimeoutMs = 60_000;
+const shellOutputMaxChars = 24_000;
 
 function resolvePath(url) {
   const pathname = decodeURIComponent(new URL(url, `http://localhost:${port}`).pathname);
@@ -420,6 +422,188 @@ function sendBackend(session, payload) {
   }
   session.process.stdin.write(`${JSON.stringify(payload)}\n`);
   return true;
+}
+
+function trimShellOutput(value) {
+  const text = String(value || "");
+  if (text.length <= shellOutputMaxChars) {
+    return { text, truncated: false };
+  }
+  return {
+    text: `${text.slice(0, shellOutputMaxChars)}\n\n[output truncated]`,
+    truncated: true,
+  };
+}
+
+function shellCommandForPlatform(command) {
+  if (process.platform === "win32") {
+    return {
+      file: "powershell.exe",
+      args: [
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $OutputEncoding=[System.Text.Encoding]::UTF8; ${command}`,
+      ],
+    };
+  }
+  return {
+    file: process.env.SHELL || "/bin/sh",
+    args: ["-lc", command],
+  };
+}
+
+async function runShellCommand(options = {}) {
+  const command = String(options.command || "").trim();
+  if (!command) {
+    throw new Error("Command is required");
+  }
+  const workspace = options.cwd
+    ? workspaceFromPath(options.cwd)
+    : options.session?.workspace || await ensureWorkspace(defaultWorkspaceName);
+  const { file, args } = shellCommandForPlatform(command);
+  return await new Promise((resolve) => {
+    const child = spawn(file, args, {
+      cwd: workspace.path,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killProcessTree(child);
+    }, shellCommandTimeoutMs);
+    timer.unref?.();
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({
+        command,
+        cwd: workspace.path,
+        exitCode: 1,
+        stdout: "",
+        stderr: error.message,
+        timedOut: false,
+        truncated: false,
+      });
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      const trimmedStdout = trimShellOutput(stdout);
+      const trimmedStderr = trimShellOutput(stderr);
+      resolve({
+        command,
+        cwd: workspace.path,
+        exitCode: timedOut ? null : code ?? 0,
+        stdout: trimmedStdout.text,
+        stderr: trimmedStderr.text,
+        timedOut,
+        truncated: trimmedStdout.truncated || trimmedStderr.truncated,
+      });
+    });
+  });
+}
+
+async function streamShellCommand(options = {}, request, response) {
+  const command = String(options.command || "").trim();
+  if (!command) {
+    throw new Error("Command is required");
+  }
+  const workspace = options.cwd
+    ? workspaceFromPath(options.cwd)
+    : options.session?.workspace || await ensureWorkspace(defaultWorkspaceName);
+  const { file, args } = shellCommandForPlatform(command);
+
+  response.writeHead(200, {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Accel-Buffering": "no",
+  });
+  response.flushHeaders?.();
+
+  let outputChars = 0;
+  let truncated = false;
+  let timedOut = false;
+  let finished = false;
+
+  const writeEvent = (event) => {
+    if (!response.writableEnded && !response.destroyed) {
+      response.write(`${JSON.stringify(event)}\n`);
+    }
+  };
+
+  const writeText = (type, chunk) => {
+    if (truncated) {
+      return;
+    }
+    const text = chunk.toString("utf8");
+    const remaining = shellOutputMaxChars - outputChars;
+    if (remaining <= 0) {
+      truncated = true;
+      writeEvent({ type: "truncated" });
+      return;
+    }
+    const visible = text.length > remaining ? text.slice(0, remaining) : text;
+    outputChars += visible.length;
+    if (visible) {
+      writeEvent({ type, text: visible });
+    }
+    if (text.length > remaining) {
+      truncated = true;
+      writeEvent({ type: "truncated" });
+    }
+  };
+
+  const child = spawn(file, args, {
+    cwd: workspace.path,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PYTHONUNBUFFERED: "1" },
+  });
+
+  const finish = (event) => {
+    if (finished) {
+      return;
+    }
+    finished = true;
+    clearTimeout(timer);
+    writeEvent({ ...event, truncated });
+    response.end();
+  };
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    killProcessTree(child);
+  }, shellCommandTimeoutMs);
+  timer.unref?.();
+
+  response.on("close", () => {
+    if (!finished) {
+      killProcessTree(child);
+    }
+  });
+
+  writeEvent({ type: "start", command, cwd: workspace.path });
+  child.stdout.on("data", (chunk) => writeText("stdout", chunk));
+  child.stderr.on("data", (chunk) => writeText("stderr", chunk));
+  child.on("error", (error) => {
+    writeEvent({ type: "stderr", text: error.message });
+    finish({ type: "exit", exitCode: 1, timedOut: false });
+  });
+  child.on("exit", (code) => {
+    finish({ type: "exit", exitCode: timedOut ? null : code ?? 0, timedOut });
+  });
 }
 
 function normalizeAttachment(attachment) {
@@ -782,6 +966,41 @@ async function handleApi(request, response, pathname) {
     return true;
   }
 
+  if (request.method === "POST" && pathname === "/api/shell") {
+    try {
+      const body = await readJson(request);
+      const session = body.sessionId ? sessions.get(body.sessionId) : null;
+      const result = await runShellCommand({
+        command: body.command,
+        cwd: body.cwd,
+        session,
+      });
+      json(response, 200, result);
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not run command" });
+    }
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/shell/stream") {
+    try {
+      const body = await readJson(request);
+      const session = body.sessionId ? sessions.get(body.sessionId) : null;
+      await streamShellCommand({
+        command: body.command,
+        cwd: body.cwd,
+        session,
+      }, request, response);
+    } catch (error) {
+      if (!response.headersSent) {
+        json(response, 400, { error: error.message || "Could not run command" });
+      } else if (!response.writableEnded) {
+        response.end();
+      }
+    }
+    return true;
+  }
+
   if (request.method === "POST" && pathname === "/api/respond") {
     const body = await readJson(request);
     const session = sessions.get(body.sessionId);
@@ -790,6 +1009,18 @@ async function handleApi(request, response, pathname) {
       return true;
     }
     const ok = sendBackend(session, body.payload || {});
+    json(response, ok ? 200 : 409, { ok });
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/cancel") {
+    const body = await readJson(request);
+    const session = sessions.get(body.sessionId);
+    if (!session) {
+      json(response, 404, { error: "Unknown session" });
+      return true;
+    }
+    const ok = sendBackend(session, { type: "cancel_current" });
     json(response, ok ? 200 : 409, { ok });
     return true;
   }

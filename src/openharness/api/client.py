@@ -56,6 +56,15 @@ class ApiTextDeltaEvent:
 
 
 @dataclass(frozen=True)
+class ApiToolCallDeltaEvent:
+    """Incremental tool-call argument text produced by the model."""
+
+    index: int
+    name: str | None = None
+    arguments_delta: str = ""
+
+
+@dataclass(frozen=True)
 class ApiMessageCompleteEvent:
     """Terminal event containing the full assistant message."""
 
@@ -74,7 +83,7 @@ class ApiRetryEvent:
     delay_seconds: float
 
 
-ApiStreamEvent = ApiTextDeltaEvent | ApiMessageCompleteEvent | ApiRetryEvent
+ApiStreamEvent = ApiTextDeltaEvent | ApiToolCallDeltaEvent | ApiMessageCompleteEvent | ApiRetryEvent
 
 
 class SupportsStreamingMessages(Protocol):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import re
 from dataclasses import dataclass
 
 from openharness.config.settings import PermissionSettings
@@ -34,6 +35,28 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # OpenHarness own credential stores
     "*/.openharness/credentials.json",
     "*/.openharness/copilot_auth.json",
+)
+
+DISK_DESTRUCTIVE_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bformat(?:\.com)?\b", re.IGNORECASE),
+    re.compile(r"\bdiskpart\b", re.IGNORECASE),
+    re.compile(r"\bclean\s+all\b", re.IGNORECASE),
+    re.compile(r"\bclear-disk\b", re.IGNORECASE),
+    re.compile(r"\bremove-partition\b", re.IGNORECASE),
+    re.compile(r"\bremove-volume\b", re.IGNORECASE),
+    re.compile(r"\bmkfs(?:\.[a-z0-9]+)?\b", re.IGNORECASE),
+    re.compile(r"\bdd\b[^|;&\n\r]*\bof\s*=\s*/dev/", re.IGNORECASE),
+)
+
+DESTRUCTIVE_TARGET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?:^|[\s\"'])(?:[a-z]:[\\/](?:\s|$|[\"']))", re.IGNORECASE),
+    re.compile(r"(?:^|[\s\"'])(?:[a-z]:[\\/]users(?:[\\/]|(?:\s|$|[\"'])))", re.IGNORECASE),
+    re.compile(r"(?:^|[\s\"'])/(?:\s|$|[\"'])"),
+    re.compile(r"(?:^|[\s\"'])/(?:home|users)(?:[\\/]|(?:\s|$|[\"']))", re.IGNORECASE),
+    re.compile(r"(?:^|[\s\"'])~(?:[\\/]|(?:\s|$|[\"']))"),
+    re.compile(r"(?:^|[\s\"'])%userprofile%(?:[\\/]|(?:\s|$|[\"']))", re.IGNORECASE),
+    re.compile(r"(?:^|[\s\"'])\$env:userprofile(?:[\\/]|(?:\s|$|[\"']))", re.IGNORECASE),
+    re.compile(r"(?:^|[\s\"'])\$home(?:[\\/]|(?:\s|$|[\"']))", re.IGNORECASE),
 )
 
 
@@ -96,6 +119,10 @@ class PermissionChecker:
                                 f"(matched built-in pattern '{pattern}')"
                             ),
                         )
+
+        destructive_reason = _built_in_destructive_command_reason(command)
+        if destructive_reason:
+            return PermissionDecision(allowed=False, reason=destructive_reason)
 
         # Explicit tool deny list
         if tool_name in self._settings.denied_tools:
@@ -167,6 +194,25 @@ def _policy_match_paths(file_path: str) -> tuple[str, ...]:
     if not normalized:
         return (file_path,)
     return (normalized, normalized + "/")
+
+
+def _built_in_destructive_command_reason(command: str | None) -> str:
+    if not command:
+        return ""
+    normalized = " ".join(command.strip().split())
+    if not normalized:
+        return ""
+    if any(pattern.search(normalized) for pattern in DISK_DESTRUCTIVE_COMMAND_PATTERNS):
+        return "Command denied by built-in safety policy: destructive disk command."
+    if _looks_like_delete_command(normalized) and any(
+        pattern.search(normalized) for pattern in DESTRUCTIVE_TARGET_PATTERNS
+    ):
+        return "Command denied by built-in safety policy: deletion targets a drive root, filesystem root, or user home."
+    return ""
+
+
+def _looks_like_delete_command(command: str) -> bool:
+    return bool(re.search(r"\b(?:rm|rmdir|del|erase|remove-item)\b", command, re.IGNORECASE))
 
 
 def _bash_permission_hint(command: str | None) -> str:
