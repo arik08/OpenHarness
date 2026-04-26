@@ -842,7 +842,6 @@ async function clearChat() {
     activeSlot.suppressNewChatHistory = false;
     activeSlot.title = "새 채팅";
     markActiveHistory();
-    ctx.renderHistory?.([]);
     updateSendState();
     ctx.requestHistory?.().catch(() => {});
     return;
@@ -886,7 +885,6 @@ async function clearChat() {
     clearedSlot.workflowSteps = [];
   }
   markActiveHistory();
-  ctx.renderHistory?.([]);
   updateSendState();
   ctx.requestHistory?.().catch(() => {});
   if (state.sessionId) {
@@ -909,13 +907,6 @@ async function deleteHistorySession(sessionId, item) {
   item?.classList.add("deleting");
   item?.remove();
   forgetScrollPosition(sessionId);
-  if (state.activeHistoryId === sessionId) {
-    state.activeHistoryId = null;
-    state.pendingScrollRestoreId = null;
-    state.restoringHistory = false;
-    state.batchingHistoryRestore = false;
-    renderWelcome();
-  }
   for (const slot of state.chatSlots.values()) {
     if (slot.savedSessionId === sessionId) {
       slot.savedSessionId = "";
@@ -925,7 +916,9 @@ async function deleteHistorySession(sessionId, item) {
   if (!els.historyList.querySelector(".history-item")) {
     ctx.renderHistory?.([]);
   }
-  await sendBackendRequest({ type: "delete_session", value: sessionId });
+  sendBackendRequest({ type: "delete_session", value: sessionId }).catch((error) => {
+    console.warn("History delete failed", error);
+  });
 }
 
 async function deleteLiveChatSlot(frontendId) {
@@ -934,19 +927,19 @@ async function deleteLiveChatSlot(frontendId) {
     return;
   }
   const wasActive = slot.frontendId === state.activeFrontendId;
+  if (wasActive) {
+    slot.showInHistory = false;
+    slot.savedSessionId = "";
+    markActiveHistory();
+    if (!els.historyList.querySelector(".history-item")) {
+      ctx.renderHistory?.([]);
+    }
+    return;
+  }
   const backendSessionId = slot.backendSessionId;
   removeChatSlot(frontendId);
   if (backendSessionId) {
     shutdownSession(backendSessionId).catch(() => {});
-  }
-  if (wasActive) {
-    const nextSlot = [...state.chatSlots.values()][0];
-    if (nextSlot) {
-      restoreSlot(nextSlot);
-    } else {
-      await startBackendSlot({ makeActive: true });
-      renderWelcome();
-    }
   }
   markActiveHistory();
   if (!els.historyList.querySelector(".history-item")) {
