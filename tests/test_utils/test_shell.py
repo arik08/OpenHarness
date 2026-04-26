@@ -57,6 +57,28 @@ def test_resolve_shell_command_uses_powershell_on_windows(monkeypatch):
     ]
 
 
+def test_resolve_shell_command_prefers_powershell_over_bash_on_windows(monkeypatch):
+    def fake_which(name: str) -> str | None:
+        mapping = {
+            "powershell": "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+            "cmd.exe": "C:/Windows/System32/cmd.exe",
+            "bash": "C:/Windows/System32/bash.exe",
+        }
+        return mapping.get(name)
+
+    monkeypatch.setattr("openharness.utils.shell.shutil.which", fake_which)
+
+    command = resolve_shell_command("py -3 --version", platform_name="windows")
+
+    assert command == [
+        "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        "py -3 --version",
+    ]
+
+
 def test_resolve_shell_command_skips_script_on_macos(monkeypatch):
     def fake_which(name: str) -> str | None:
         mapping = {

@@ -173,6 +173,7 @@ function snapshotActiveSlot() {
     title: slot.showInHistory && !slot.hasConversation ? "New Chat" : state.chatTitle,
     ready: state.ready,
     busy: state.busy,
+    busyVisual: state.busyVisual,
     assistantNode: state.assistantNode,
     workflowNode: state.workflowNode,
     workflowList: state.workflowList,
@@ -194,6 +195,7 @@ function restoreSlot(slot) {
   state.sessionId = slot.backendSessionId;
   state.ready = Boolean(slot.ready);
   state.busy = Boolean(slot.busy);
+  state.busyVisual = Boolean(slot.busyVisual);
   state.assistantNode = slot.assistantNode || null;
   state.activeHistoryId = slot.savedSessionId || null;
   state.pendingScrollRestoreId = slot.pendingScrollRestoreId || null;
@@ -216,7 +218,10 @@ function restoreSlot(slot) {
     node.classList.toggle("hidden", node !== slot.container);
   });
   setChatTitle(slot.title || "MyHarness");
-  setStatus(state.busy ? STATUS_LABELS.processing : state.ready ? STATUS_LABELS.ready : STATUS_LABELS.connecting, state.busy ? "busy" : state.ready ? "ready" : "");
+  setStatus(
+    state.busyVisual ? STATUS_LABELS.processing : state.ready ? STATUS_LABELS.ready : STATUS_LABELS.connecting,
+    state.busyVisual ? "busy" : state.ready ? "ready" : "",
+  );
   updateSendState();
   markActiveHistory();
 }
@@ -240,6 +245,7 @@ function createChatSlot({ sessionId, workspace, container = null, makeActive = t
     title: "MyHarness",
     ready: false,
     busy: false,
+    busyVisual: false,
     hasConversation: false,
     showInHistory: false,
     suppressNewChatHistory: false,
@@ -362,6 +368,7 @@ function updateSlotFromEvent(slot, event) {
   }
   if (event.type === "line_complete" || event.type === "error" || event.type === "shutdown") {
     slot.busy = false;
+    slot.busyVisual = false;
   }
 }
 
@@ -724,6 +731,8 @@ async function restartSessionForWorkspace(workspace) {
   clearAttachments();
   try {
     await startSession();
+    state.switchingWorkspace = false;
+    updateSendState();
   } catch (error) {
     state.switchingWorkspace = false;
     setBusy(false, STATUS_LABELS.error);

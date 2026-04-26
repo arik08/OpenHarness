@@ -2,6 +2,9 @@ const scrollStorageKey = "openharness:scrollPositions";
 let scrollRestoreTimer = 0;
 let scrollSaveTimer = 0;
 let scrollAnimationFrame = 0;
+let busyVisualTimer = 0;
+let pendingBusyLabel = "";
+const BUSY_VISUAL_DELAY_MS = 280;
 
 export function createUI(ctx) {
   const { state, els, STATUS_LABELS } = ctx;
@@ -246,7 +249,31 @@ function updateSendState() {
 
 function setBusy(value, label = value ? STATUS_LABELS.thinking : STATUS_LABELS.ready) {
   state.busy = value;
-  setStatus(label, value ? "busy" : state.ready ? "ready" : "");
+  window.clearTimeout(busyVisualTimer);
+  busyVisualTimer = 0;
+  pendingBusyLabel = label;
+  if (value) {
+    busyVisualTimer = window.setTimeout(() => {
+      busyVisualTimer = 0;
+      if (!state.busy) {
+        return;
+      }
+      state.busyVisual = true;
+      const activeSlot = state.chatSlots.get(state.activeFrontendId);
+      if (activeSlot) {
+        activeSlot.busyVisual = true;
+      }
+      setStatus(pendingBusyLabel || label, "busy");
+      markActiveHistory();
+    }, BUSY_VISUAL_DELAY_MS);
+  } else {
+    state.busyVisual = false;
+    const activeSlot = state.chatSlots.get(state.activeFrontendId);
+    if (activeSlot) {
+      activeSlot.busyVisual = false;
+    }
+    setStatus(label, state.ready ? "ready" : "");
+  }
   updateSendState();
   markActiveHistory();
 }

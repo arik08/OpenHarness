@@ -35,6 +35,7 @@ from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlo
 from openharness.output_styles import load_output_styles
 from openharness.permissions.mutation_lock import release_mutation_lock
 from openharness.prompts import build_runtime_system_prompt
+from openharness.services.session_storage import fallback_session_title_from_user_text, title_matches_first_user
 from openharness.skills import load_skill_registry
 from openharness.skills.types import SkillDefinition
 from openharness.tasks import get_task_manager
@@ -445,6 +446,9 @@ class ReactBackendHost:
         except Exception as exc:
             log.debug("Could not generate session title: %s", exc)
             return
+        first_user_text = user_messages[0].text.strip()
+        if title and not title_matches_first_user(title, first_user_text):
+            title = fallback_session_title_from_user_text(first_user_text)
         if not title:
             return
         metadata["session_title"] = title
@@ -479,6 +483,8 @@ class ReactBackendHost:
             "- Reply with only the title text.\n"
             "- Korean is preferred if the conversation is Korean.\n"
             "- Keep it under 24 Korean characters or 7 English words.\n"
+            "- Preserve exact product, game, company, file, and project names from the first user message.\n"
+            "- If the first user message names a subject, the title must include that subject.\n"
             "- Do not use quotes, punctuation-heavy phrasing, or generic words like '대화'.\n\n"
             + "\n".join(snippets)
         )
@@ -515,8 +521,17 @@ class ReactBackendHost:
         self._bundle.session_id = clean_id
         self._bundle.engine.tool_metadata["session_id"] = clean_id
 
+    def _reset_session_scoped_metadata(self) -> None:
+        assert self._bundle is not None
+        for key in (
+            "session_title",
+            "workflow_duration_seconds",
+        ):
+            self._bundle.engine.tool_metadata.pop(key, None)
+
     def _start_new_saved_session(self) -> str:
         session_id = uuid4().hex[:12]
+        self._reset_session_scoped_metadata()
         self._set_saved_session_id(session_id)
         return session_id
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,24 @@ _PERSISTED_TOOL_METADATA_KEYS = (
     "session_title",
     "workflow_duration_seconds",
 )
+
+_TITLE_STOPWORDS = {
+    "about",
+    "and",
+    "game",
+    "know",
+    "latest",
+    "let",
+    "me",
+    "of",
+    "overview",
+    "story",
+    "table",
+    "tables",
+    "tell",
+    "the",
+    "with",
+}
 
 
 def _sanitize_metadata(value: Any) -> Any:
@@ -67,6 +86,68 @@ def _with_image_marker(text: str, has_image: bool) -> str:
     if has_image and "[image]" not in clean:
         return f"{clean} [image]".strip()
     return clean
+
+
+def _title_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw in re.findall(r"[A-Za-z][A-Za-z0-9&+_-]*|\d+", str(text or "").lower()):
+        token = raw.strip("_-")
+        if len(token) < 2 or token in _TITLE_STOPWORDS:
+            continue
+        tokens.add(token)
+        alpha = re.sub(r"\d+$", "", token)
+        if len(alpha) >= 3 and alpha not in _TITLE_STOPWORDS:
+            tokens.add(alpha)
+    return tokens
+
+
+def fallback_session_title_from_user_text(text: str) -> str:
+    clean = strip_internal_message_text(text)
+    clean = " ".join(clean.split()).strip("\"'`“”‘’ ")
+    if not clean or clean.startswith("The user explicitly selected the `"):
+        return ""
+
+    topic = ""
+    story_like = bool(re.search(r"\bstor(?:y|ies)\b", clean, flags=re.IGNORECASE))
+    match = re.search(
+        r"(?i)\b(?:story|stories|overview|info|information)\b.*?\b(?:of|about)\b\s+(.+)$",
+        clean,
+    )
+    if not match:
+        match = re.search(r"(?i)\b(?:of|about)\b\s+(.+)$", clean)
+    if match:
+        topic = match.group(1)
+        topic = re.sub(r"(?i)\s+(?:with|in)\s+tables?\b.*$", "", topic)
+        topic = re.sub(r"(?i)^game\s*,?\s*", "", topic)
+
+    if not topic:
+        korean = re.match(r"(.+?)(?:에\s*대해|에\s*대해서|관련|설명|정리)", clean)
+        if korean:
+            topic = korean.group(1)
+
+    title = (topic or clean).strip(" .,!?:;\"'`“”‘’")
+    if story_like and title and "story" not in title.lower() and "스토리" not in title:
+        title = f"{title} Story"
+    return title[:80]
+
+
+def title_matches_first_user(title: str, first_user_text: str) -> bool:
+    title = strip_internal_message_text(title)
+    first_user_text = strip_internal_message_text(first_user_text)
+    if not title or not first_user_text:
+        return True
+    required = _title_tokens(first_user_text)
+    if not required:
+        return True
+    return bool(required & _title_tokens(title))
+
+
+def display_summary_for_first_user(summary: str, first_user_text: str) -> str:
+    clean = strip_internal_message_text(summary)
+    if clean and title_matches_first_user(clean, first_user_text):
+        return clean
+    fallback = fallback_session_title_from_user_text(first_user_text)
+    return fallback or clean
 
 
 def _message_summary(message: ConversationMessage) -> str:
@@ -113,14 +194,14 @@ def save_session_snapshot(
     now = time.time()
     messages = sanitize_conversation_messages(messages)
     metadata_title = _session_title_from_metadata(tool_metadata)
-    # Extract a summary from the first user message
-    summary = metadata_title
-    if not summary:
-        for msg in messages:
-            if msg.role == "user":
-                summary = _message_summary(msg)[:80]
-                if summary:
-                    break
+    first_user_summary = ""
+    for msg in messages:
+        if msg.role == "user":
+            first_user_summary = _message_summary(msg)
+            break
+    summary = display_summary_for_first_user(metadata_title, first_user_summary) if metadata_title else ""
+    if not summary and first_user_summary:
+        summary = first_user_summary[:80]
 
     payload = {
         "session_id": sid,
@@ -186,6 +267,7 @@ def list_session_snapshots(cwd: str | Path, limit: int | None = 20) -> list[dict
                 if isinstance(msg, dict) and msg.get("role") == "user":
                     first_user_summary = _raw_message_summary(msg)
                     break
+            summary = display_summary_for_first_user(summary, first_user_summary)
             if first_user_summary.endswith("[image]"):
                 summary = _with_image_marker(summary or first_user_summary, True)
             if summary.startswith("The user explicitly selected the `") and first_user_summary:
@@ -218,6 +300,7 @@ def list_session_snapshots(cwd: str | Path, limit: int | None = 20) -> list[dict
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         first_user_summary = _raw_message_summary(msg)
                         break
+                summary = display_summary_for_first_user(summary, first_user_summary)
                 if first_user_summary.endswith("[image]"):
                     summary = _with_image_marker(summary or first_user_summary, True)
                 if summary.startswith("The user explicitly selected the `") and first_user_summary:

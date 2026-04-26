@@ -11,6 +11,9 @@ function splitTableRow(line) {
 }
 
 function expandCompactTable(line) {
+  if (/\\\|/.test(line)) {
+    return line;
+  }
   const cells = splitTableRow(line);
   const dividerStart = cells.findIndex((cell) => /^:?-{3,}:?$/.test(cell));
   if (dividerStart <= 0) {

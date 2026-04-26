@@ -36,13 +36,25 @@ function liveHistoryOptions() {
       liveSlotId: slot.frontendId,
       savedSessionId: slot.savedSessionId || "",
       busy: Boolean(slot.busy),
+      busyVisual: Boolean(slot.busyVisual),
     }));
 }
 
 function renderHistory(options) {
   els.historyList.textContent = "";
-  const liveOptions = liveHistoryOptions();
   const savedOptions = Array.isArray(options) ? options : [];
+  const savedById = new Map(savedOptions.map((option) => [String(option.value || ""), option]));
+  const liveOptions = liveHistoryOptions().map((option) => {
+    const saved = option.savedSessionId ? savedById.get(String(option.savedSessionId)) : null;
+    if (!saved) {
+      return option;
+    }
+    return {
+      ...option,
+      label: saved.label || option.label,
+      description: option.busy ? "진행 중" : saved.description || option.description,
+    };
+  });
   const liveSavedIds = new Set(liveOptions.map((option) => option.savedSessionId).filter(Boolean));
   const mergedOptions = [
     ...liveOptions,
@@ -62,13 +74,17 @@ function renderHistory(options) {
     const isActive = isLive
       ? state.activeFrontendId === option.liveSlotId
       : state.activeHistoryId === option.value;
-    item.className = `history-item${isActive ? " active" : ""}${option.busy || (isActive && state.busy) ? " busy" : ""}`;
+    const isBusy = Boolean(option.busyVisual || (isActive && state.busyVisual));
+    item.className = `history-item${isActive ? " active" : ""}${isBusy ? " busy" : ""}`;
     item.dataset.sessionId = option.value || "";
     if (isLive) {
       item.dataset.liveSlotId = option.liveSlotId;
     }
 
     const formattedTitle = formatHistoryTitle(option.label || option.value || "저장된 세션");
+    if (isActive && !isLive && formattedTitle && formattedTitle !== state.chatTitle) {
+      setChatTitle(formattedTitle);
+    }
     const title = document.createElement("span");
     title.className = "history-title";
     title.textContent = formattedTitle;
@@ -107,9 +123,8 @@ function renderHistory(options) {
         <path d="M9 7V4h6v3"></path>
       </svg>
     `;
-    if (isLive && option.busy) {
+    if (isBusy) {
       deleteButton.disabled = true;
-      deleteButton.classList.add("hidden");
     } else {
       deleteButton.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -145,7 +160,7 @@ function markActiveHistory() {
       ? item.dataset.liveSlotId === state.activeFrontendId
       : item.dataset.sessionId === state.activeHistoryId;
     item.classList.toggle("active", isActive);
-    item.classList.toggle("busy", Boolean(liveSlot?.busy) || (isActive && state.busy));
+    item.classList.toggle("busy", Boolean(liveSlot?.busyVisual) || (isActive && state.busyVisual));
   });
 }
 

@@ -34,10 +34,10 @@ let streamingTextBuffer = "";
 let streamingLiveNode = null;
 let streamingRenderedTextLength = 0;
 let streamingDisplayStarted = false;
-const STREAMING_FLUSH_INTERVAL_MS = 120;
-const STREAMING_START_BUFFER_MS = 300;
-const STREAMING_MIN_CHARS_PER_FLUSH = 18;
-const STREAMING_MAX_CHARS_PER_FLUSH = 72;
+const STREAMING_FLUSH_INTERVAL_MS = 36;
+const STREAMING_START_BUFFER_MS = 180;
+const STREAMING_MIN_CHARS_PER_FLUSH = 3;
+const STREAMING_MAX_CHARS_PER_FLUSH = 12;
 
 function normalizeSkills(skills) {
   return Array.isArray(skills)
@@ -219,21 +219,18 @@ function stabilizeStreamingTableRows(markdown) {
     return source;
   }
 
-  if (!source.endsWith("\n")) {
-    const lastIndex = lines.length - 1;
-    if (lastIndex === tableStart || lastIndex === tableStart + 1) {
-      return lines
-        .map((line, index) => (index >= tableStart ? escapeMarkdownTablePipes(line) : line))
-        .join("\n");
-    }
-    if (lastIndex > tableStart + 1 && isMarkdownTableLine(lines[lastIndex])) {
-      return lines
-        .map((line, index) => (index === lastIndex ? escapeMarkdownTablePipes(line) : line))
-        .join("\n");
-    }
+  let tableEnd = tableStart + 2;
+  while (tableEnd < lines.length && isMarkdownTableLine(lines[tableEnd])) {
+    tableEnd += 1;
   }
 
-  return source;
+  return lines
+    .map((line, index) =>
+      index >= tableStart && index < tableEnd
+        ? escapeMarkdownTablePipes(line)
+        : line,
+    )
+    .join("\n");
 }
 
 function keepStreamingTailVisible() {
@@ -246,9 +243,19 @@ function keepStreamingTailVisible() {
   streamingScrollTimer = window.setTimeout(() => {
     streamingScrollTimer = 0;
     if (!state.restoringHistory && state.autoFollowMessages) {
-      scrollMessagesToBottom({ smooth: true, duration: 900 });
+      scrollMessagesToBottom({ smooth: true, duration: 1450 });
     }
-  }, 160);
+  }, 260);
+}
+
+function settleStreamingTailVisible() {
+  if (state.restoringHistory || !state.autoFollowMessages) {
+    return;
+  }
+  window.clearTimeout(streamingScrollTimer);
+  requestAnimationFrame(() => {
+    scrollMessagesToBottom({ smooth: true, duration: 900 });
+  });
 }
 
 function renderStreamingAssistant(revealStart = null) {
@@ -427,6 +434,7 @@ function handleEvent(event) {
     resetStreamingState();
     restoringWorkflowEvents = [];
     restoringWorkflowInputDeltas = [];
+    state.suppressNextLineCompleteScroll = false;
     renderWelcome();
     state.assistantNode = null;
     const activeSlot = state.chatSlots.get(state.activeFrontendId);
@@ -458,6 +466,7 @@ function handleEvent(event) {
     state.pendingScrollRestoreId = null;
     state.restoringHistory = false;
     state.batchingHistoryRestore = false;
+    state.suppressNextLineCompleteScroll = false;
     markActiveHistory();
     return;
   }
@@ -476,6 +485,7 @@ function handleEvent(event) {
     state.pendingScrollRestoreId = state.activeHistoryId;
     state.restoringHistory = true;
     state.batchingHistoryRestore = false;
+    state.suppressNextLineCompleteScroll = true;
     state.ignoreScrollSave = true;
     if (event.message) {
       setChatTitle(event.message);
@@ -578,6 +588,10 @@ function handleEvent(event) {
     collapseWorkflowPanel();
     if (state.restoringHistory) {
       requestAnimationFrame(finishScrollRestore);
+    } else if (state.suppressNextLineCompleteScroll) {
+      state.suppressNextLineCompleteScroll = false;
+    } else {
+      settleStreamingTailVisible();
     }
     setBusy(false, STATUS_LABELS.ready);
     requestHistory().catch(() => {});
@@ -611,6 +625,7 @@ function handleEvent(event) {
   if (event.type === "error") {
     state.switchingWorkspace = false;
     state.batchingHistoryRestore = false;
+    state.suppressNextLineCompleteScroll = false;
     restoringWorkflowEvents = [];
     restoringWorkflowInputDeltas = [];
     appendMessage("system", `오류: ${event.message || "알 수 없는 오류"}`);
@@ -621,6 +636,7 @@ function handleEvent(event) {
   if (event.type === "shutdown") {
     state.switchingWorkspace = false;
     state.batchingHistoryRestore = false;
+    state.suppressNextLineCompleteScroll = false;
     restoringWorkflowEvents = [];
     restoringWorkflowInputDeltas = [];
     state.ready = false;

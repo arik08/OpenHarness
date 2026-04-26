@@ -384,9 +384,27 @@ async function ensureWorkspace(name = defaultWorkspaceName) {
   return workspace;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function deleteWorkspace(name) {
   const workspace = workspacePathFromName(name);
-  await rm(workspace.path, { recursive: true, force: true });
+  const retryableCodes = new Set(["EBUSY", "ENOTEMPTY", "EPERM"]);
+  const delays = [0, 120, 300, 700, 1200];
+  for (let attempt = 0; attempt < delays.length; attempt += 1) {
+    if (delays[attempt] > 0) {
+      await sleep(delays[attempt]);
+    }
+    try {
+      await rm(workspace.path, { recursive: true, force: true });
+      return workspace;
+    } catch (error) {
+      if (attempt === delays.length - 1 || !retryableCodes.has(error?.code)) {
+        throw error;
+      }
+    }
+  }
   return workspace;
 }
 

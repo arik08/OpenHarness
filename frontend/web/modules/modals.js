@@ -232,19 +232,24 @@ async function showWorkspaceModal() {
         row.classList.add("deleting");
         try {
           const wasActive = workspace.name === state.workspaceName;
-          const result = await deleteWorkspace(workspace.name);
-          const workspaces = Array.isArray(result.workspaces) ? result.workspaces : await loadWorkspaces();
           if (wasActive) {
+            const currentWorkspaces = Array.isArray(state.workspaces) && state.workspaces.length
+              ? state.workspaces
+              : await loadWorkspaces();
             const nextWorkspace =
-              workspaces.find((item) => item.name === "Default")
-              || workspaces.find((item) => item.name !== workspace.name)
-              || workspaces[0];
-            closeModal();
-            if (nextWorkspace) {
-              await restartSessionForWorkspace(nextWorkspace);
+              currentWorkspaces.find((item) => item.name === "Default" && item.name !== workspace.name)
+              || currentWorkspaces.find((item) => item.name !== workspace.name);
+            if (!nextWorkspace) {
+              throw new Error("Last project cannot be deleted.");
             }
+            closeModal();
+            await restartSessionForWorkspace(nextWorkspace);
+            await deleteWorkspace(workspace.name);
+            await loadWorkspaces();
             return;
           }
+          const result = await deleteWorkspace(workspace.name);
+          const workspaces = Array.isArray(result.workspaces) ? result.workspaces : await loadWorkspaces();
           renderList(workspaces);
         } catch (err) {
           row.classList.remove("deleting");

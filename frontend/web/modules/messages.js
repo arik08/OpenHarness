@@ -291,8 +291,24 @@ function collapseWorkflowPanel() {
 }
 
 function finalizeWorkflowSummary() {
-  updateWorkflowSummary();
   stopWorkflowWaitingTimer();
+  for (const timer of workflowMutationWaitingTimers.values()) {
+    window.clearTimeout(timer);
+  }
+  workflowMutationWaitingTimers.clear();
+  workflowEventQueue = [];
+  window.clearTimeout(workflowEventQueueTimer);
+  workflowEventQueueTimer = 0;
+  markPlanningStepDone();
+  state.workflowList?.querySelectorAll(".workflow-step.running").forEach((row) => {
+    row.classList.remove("running");
+    row.classList.add("done");
+    const detail = row.querySelector("small");
+    if (detail) {
+      detail.textContent = "완료되었습니다.";
+    }
+  });
+  updateWorkflowSummary();
   flushWorkflowOutputPreview();
   stopWorkflowTimer();
 }
@@ -569,7 +585,7 @@ function startWorkflowWaitingTimer() {
 
 function appendWorkflowWaitingStep() {
   workflowWaitingTimer = 0;
-  if (!state.workflowNode || !state.workflowList || state.restoringHistory) {
+  if (!state.workflowNode || !state.workflowList || state.restoringHistory || !state.busy) {
     return;
   }
   const fileSteps = [

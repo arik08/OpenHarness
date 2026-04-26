@@ -5,6 +5,7 @@ export function createArtifacts(ctx) {
 const artifactPanelWidthKey = "openharness:artifactPanelWidth";
 const artifactPanelMinWidth = 320;
 const artifactPanelMaxWidth = 920;
+let artifactPanelReturnView = null;
 const artifactExtensions = new Set([
   "html",
   "htm",
@@ -332,6 +333,8 @@ function renderArtifactError(error) {
 }
 
 function renderProjectFiles(files) {
+  artifactPanelReturnView = null;
+  setArtifactCloseMode("close");
   state.activeArtifactRaw = "";
   updateArtifactCopyButton(false);
   if (!els.artifactViewer) {
@@ -401,6 +404,7 @@ async function openProjectFiles() {
     return;
   }
   state.activeArtifactRaw = "";
+  artifactPanelReturnView = null;
   updateArtifactCopyButton(false);
   setArtifactPanel(true);
   if (els.artifactPanelTitle) {
@@ -420,6 +424,7 @@ async function openProjectFiles() {
       throw new Error(payload.error || `HTTP ${response.status}`);
     }
     const files = Array.isArray(payload.files) ? payload.files : [];
+    state.projectFiles = files;
     if (els.artifactPanelMeta) {
       els.artifactPanelMeta.textContent = `${files.length}개 파일`;
     }
@@ -431,6 +436,13 @@ async function openProjectFiles() {
 
 async function openArtifact(artifact) {
   state.activeArtifact = artifact;
+  if (els.artifactPanelTitle?.textContent === "프로젝트 파일") {
+    artifactPanelReturnView = {
+      kind: "project-files",
+      files: Array.isArray(state.projectFiles) ? state.projectFiles : [],
+    };
+    setArtifactCloseMode("back");
+  }
   setArtifactPanel(true);
   showArtifactLoading(artifact);
   try {
@@ -450,17 +462,46 @@ async function openArtifact(artifact) {
 }
 
 function closeArtifactPanel() {
+  if (artifactPanelReturnView?.kind === "project-files") {
+    const files = artifactPanelReturnView.files || [];
+    artifactPanelReturnView = null;
+    state.activeArtifact = null;
+    state.activeArtifactRaw = "";
+    updateArtifactCopyButton(false);
+    setArtifactFullscreen(false);
+    if (els.artifactPanelTitle) {
+      els.artifactPanelTitle.textContent = "프로젝트 파일";
+    }
+    if (els.artifactPanelMeta) {
+      els.artifactPanelMeta.textContent = `${files.length}개 파일`;
+    }
+    renderProjectFiles(files);
+    return;
+  }
   state.activeArtifact = null;
   state.activeArtifactRaw = "";
+  artifactPanelReturnView = null;
+  setArtifactCloseMode("close");
   updateArtifactCopyButton(false);
   setArtifactFullscreen(false);
   setArtifactPanel(false);
+}
+
+function setArtifactCloseMode(mode) {
+  if (!els.artifactPanelClose) {
+    return;
+  }
+  const isBack = mode === "back";
+  els.artifactPanelClose.setAttribute("aria-label", isBack ? "프로젝트 파일 목록으로 돌아가기" : "산출물 패널 닫기");
+  els.artifactPanelClose.dataset.tooltip = isBack ? "목록으로" : "닫기";
 }
 
 function resetArtifacts() {
   state.artifacts = [];
   state.activeArtifact = null;
   state.activeArtifactRaw = "";
+  artifactPanelReturnView = null;
+  setArtifactCloseMode("close");
   updateArtifactCopyButton(false);
   setArtifactFullscreen(false);
   setArtifactPanel(false);
