@@ -59,9 +59,12 @@ def toggle_skill_enabled(name: str) -> bool:
     return set_skill_enabled(name, enabled)
 
 
-def apply_skill_enabled_state(skills: Iterable[SkillDefinition]) -> list[SkillDefinition]:
+def apply_skill_enabled_state(
+    skills: Iterable[SkillDefinition],
+    disabled_skill_names: set[str] | None = None,
+) -> list[SkillDefinition]:
     """Return skill definitions annotated with their persisted enabled state."""
-    disabled = get_disabled_skill_names()
+    disabled = disabled_skill_names if disabled_skill_names is not None else get_disabled_skill_names()
     return [
         replace(skill, enabled=_normalize_name(skill.name) not in disabled)
         for skill in skills

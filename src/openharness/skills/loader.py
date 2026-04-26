@@ -10,6 +10,7 @@ import yaml
 
 from openharness.config.paths import get_config_dir
 from openharness.config.settings import load_settings
+from openharness.project_preferences import load_project_preferences
 from openharness.skills.bundled import get_bundled_skills
 from openharness.skills.registry import SkillRegistry
 from openharness.skills.state import apply_skill_enabled_state
@@ -49,7 +50,9 @@ def load_skill_registry(
             if not plugin.enabled:
                 continue
             loaded.extend(plugin.skills)
-    for skill in apply_skill_enabled_state(loaded):
+    project_preferences = load_project_preferences(cwd) if cwd is not None else None
+    disabled_skill_names = set(project_preferences.disabled_skills) if project_preferences is not None else None
+    for skill in apply_skill_enabled_state(loaded, disabled_skill_names):
         if skill.enabled or include_disabled:
             registry.register(skill)
     return registry

@@ -252,7 +252,7 @@ function keepStreamingTailVisible() {
   streamingScrollTimer = window.setTimeout(() => {
     streamingScrollTimer = 0;
     if (!state.restoringHistory && state.autoFollowMessages) {
-      scrollMessagesToBottom({ smooth: true, duration: 1200 });
+      scrollMessagesToBottom({ smooth: true, duration: state.appSettings?.streamScrollDurationMs ?? 1200 });
     }
   }, 60);
 }

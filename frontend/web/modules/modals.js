@@ -4,7 +4,9 @@ export function createModals(ctx) {
   function appendMessage(...args) { return ctx.appendMessage(...args); }
   function respond(...args) { return ctx.respond(...args); }
   function postJson(...args) { return ctx.postJson(...args); }
+  function getJson(...args) { return ctx.getJson(...args); }
   function setSystemPrompt(...args) { return ctx.setSystemPrompt(...args); }
+  function saveAppSettings(...args) { return ctx.saveAppSettings(...args); }
   function loadWorkspaces(...args) { return ctx.loadWorkspaces(...args); }
   function createWorkspace(...args) { return ctx.createWorkspace(...args); }
   function deleteWorkspace(...args) { return ctx.deleteWorkspace(...args); }
@@ -57,6 +59,266 @@ function showSettingsModal() {
   card.append(title, body, input, helper, actions);
   els.modalHost.append(card);
   input.focus();
+}
+
+function downloadModeLabel() {
+  const settings = state.appSettings || {};
+  if (settings.downloadMode === "folder") {
+    return settings.downloadFolderPath ? `지정 폴더: ${settings.downloadFolderPath}` : "지정 폴더 필요";
+  }
+  return "매번 저장 위치 선택";
+}
+
+function settingField(label, helperText = "") {
+  const wrap = document.createElement("label");
+  wrap.className = "setting-field";
+  const title = document.createElement("span");
+  title.className = "setting-field-label";
+  title.textContent = label;
+  wrap.append(title);
+  if (helperText) {
+    const helper = document.createElement("small");
+    helper.textContent = helperText;
+    wrap.append(helper);
+  }
+  return wrap;
+}
+
+function showSettingsModal() {
+  els.modalHost.classList.remove("hidden");
+  els.modalHost.textContent = "";
+  els.modalHost.dataset.dismissible = "true";
+  delete els.modalHost.dataset.dismissAction;
+
+  const card = document.createElement("div");
+  card.className = "modal-card settings-card app-settings-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.append(modalCloseButton(closeModal));
+
+  const title = document.createElement("h2");
+  title.textContent = "설정";
+  const body = document.createElement("p");
+  body.textContent = "자주 바꾸는 동작과 연결 정보를 한 곳에서 관리합니다.";
+
+  const list = document.createElement("div");
+  list.className = "settings-list";
+  list.append(
+    settingsButton("프롬프트", state.systemPrompt ? "사용자 프롬프트 적용 중" : "기본값", showSystemPromptModal),
+    settingsButton("스트리밍 스크롤", `${state.appSettings?.streamScrollDurationMs ?? 1200} ms`, showBehaviorSettingsModal),
+    settingsButton("파일 저장", downloadModeLabel(), showDownloadSettingsModal),
+    settingsButton("P-GPT 키", "API Key / 사번 / 회사번호", showPoscoGptSettingsModal),
+  );
+
+  card.append(title, body, list);
+  els.modalHost.append(card);
+}
+
+function showSystemPromptModal() {
+  els.modalHost.classList.remove("hidden");
+  els.modalHost.textContent = "";
+  els.modalHost.dataset.dismissible = "true";
+  delete els.modalHost.dataset.dismissAction;
+
+  const card = document.createElement("div");
+  card.className = "modal-card system-settings-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.append(modalCloseButton(showSettingsModal));
+
+  const title = document.createElement("h2");
+  title.textContent = "프롬프트";
+  const body = document.createElement("p");
+  body.textContent = "에이전트에 항상 붙일 기본 지시문을 저장합니다.";
+  const input = document.createElement("textarea");
+  input.className = "system-prompt-input";
+  input.rows = 7;
+  input.placeholder = "예: 항상 한국어 존댓말로 답하고, 변경 전후를 짧게 정리해줘.";
+  input.value = state.systemPrompt || "";
+  const helper = document.createElement("p");
+  helper.className = "settings-helper";
+  helper.textContent = "비워두면 기본 프롬프트를 사용합니다. 저장한 내용은 다음 메시지부터 적용됩니다.";
+  const actions = document.createElement("div");
+  actions.className = "modal-actions";
+  actions.append(
+    modalButton("뒤로", false, showSettingsModal),
+    modalButton("초기화", false, () => {
+      input.value = "";
+      input.focus();
+    }),
+    modalButton("저장", true, async () => {
+      try {
+        await setSystemPrompt(input.value);
+        showSettingsModal();
+        if (!state.sessionId) {
+          appendMessage("system", "프롬프트 설정을 저장했습니다.");
+        }
+      } catch (error) {
+        appendMessage("system", `프롬프트 저장 실패: ${error.message}`);
+      }
+    }),
+  );
+  card.append(title, body, input, helper, actions);
+  els.modalHost.append(card);
+  input.focus();
+}
+
+function showBehaviorSettingsModal() {
+  els.modalHost.classList.remove("hidden");
+  els.modalHost.textContent = "";
+  els.modalHost.dataset.dismissible = "true";
+  delete els.modalHost.dataset.dismissAction;
+
+  const card = document.createElement("div");
+  card.className = "modal-card settings-card app-settings-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.append(modalCloseButton(showSettingsModal));
+
+  const title = document.createElement("h2");
+  title.textContent = "스트리밍 스크롤";
+  const body = document.createElement("p");
+  body.textContent = "답변이 스트리밍될 때 아래로 따라가는 애니메이션 시간을 조절합니다.";
+  const field = settingField("따라가기 시간", "0~5000ms 사이 값을 입력하세요.");
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "0";
+  input.max = "5000";
+  input.step = "50";
+  input.value = String(state.appSettings?.streamScrollDurationMs ?? 1200);
+  field.append(input);
+  const actions = document.createElement("div");
+  actions.className = "modal-actions";
+  actions.append(
+    modalButton("뒤로", false, showSettingsModal),
+    modalButton("저장", true, () => {
+      saveAppSettings({ streamScrollDurationMs: Number(input.value) });
+      showSettingsModal();
+    }),
+  );
+  card.append(title, body, field, actions);
+  els.modalHost.append(card);
+  input.focus();
+}
+
+function showDownloadSettingsModal() {
+  els.modalHost.classList.remove("hidden");
+  els.modalHost.textContent = "";
+  els.modalHost.dataset.dismissible = "true";
+  delete els.modalHost.dataset.dismissAction;
+
+  const card = document.createElement("div");
+  card.className = "modal-card settings-card app-settings-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.append(modalCloseButton(showSettingsModal));
+
+  const title = document.createElement("h2");
+  title.textContent = "파일 저장";
+  const body = document.createElement("p");
+  body.textContent = "다운로드할 때마다 위치를 물어볼지, 지정 폴더에 바로 저장할지 선택합니다.";
+
+  const modeField = settingField("저장 방식", "지정 폴더 저장은 앱 서버가 해당 경로로 파일을 복사합니다.");
+  const mode = document.createElement("select");
+  mode.innerHTML = `
+    <option value="ask">매번 저장 위치 선택</option>
+    <option value="folder">지정 폴더에 자동 저장</option>
+  `;
+  mode.value = state.appSettings?.downloadMode || "ask";
+  modeField.append(mode);
+
+  const folderField = settingField("지정 폴더 경로", "예: C:\\Users\\me\\Downloads\\OpenHarness");
+  const folder = document.createElement("input");
+  folder.type = "text";
+  folder.placeholder = "C:\\Users\\...\\Downloads";
+  folder.value = state.appSettings?.downloadFolderPath || "";
+  folderField.append(folder);
+
+  const actions = document.createElement("div");
+  actions.className = "modal-actions";
+  actions.append(
+    modalButton("뒤로", false, showSettingsModal),
+    modalButton("저장", true, () => {
+      saveAppSettings({
+        downloadMode: mode.value,
+        downloadFolderPath: folder.value,
+      });
+      showSettingsModal();
+    }),
+  );
+  card.append(title, body, modeField, folderField, actions);
+  els.modalHost.append(card);
+  mode.focus();
+}
+
+async function showPoscoGptSettingsModal() {
+  els.modalHost.classList.remove("hidden");
+  els.modalHost.textContent = "";
+  els.modalHost.dataset.dismissible = "true";
+  delete els.modalHost.dataset.dismissAction;
+
+  const card = document.createElement("div");
+  card.className = "modal-card settings-card app-settings-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.append(modalCloseButton(showSettingsModal));
+
+  const title = document.createElement("h2");
+  title.textContent = "P-GPT 키";
+  const body = document.createElement("p");
+  body.textContent = "P-GPT 연결에 필요한 API Key, 사번, 회사번호를 저장합니다.";
+  const loading = document.createElement("p");
+  loading.className = "settings-helper";
+  loading.textContent = "불러오는 중...";
+  card.append(title, body, loading);
+  els.modalHost.append(card);
+
+  try {
+    const current = await getJson("/api/settings/posco-gpt");
+    loading.remove();
+    const apiKeyField = settingField("API Key", current.apiKeyConfigured ? `현재 저장됨: ${current.apiKeyMasked}` : "새 API Key를 입력하세요.");
+    const apiKey = document.createElement("input");
+    apiKey.type = "password";
+    apiKey.placeholder = current.apiKeyConfigured ? "변경할 때만 입력" : "API Key";
+    apiKey.autocomplete = "off";
+    apiKeyField.append(apiKey);
+
+    const empField = settingField("사번", "emp_no");
+    const empNo = document.createElement("input");
+    empNo.type = "text";
+    empNo.value = current.empNo || "";
+    empNo.placeholder = "628703";
+    empField.append(empNo);
+
+    const compField = settingField("회사번호", "comp_no");
+    const compNo = document.createElement("input");
+    compNo.type = "text";
+    compNo.value = current.compNo || "30";
+    compNo.placeholder = "30";
+    compField.append(compNo);
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    actions.append(
+      modalButton("뒤로", false, showSettingsModal),
+      modalButton("저장", true, async () => {
+        try {
+          await postJson("/api/settings/posco-gpt", {
+            apiKey: apiKey.value,
+            empNo: empNo.value,
+            compNo: compNo.value,
+          });
+          showSettingsModal();
+        } catch (error) {
+          appendMessage("system", `P-GPT 설정 저장 실패: ${error.message}`);
+        }
+      }),
+    );
+    card.append(apiKeyField, empField, compField, actions);
+    apiKey.focus();
+  } catch (error) {
+    loading.textContent = `P-GPT 설정을 불러오지 못했습니다: ${error.message}`;
+  }
 }
 
 function showModelSettingsModal() {

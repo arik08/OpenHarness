@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from openharness.api.client import ApiMessageCompleteEvent, ApiMessageRequest, SupportsStreamingMessages
 from openharness.auth.manager import AuthManager
-from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, resolve_model_setting, save_settings
+from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, resolve_model_setting
 from openharness.bridge import get_bridge_manager
 from openharness.mcp.config import load_mcp_server_configs
 from openharness.mcp.types import McpConnectionStatus
@@ -34,10 +34,14 @@ from openharness.engine.stream_events import (
 from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock, ToolResultBlock, sanitize_conversation_messages
 from openharness.output_styles import load_output_styles
 from openharness.permissions.mutation_lock import release_mutation_lock
+from openharness.project_preferences import (
+    set_project_mcp_enabled,
+    set_project_plugin_enabled,
+    set_project_skill_enabled,
+)
 from openharness.prompts import build_runtime_system_prompt
 from openharness.services.session_storage import fallback_session_title_from_user_text, title_matches_first_user
 from openharness.skills import load_skill_registry
-from openharness.skills.state import set_skill_enabled
 from openharness.skills.types import SkillDefinition
 from openharness.tasks import get_task_manager
 from openharness.ui.protocol import BackendEvent, FrontendRequest, PluginSnapshot, SkillSnapshot, TranscriptItem
@@ -590,7 +594,13 @@ class ReactBackendHost:
         if not name.strip():
             await self._emit(BackendEvent(type="error", message="Skill name is required"))
             return
-        set_skill_enabled(name, bool(enabled))
+        assert self._bundle is not None
+        set_project_skill_enabled(
+            self._bundle.cwd,
+            name,
+            enabled is not False,
+            self._bundle.current_settings(),
+        )
         await self._emit(BackendEvent.skills_snapshot(self._skill_snapshots()))
         await self._emit(self._status_snapshot())
 
@@ -609,13 +619,7 @@ class ReactBackendHost:
         if name not in configs:
             await self._emit(BackendEvent(type="error", message=f"Unknown MCP server: {name}"))
             return
-        disabled = set(settings.disabled_mcp_servers or set())
-        if enabled is False:
-            disabled.add(name)
-        else:
-            disabled.discard(name)
-        settings.disabled_mcp_servers = disabled
-        save_settings(settings)
+        set_project_mcp_enabled(self._bundle.cwd, name, enabled is not False, settings)
         await self._emit(self._status_snapshot())
 
     async def _handle_set_plugin_enabled(self, name: str, enabled: bool | None) -> None:
@@ -628,8 +632,7 @@ class ReactBackendHost:
         if name not in plugins:
             await self._emit(BackendEvent(type="error", message=f"Unknown plugin: {name}"))
             return
-        settings.enabled_plugins[name] = enabled is not False
-        save_settings(settings)
+        set_project_plugin_enabled(self._bundle.cwd, name, enabled is not False, settings)
         await self._emit(self._status_snapshot())
 
     def _line_with_forced_skill(self, line: str) -> str:

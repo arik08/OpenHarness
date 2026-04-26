@@ -34,6 +34,7 @@ from openharness.mcp.config import load_mcp_server_configs
 from openharness.permissions import PermissionChecker
 from openharness.plugins import load_plugins
 from openharness.prompts import build_runtime_system_prompt
+from openharness.project_preferences import apply_project_preferences_to_settings
 from openharness.state import AppState, AppStateStore
 from openharness.services.session_backend import DEFAULT_SESSION_BACKEND, SessionBackend
 from openharness.tools import ToolExecutionContext, ToolRegistry, create_default_tool_registry
@@ -75,7 +76,8 @@ class RuntimeBundle:
         slash command (e.g. ``/fast``) would refresh UI state from disk and
         "snap back" the model/provider to whatever is stored in the config file.
         """
-        return load_settings().merge_cli_overrides(**self.settings_overrides)
+        settings = load_settings().merge_cli_overrides(**self.settings_overrides)
+        return apply_project_preferences_to_settings(settings, self.cwd)
 
     def current_plugins(self):
         """Return currently visible plugins for the working tree."""
@@ -226,8 +228,9 @@ async def build_runtime(
         "effort": effort,
         "permission_mode": permission_mode,
     }
-    settings = load_settings().merge_cli_overrides(**settings_overrides)
     cwd = str(Path(cwd).expanduser().resolve()) if cwd else str(Path.cwd())
+    settings = load_settings().merge_cli_overrides(**settings_overrides)
+    settings = apply_project_preferences_to_settings(settings, cwd)
     normalized_skill_dirs = tuple(str(Path(path).expanduser().resolve()) for path in (extra_skill_dirs or ()))
     normalized_plugin_roots = tuple(str(Path(path).expanduser().resolve()) for path in (extra_plugin_roots or ()))
     plugins = load_plugins(settings, cwd, extra_roots=normalized_plugin_roots)

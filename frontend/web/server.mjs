@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { networkInterfaces } from "node:os";
 import crypto from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
@@ -15,6 +15,7 @@ const assetsRoot = normalize(join(repoRoot, "assets"));
 const vendorRoot = normalize(join(root, "node_modules"));
 const playgroundRoot = normalize(join(repoRoot, "Playground"));
 const defaultWorkspaceName = "Default";
+const projectPreferencesRel = join(".openharness", "preferences.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const protocolPrefix = "OHJSON:";
@@ -225,6 +226,40 @@ async function artifactDownloadTarget(session, artifactPath) {
   };
 }
 
+function asciiHeaderFilename(name) {
+  const safe = String(name || "download")
+    .replace(/[\x00-\x1f\x7f"\\]/g, "_")
+    .replace(/[^\x20-\x7e]/g, "_")
+    .trim();
+  return safe || "download";
+}
+
+async function workspaceSessionFromRequest(params, artifactPath = "") {
+  const session = sessions.get(params.get("session"));
+  if (session) {
+    return session;
+  }
+  if (!params.get("workspacePath") && !params.get("workspaceName") && artifactPath) {
+    const workspaces = await listWorkspaces();
+    for (const workspace of workspaces) {
+      try {
+        const { target } = workspaceRelativeTarget(workspace.path, artifactPath);
+        const info = await stat(target);
+        if (info.isFile()) {
+          return { workspace };
+        }
+      } catch {
+        // Try the next workspace.
+      }
+    }
+  }
+  const workspace = workspaceFromHistoryRequest({
+    workspacePath: params.get("workspacePath"),
+    workspaceName: params.get("workspaceName"),
+  });
+  return { workspace };
+}
+
 async function deleteArtifactFile(session, artifactPath) {
   const { target, rel } = workspaceRelativeTarget(session.workspace.path, artifactPath);
   const info = await stat(target);
@@ -235,6 +270,27 @@ async function deleteArtifactFile(session, artifactPath) {
   return {
     path: rel,
     name: rel.split(/[\\/]/).pop() || rel,
+  };
+}
+
+async function copyArtifactToFolder(session, artifactPath, folderPath) {
+  const directory = normalize(String(folderPath || "").trim());
+  if (!directory || !isAbsolute(directory)) {
+    throw new Error("저장 폴더는 절대 경로여야 합니다");
+  }
+  const { target, rel } = workspaceRelativeTarget(session.workspace.path, artifactPath);
+  const info = await stat(target);
+  if (!info.isFile()) {
+    throw new Error("Artifact is not a file");
+  }
+  await mkdir(directory, { recursive: true });
+  const name = rel.split(/[\\/]/).pop() || basename(target) || "download";
+  const destination = join(directory, name);
+  await copyFile(target, destination);
+  return {
+    path: destination,
+    name,
+    size: info.size,
   };
 }
 
@@ -425,10 +481,166 @@ function workspaceFromPath(candidate) {
   return workspaceFromDirectoryName(rel);
 }
 
+function projectPreferencesPath(workspace) {
+  return join(workspace.path, projectPreferencesRel);
+}
+
+function globalConfigDir() {
+  const envDir = String(process.env.OPENHARNESS_CONFIG_DIR || "").trim();
+  if (envDir) {
+    return normalize(envDir);
+  }
+  return normalize(join(process.env.USERPROFILE || process.env.HOME || ".", ".openharness"));
+}
+
+async function readJsonFileIfExists(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function writeJsonFile(path, payload) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+}
+
+function maskSecret(value) {
+  const raw = String(value || "");
+  if (!raw) {
+    return "";
+  }
+  if (raw.length <= 8) {
+    return "••••";
+  }
+  return `${raw.slice(0, 4)}••••${raw.slice(-4)}`;
+}
+
+async function readPoscoGptSettings() {
+  const credentials = await readJsonFileIfExists(join(globalConfigDir(), "credentials.json")) || {};
+  const entry = credentials.posco_gpt && typeof credentials.posco_gpt === "object" ? credentials.posco_gpt : {};
+  return {
+    apiKeyConfigured: Boolean(entry.api_key),
+    apiKeyMasked: maskSecret(entry.api_key),
+    empNo: String(entry.emp_no || ""),
+    compNo: String(entry.comp_no || "30"),
+  };
+}
+
+async function savePoscoGptSettings(body = {}) {
+  const credentialsPath = join(globalConfigDir(), "credentials.json");
+  const credentials = await readJsonFileIfExists(credentialsPath) || {};
+  const current = credentials.posco_gpt && typeof credentials.posco_gpt === "object" ? credentials.posco_gpt : {};
+  const next = { ...current };
+  if (Object.prototype.hasOwnProperty.call(body, "apiKey")) {
+    const value = String(body.apiKey || "").trim();
+    if (value) {
+      next.api_key = value;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "empNo")) {
+    next.emp_no = String(body.empNo || "").trim();
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "compNo")) {
+    next.comp_no = String(body.compNo || "").trim() || "30";
+  }
+  credentials.posco_gpt = next;
+  await writeJsonFile(credentialsPath, credentials);
+  return readPoscoGptSettings();
+}
+
+function normalizeProjectPreferences(raw = {}) {
+  const disabledSkills = Array.isArray(raw.disabled_skills)
+    ? raw.disabled_skills
+    : Array.isArray(raw.disabledSkills)
+      ? raw.disabledSkills
+      : [];
+  const disabledMcpServers = Array.isArray(raw.disabled_mcp_servers)
+    ? raw.disabled_mcp_servers
+    : Array.isArray(raw.disabledMcpServers)
+      ? raw.disabledMcpServers
+      : [];
+  const enabledPlugins = raw.enabled_plugins && typeof raw.enabled_plugins === "object" && !Array.isArray(raw.enabled_plugins)
+    ? raw.enabled_plugins
+    : raw.enabledPlugins && typeof raw.enabledPlugins === "object" && !Array.isArray(raw.enabledPlugins)
+      ? raw.enabledPlugins
+      : {};
+  return {
+    version: 1,
+    disabled_skills: [...new Set(disabledSkills.map((name) => String(name || "").trim().toLowerCase()).filter(Boolean))].sort(),
+    disabled_mcp_servers: [...new Set(disabledMcpServers.map((name) => String(name || "").trim()).filter(Boolean))].sort(),
+    enabled_plugins: Object.fromEntries(
+      Object.entries(enabledPlugins)
+        .map(([name, value]) => [String(name || "").trim(), value !== false])
+        .filter(([name]) => name)
+        .sort(([left], [right]) => left.localeCompare(right)),
+    ),
+  };
+}
+
+async function globalPreferencesSnapshot() {
+  const configDir = globalConfigDir();
+  const settings = await readJsonFileIfExists(join(configDir, "settings.json")) || {};
+  const skillState = await readJsonFileIfExists(join(configDir, "skill_state.json")) || {};
+  return normalizeProjectPreferences({
+    disabled_skills: Array.isArray(skillState.disabled_skills) ? skillState.disabled_skills : [],
+    disabled_mcp_servers: Array.isArray(settings.disabled_mcp_servers) ? settings.disabled_mcp_servers : [],
+    enabled_plugins: settings.enabled_plugins && typeof settings.enabled_plugins === "object" ? settings.enabled_plugins : {},
+  });
+}
+
+async function ensureDefaultPreferences() {
+  const workspace = workspacePathFromName(defaultWorkspaceName);
+  await mkdir(workspace.path, { recursive: true });
+  const preferencesPath = projectPreferencesPath(workspace);
+  try {
+    await stat(preferencesPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+    await mkdir(dirname(preferencesPath), { recursive: true });
+    await writeFile(preferencesPath, `${JSON.stringify(await globalPreferencesSnapshot(), null, 2)}\n`, "utf8");
+  }
+  return preferencesPath;
+}
+
+async function copyDefaultPreferencesToWorkspace(workspace) {
+  if (workspace.name === defaultWorkspaceName) {
+    await ensureDefaultPreferences();
+    return;
+  }
+  const source = await ensureDefaultPreferences();
+  const target = projectPreferencesPath(workspace);
+  try {
+    await stat(target);
+    return;
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  const raw = await readJsonFileIfExists(source);
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, `${JSON.stringify(normalizeProjectPreferences(raw), null, 2)}\n`, "utf8");
+}
+
 async function ensureWorkspace(name = defaultWorkspaceName) {
   const workspace = workspacePathFromName(name);
   await mkdir(playgroundRoot, { recursive: true });
+  let existed = false;
+  try {
+    existed = (await stat(workspace.path)).isDirectory();
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
   await mkdir(workspace.path, { recursive: true });
+  if (!existed) {
+    await copyDefaultPreferencesToWorkspace(workspace);
+  }
   return workspace;
 }
 
@@ -1182,6 +1394,25 @@ async function handleApi(request, response, pathname) {
     return true;
   }
 
+  if (request.method === "GET" && pathname === "/api/settings/posco-gpt") {
+    try {
+      json(response, 200, await readPoscoGptSettings());
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not read P-GPT settings" });
+    }
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/settings/posco-gpt") {
+    try {
+      const body = await readJson(request);
+      json(response, 200, await savePoscoGptSettings(body));
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not save P-GPT settings" });
+    }
+    return true;
+  }
+
   if (request.method === "GET" && pathname === "/api/events") {
     const id = new URL(request.url, `http://localhost:${port}`).searchParams.get("session");
     const session = sessions.get(id);
@@ -1243,23 +1474,39 @@ async function handleApi(request, response, pathname) {
 
   if (request.method === "GET" && pathname === "/api/artifact/download") {
     const params = new URL(request.url, `http://localhost:${port}`).searchParams;
-    const session = sessions.get(params.get("session"));
-    if (!session) {
-      json(response, 404, { error: "Unknown session" });
-      return true;
-    }
     try {
-      const payload = await artifactDownloadTarget(session, params.get("path"));
-      const encodedName = encodeURIComponent(payload.name).replace(/['()]/g, escape).replace(/\*/g, "%2A");
+      const artifactPath = params.get("path");
+      const session = await workspaceSessionFromRequest(params, artifactPath);
+      const payload = await artifactDownloadTarget(session, artifactPath);
+      const encodedName = encodeURIComponent(payload.name).replace(/[!'()*]/g, (char) =>
+        `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+      );
+      const fallbackName = asciiHeaderFilename(payload.name);
       response.writeHead(200, {
         "Content-Type": payload.mime,
         "Content-Length": String(payload.size),
-        "Content-Disposition": `attachment; filename="${payload.name.replace(/["\\]/g, "_")}"; filename*=UTF-8''${encodedName}`,
+        "Content-Disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodedName}`,
         "Cache-Control": "no-store",
       });
       createReadStream(payload.target).pipe(response);
     } catch (error) {
       json(response, 400, { error: error.message || "Could not download artifact" });
+    }
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/artifact/save-copy") {
+    try {
+      const body = await readJson(request);
+      const params = new URLSearchParams();
+      if (body.session) params.set("session", body.session);
+      if (body.workspacePath) params.set("workspacePath", body.workspacePath);
+      if (body.workspaceName) params.set("workspaceName", body.workspaceName);
+      const session = await workspaceSessionFromRequest(params, body.path);
+      const saved = await copyArtifactToFolder(session, body.path, body.folderPath);
+      json(response, 200, { saved });
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not save artifact" });
     }
     return true;
   }
@@ -1316,12 +1563,8 @@ async function handleApi(request, response, pathname) {
 
   if (request.method === "GET" && pathname === "/api/project-files") {
     const params = new URL(request.url, `http://localhost:${port}`).searchParams;
-    const session = sessions.get(params.get("session"));
-    if (!session) {
-      json(response, 404, { error: "Unknown session" });
-      return true;
-    }
     try {
+      const session = await workspaceSessionFromRequest(params);
       json(response, 200, {
         workspace: session.workspace,
         files: await listProjectFiles(session),

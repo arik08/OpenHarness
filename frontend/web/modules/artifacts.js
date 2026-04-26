@@ -32,6 +32,25 @@ function normalizeArtifactPath(value) {
     .replace(/\\/g, "/");
 }
 
+function projectFileQuery(extra = {}) {
+  const query = new URLSearchParams();
+  if (state.sessionId) {
+    query.set("session", state.sessionId);
+  }
+  if (state.workspacePath) {
+    query.set("workspacePath", state.workspacePath);
+  }
+  if (state.workspaceName) {
+    query.set("workspaceName", state.workspaceName);
+  }
+  for (const [key, value] of Object.entries(extra)) {
+    if (value !== undefined && value !== null) {
+      query.set(key, String(value));
+    }
+  }
+  return query;
+}
+
 function artifactName(path) {
   const normalized = normalizeArtifactPath(path);
   return normalized.split("/").filter(Boolean).pop() || normalized || "artifact";
@@ -415,6 +434,100 @@ function renderArtifactError(error) {
   }
 }
 
+async function downloadProjectFile(artifact, control) {
+  const suggestedName = artifact.name || artifactName(artifact.path);
+  const downloadSettings = state.appSettings || {};
+  if (downloadSettings.downloadMode === "folder" && downloadSettings.downloadFolderPath) {
+    const response = await fetch("/api/artifact/save-copy", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        session: state.sessionId || "",
+        workspacePath: state.workspacePath || "",
+        workspaceName: state.workspaceName || "",
+        path: artifact.path,
+        folderPath: downloadSettings.downloadFolderPath,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+    if (control) {
+      control.dataset.tooltip = `저장됨: ${payload.saved?.path || downloadSettings.downloadFolderPath}`;
+      window.setTimeout(() => {
+        if (control.isConnected) {
+          control.dataset.tooltip = "다운로드";
+        }
+      }, 2200);
+    }
+    return;
+  }
+
+  let fileHandle = null;
+  if (typeof window.showSaveFilePicker === "function") {
+    try {
+      fileHandle = await window.showSaveFilePicker({ suggestedName });
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        if (control) {
+          control.dataset.tooltip = "저장 취소됨";
+        }
+        return;
+      }
+      throw error;
+    }
+  }
+
+  const query = projectFileQuery({ path: artifact.path });
+  const response = await fetch(`/api/artifact/download?${query.toString()}`);
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    let message = body || `HTTP ${response.status}`;
+    try {
+      message = JSON.parse(body).error || message;
+    } catch {
+      // Keep the raw response text when the server does not return JSON.
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  if (fileHandle) {
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    if (control) {
+      control.dataset.tooltip = "선택한 위치에 저장됨";
+      window.setTimeout(() => {
+        if (control.isConnected) {
+          control.dataset.tooltip = "다운로드";
+        }
+      }, 1600);
+    }
+    return;
+  }
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = suggestedName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  if (control) {
+    control.dataset.tooltip = "브라우저 다운로드 폴더에 저장됨";
+    window.setTimeout(() => {
+      if (control.isConnected) {
+        control.dataset.tooltip = "다운로드";
+      }
+    }, 1600);
+  }
+}
+
 function renderProjectFiles(files) {
   artifactPanelReturnView = null;
   setArtifactCloseMode("close");
@@ -510,10 +623,7 @@ function renderProjectFiles(files) {
     openButton.addEventListener("click", () => openArtifact(artifact));
 
     const download = document.createElement("a");
-    const query = new URLSearchParams({
-      session: state.sessionId || "",
-      path: artifact.path,
-    });
+    const query = projectFileQuery({ path: artifact.path });
     download.className = "project-file-download";
     download.href = `/api/artifact/download?${query.toString()}`;
     download.download = artifact.name;
@@ -526,6 +636,19 @@ function renderProjectFiles(files) {
         <path d="M5 20h14"></path>
       </svg>
     `;
+    download.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      download.classList.add("is-loading");
+      download.dataset.tooltip = "다운로드 중";
+      try {
+        await downloadProjectFile(artifact, download);
+      } catch (error) {
+        download.dataset.tooltip = `다운로드 실패: ${error.message}`;
+      } finally {
+        download.classList.remove("is-loading");
+      }
+    });
 
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
@@ -592,7 +715,7 @@ function renderProjectFiles(files) {
 }
 
 async function openProjectFiles() {
-  if (!state.sessionId) {
+  if (!state.sessionId && !state.workspacePath && !state.workspaceName) {
     return;
   }
   state.activeArtifactRaw = "";
@@ -612,8 +735,8 @@ async function openProjectFiles() {
     els.artifactViewer.innerHTML = `<p class="artifact-empty">파일 목록을 불러오는 중...</p>`;
   }
   try {
-    const query = new URLSearchParams({ session: state.sessionId });
-    const response = await fetch(`/api/artifacts?${query.toString()}`, { headers: { Accept: "application/json" } });
+    const query = projectFileQuery();
+    const response = await fetch(`/api/project-files?${query.toString()}`, { headers: { Accept: "application/json" } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(payload.error || `HTTP ${response.status}`);

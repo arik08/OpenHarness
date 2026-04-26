@@ -1,3 +1,40 @@
+const appSettingsKey = "openharness:appSettings";
+const defaultAppSettings = {
+  streamScrollDurationMs: 1200,
+  downloadMode: "ask",
+  downloadFolderPath: "",
+};
+
+function loadAppSettings() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(appSettingsKey) || "{}");
+    const parsedScrollDuration = Number(parsed.streamScrollDurationMs);
+    return {
+      ...defaultAppSettings,
+      ...parsed,
+      streamScrollDurationMs: Math.max(0, Math.min(5000, Number.isFinite(parsedScrollDuration) ? parsedScrollDuration : defaultAppSettings.streamScrollDurationMs)),
+      downloadMode: parsed.downloadMode === "folder" ? "folder" : "ask",
+      downloadFolderPath: String(parsed.downloadFolderPath || ""),
+    };
+  } catch {
+    return { ...defaultAppSettings };
+  }
+}
+
+export function saveAppSettings(nextSettings) {
+  state.appSettings = {
+    ...defaultAppSettings,
+    ...(state.appSettings || {}),
+    ...(nextSettings || {}),
+  };
+  const scrollDuration = Number(state.appSettings.streamScrollDurationMs);
+  state.appSettings.streamScrollDurationMs = Math.max(0, Math.min(5000, Number.isFinite(scrollDuration) ? scrollDuration : defaultAppSettings.streamScrollDurationMs));
+  state.appSettings.downloadMode = state.appSettings.downloadMode === "folder" ? "folder" : "ask";
+  state.appSettings.downloadFolderPath = String(state.appSettings.downloadFolderPath || "");
+  localStorage.setItem(appSettingsKey, JSON.stringify(state.appSettings));
+  return state.appSettings;
+}
+
 export const state = {
   sessionId: null,
   clientId: localStorage.getItem("openharness:clientId") || "",
@@ -33,6 +70,7 @@ export const state = {
   permissionMode: "-",
   planModePinned: null,
   systemPrompt: localStorage.getItem("openharness:systemPrompt") || "",
+  appSettings: loadAppSettings(),
   workspaceName: localStorage.getItem("openharness:workspaceName") || "",
   workspacePath: "",
   workspaces: [],

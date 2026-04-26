@@ -108,7 +108,6 @@ function renderHistory(options) {
     title.textContent = formattedTitle;
     const detail = document.createElement("small");
     detail.textContent = option.description || option.label || "저장된 대화";
-    item.title = detail.textContent;
 
     const openButton = document.createElement("button");
     openButton.type = "button";

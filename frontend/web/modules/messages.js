@@ -282,16 +282,8 @@ function createSkillCatalog(text) {
     const description = document.createElement("span");
     description.className = "skill-pill-description";
     description.textContent = skill.description || "Skill";
-    const tooltip = document.createElement("span");
-    tooltip.className = "skill-pill-tooltip";
-    tooltip.setAttribute("aria-hidden", "true");
-    const tooltipName = document.createElement("strong");
-    tooltipName.textContent = skill.name;
-    const tooltipDescription = document.createElement("span");
-    tooltipDescription.textContent = skill.description || "Skill";
-    tooltip.append(tooltipName, tooltipDescription);
     header.append(name, status);
-    item.append(header, description, tooltip);
+    item.append(header, description);
     grid.append(item);
     updateSkillToggleButton(item);
   }
