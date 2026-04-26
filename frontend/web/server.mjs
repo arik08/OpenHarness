@@ -940,9 +940,12 @@ async function handleApi(request, response, pathname) {
   }
 
   if (request.method === "GET" && pathname === "/api/live-sessions") {
-    const clientId = new URL(request.url, `http://localhost:${port}`).searchParams.get("clientId") || "";
+    const searchParams = new URL(request.url, `http://localhost:${port}`).searchParams;
+    const clientId = searchParams.get("clientId") || "";
+    const workspacePath = searchParams.get("workspacePath") || "";
     const liveSessions = [...sessions.values()]
       .filter((session) => session.clientId && session.clientId === clientId && !session.shuttingDown)
+      .filter((session) => !workspacePath || session.workspace?.path === workspacePath)
       .map(liveSessionPayload)
       .sort((left, right) => left.createdAt - right.createdAt);
     json(response, 200, { sessions: liveSessions });

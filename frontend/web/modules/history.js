@@ -12,7 +12,7 @@ export function createHistory(ctx) {
   function openHistorySession(...args) { return ctx.openHistorySession?.(...args); }
 
 function liveHistoryOptions() {
-  const slots = [...state.chatSlots.values()];
+  const slots = [...state.chatSlots.values()].filter(slotBelongsToCurrentWorkspace);
   const isEmptyDraft = (slot) => Boolean(
     slot
       && slot.showInHistory
@@ -39,6 +39,23 @@ function liveHistoryOptions() {
       busy: Boolean(slot.busy),
       busyVisual: Boolean(slot.busyVisual),
     }));
+}
+
+function slotBelongsToCurrentWorkspace(slot) {
+  if (!slot) {
+    return false;
+  }
+  const currentPath = String(state.workspacePath || "").trim();
+  const slotPath = String(slot.workspace?.path || "").trim();
+  if (currentPath) {
+    return slotPath === currentPath;
+  }
+  const currentName = String(state.workspaceName || "").trim();
+  const slotName = String(slot.workspace?.name || "").trim();
+  if (currentName) {
+    return slotName === currentName;
+  }
+  return true;
 }
 
 function renderHistory(options) {

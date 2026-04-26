@@ -1371,7 +1371,8 @@ a:focus-visible {
 }
 
 .artifact-action:hover:not(:disabled),
-.artifact-action.copied {
+.artifact-action.copied,
+.artifact-action.active {
   background: var(--sidebar-hover);
   border-color: var(--line);
   color: var(--ink);
@@ -1478,6 +1479,87 @@ a:focus-visible {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.artifact-source {
+  min-height: 100%;
+  font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+  word-break: normal;
+}
+
+.artifact-source code {
+  display: block;
+  min-width: max-content;
+  background: transparent;
+  color: inherit;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs {
+  background: transparent;
+  color: #24211d;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-tag,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-name,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-selector-tag {
+  color: #8b2f22;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-attr,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-attribute,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-property {
+  color: #875600;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-string,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-doctag {
+  color: #1f6f4a;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-keyword,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-selector-pseudo,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-built_in {
+  color: #7a3db8;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-number,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-literal {
+  color: #0c6f8f;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-comment {
+  color: #82796d;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-section,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-title {
+  color: #005fc7;
+  font-weight: 760;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-bullet,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-symbol,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-meta {
+  color: #9a6400;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-strong,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-emphasis {
+  color: #5b6772;
+  font-weight: 760;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-link {
+  color: #0a6f8f;
+}
+
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-code,
+:root:not([data-theme="dark"]):not([data-theme="mono"]):not([data-theme="mono-orange"]) .artifact-source .hljs-quote {
+  color: #485a66;
 }
 
 .chat-header {

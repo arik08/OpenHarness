@@ -446,7 +446,11 @@ async function startBackendSlot({ makeActive = true } = {}) {
 }
 
 async function restoreLiveSlots() {
-  const data = await getJson(`/api/live-sessions?clientId=${encodeURIComponent(state.clientId)}`);
+  const params = new URLSearchParams({ clientId: state.clientId });
+  if (state.workspacePath) {
+    params.set("workspacePath", state.workspacePath);
+  }
+  const data = await getJson(`/api/live-sessions?${params.toString()}`);
   const liveSessions = Array.isArray(data.sessions) ? data.sessions : [];
   const sameWorkspace = liveSessions.filter((session) =>
     !state.workspacePath || !session.workspace?.path || session.workspace.path === state.workspacePath
