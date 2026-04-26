@@ -1,0 +1,18 @@
+[
+  {
+    "name": "app prototype",
+    "prompt": "Create a clickable iOS prototype for an AI focus timer with four core screens."
+  },
+  {
+    "name": "slide deck",
+    "prompt": "Create a 12-slide presentation about AI psychology and recommend three visual directions first."
+  },
+  {
+    "name": "motion design",
+    "prompt": "Turn this product-launch logic into a 60-second animation and export MP4 and GIF."
+  },
+  {
+    "name": "design review",
+    "prompt": "Review this design across five dimensions and give concrete fixes."
+  }
+]

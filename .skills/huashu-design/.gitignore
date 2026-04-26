@@ -1,0 +1,18 @@
+# Video render output from render-video.js
+frames/
+*.mp4
+*.gif
+*.mov
+
+# Personal asset index. Keep only the example template in git.
+personal-asset-index.json
+
+# Node / Python dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Verification artifacts: screenshots and temporary test scripts.
+screenshots/
+verification-*.js
+*.tmp

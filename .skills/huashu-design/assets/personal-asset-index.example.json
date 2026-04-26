@@ -1,0 +1,22 @@
+{
+  "brand": "Example Brand",
+  "description": "Example personal asset index. Replace with local brand assets when needed.",
+  "assets": [
+    {
+      "type": "logo",
+      "path": "assets/brand/logo.svg",
+      "notes": "Primary logo"
+    },
+    {
+      "type": "palette",
+      "path": "assets/brand/palette.json",
+      "notes": "Brand color tokens"
+    },
+    {
+      "type": "screenshot",
+      "path": "assets/brand/app-home.png",
+      "notes": "Reference UI screenshot"
+    }
+  ],
+  "usage": "Keep real private assets out of git unless the project explicitly requires them."
+}
