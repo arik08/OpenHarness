@@ -105,7 +105,20 @@ CommandHandler = Callable[[str, CommandContext], Awaitable[CommandResult]]
 
 def _parse_posco_login_args(args: str) -> dict[str, str]:
     """Parse P-GPT login args from either positional or key=value form."""
-    tokens = args.split()
+    raw = args.strip()
+    if raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            return {
+                "api_key": str(payload.get("apiKey") or payload.get("api_key") or "").strip(),
+                "emp_no": str(payload.get("empNo") or payload.get("emp_no") or "").strip(),
+                "comp_no": str(payload.get("compNo") or payload.get("comp_no") or "30").strip() or "30",
+            }
+
+    tokens = raw.split()
     keyed: dict[str, str] = {}
     for token in tokens:
         if "=" not in token:

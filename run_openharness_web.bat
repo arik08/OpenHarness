@@ -10,7 +10,10 @@ if "%HOST%"=="" set "HOST=0.0.0.0"
 set "OPENHARNESS_URL=http://localhost:%PORT%"
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ip = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown' } | Sort-Object InterfaceMetric | Select-Object -First 1 -ExpandProperty IPAddress; if ($ip) { $ip }"`) do set "OPENHARNESS_LAN_IP=%%I"
 if not "%OPENHARNESS_LAN_IP%"=="" set "OPENHARNESS_LAN_URL=http://%OPENHARNESS_LAN_IP%:%PORT%"
-set "OPENHARNESS_HOME=%USERPROFILE%\.openharness"
+if "%OPENHARNESS_CONFIG_DIR%"=="" set "OPENHARNESS_CONFIG_DIR=%CD%\.openharness"
+if "%OPENHARNESS_DATA_DIR%"=="" set "OPENHARNESS_DATA_DIR=%OPENHARNESS_CONFIG_DIR%\data"
+if "%OPENHARNESS_LOGS_DIR%"=="" set "OPENHARNESS_LOGS_DIR=%OPENHARNESS_CONFIG_DIR%\logs"
+set "OPENHARNESS_HOME=%OPENHARNESS_CONFIG_DIR%"
 set "OPENHARNESS_VENV_PY=%OPENHARNESS_HOME%\venv\Scripts\python.exe"
 
 echo.
@@ -20,6 +23,7 @@ echo ============================================================
 echo.
 echo   URL: %OPENHARNESS_URL%
 if not "%OPENHARNESS_LAN_URL%"=="" echo   LAN: %OPENHARNESS_LAN_URL%
+echo   Config: %OPENHARNESS_CONFIG_DIR%
 echo.
 echo   This window is running the web server and backend launcher.
 echo   Keep it open while using OpenHarness in the browser.

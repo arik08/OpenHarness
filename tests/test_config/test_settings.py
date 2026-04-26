@@ -631,6 +631,20 @@ class TestPoscoGptProvider:
         assert resolved.value == "posco-test-key"
         assert "POSCO_API_KEY" in resolved.source
 
+    def test_resolve_auth_prefers_stored_posco_key_over_flat_api_key(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+        monkeypatch.delenv("POSCO_API_KEY", raising=False)
+        from openharness.auth.storage import store_credential
+
+        store_credential("posco_gpt", "api_key", "posco-stored-key", use_keyring=False)
+        settings = Settings(active_profile="p-gpt", api_key="wrong-flat-key")
+
+        resolved = settings.resolve_auth()
+
+        assert resolved.provider == "posco_gpt"
+        assert resolved.value == "posco-stored-key"
+        assert resolved.source == "file:posco_gpt"
+
     def test_posco_gpt_profile_materializes_default_model(self):
         settings = Settings(active_profile="p-gpt")
 
@@ -639,3 +653,14 @@ class TestPoscoGptProvider:
         assert materialized.model == "gpt-5.4-mini"
         assert materialized.provider == "posco_gpt"
         assert materialized.api_format == "posco_gpt"
+
+    def test_load_settings_preserves_active_profile_without_saved_profiles(self, tmp_path: Path):
+        config_path = tmp_path / "settings.json"
+        config_path.write_text('{"active_profile": "p-gpt"}\n', encoding="utf-8")
+
+        loaded = load_settings(config_path)
+
+        assert loaded.active_profile == "p-gpt"
+        assert loaded.provider == "posco_gpt"
+        assert loaded.api_format == "posco_gpt"
+        assert loaded.model == "gpt-5.4-mini"

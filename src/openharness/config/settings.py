@@ -718,16 +718,6 @@ class Settings(BaseModel):
                     state="configured",
                 )
 
-        explicit_key = "" if profile.credential_slot else self.api_key
-        if explicit_key:
-            return ResolvedAuth(
-                provider=provider or storage_provider,
-                auth_kind="api_key",
-                value=explicit_key,
-                source="settings_or_env",
-                state="configured",
-            )
-
         stored = load_credential(storage_provider, "api_key")
         if stored:
             return ResolvedAuth(
@@ -735,6 +725,16 @@ class Settings(BaseModel):
                 auth_kind="api_key",
                 value=stored,
                 source=f"file:{storage_provider}",
+                state="configured",
+            )
+
+        explicit_key = "" if profile.credential_slot else self.api_key
+        if explicit_key:
+            return ResolvedAuth(
+                provider=provider or storage_provider,
+                auth_kind="api_key",
+                value=explicit_key,
+                source="settings_or_env",
                 state="configured",
             )
 
@@ -887,7 +887,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     if config_path.exists():
         raw = json.loads(config_path.read_text(encoding="utf-8"))
         settings = Settings.model_validate(raw)
-        if "profiles" not in raw or "active_profile" not in raw:
+        if "active_profile" not in raw:
             profile_name, profile = _profile_from_flat_settings(settings)
             merged_profiles = settings.merged_profiles()
             merged_profiles[profile_name] = profile
