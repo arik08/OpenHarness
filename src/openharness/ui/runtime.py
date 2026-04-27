@@ -13,7 +13,11 @@ from openharness.api.errors import AuthenticationFailure
 from openharness.api.codex_client import CodexApiClient
 from openharness.api.copilot_client import CopilotClient
 from openharness.api.openai_client import OpenAICompatibleClient
-from openharness.api.posco_client import PoscoGptClient
+from openharness.api.pgpt_auth import (
+    build_pgpt_auth_token,
+    resolve_pgpt_company_code,
+    resolve_pgpt_employee_no,
+)
 from openharness.api.provider import auth_status, detect_provider
 from openharness.bridge import get_bridge_manager
 from openharness.commands import CommandContext, CommandResult, create_default_command_registry
@@ -178,17 +182,16 @@ def _resolve_api_client_from_settings(settings) -> SupportsStreamingMessages:
             claude_oauth=True,
             auth_token_resolver=lambda: settings.resolve_auth().value,
         )
-    if settings.provider == "posco_gpt" or settings.api_format == "posco_gpt":
-        auth = _safe_resolve_auth()
-        return PoscoGptClient(
-            api_key=auth.value,
-            base_url=settings.base_url,
-            timeout=settings.timeout,
-        )
     if settings.api_format in ("openai", "openai_compat"):
         auth = _safe_resolve_auth()
+        api_key = auth.value
+        if settings.resolve_profile()[1].auth_source == "pgpt_api_key":
+            employee_no = resolve_pgpt_employee_no()
+            if not employee_no:
+                raise ValueError(_missing_auth_message(settings))
+            api_key = build_pgpt_auth_token(api_key, employee_no, resolve_pgpt_company_code())
         return OpenAICompatibleClient(
-            api_key=auth.value,
+            api_key=api_key,
             base_url=settings.base_url,
             timeout=settings.timeout,
         )
@@ -200,10 +203,10 @@ def _resolve_api_client_from_settings(settings) -> SupportsStreamingMessages:
 
 
 def _missing_auth_message(settings) -> str:
-    if settings.provider == "posco_gpt" or settings.api_format == "posco_gpt":
+    if settings.resolve_profile()[1].auth_source == "pgpt_api_key":
         return (
-            "P-GPT 인증 정보가 없습니다. 설정에서 P-GPT API Key와 Emp No를 저장하거나 "
-            "POSCO_API_KEY, POSCO_EMP_NO 환경 변수를 설정하세요."
+            "P-GPT 인증 정보가 없습니다. PGPT_API_KEY와 PGPT_EMPLOYEE_NO 환경 변수를 "
+            "설정하거나 앱 설정에서 P-GPT API Key와 사번을 저장하세요."
         )
     if settings.provider == "openai_codex":
         return "Codex 인증 정보가 없습니다. `oh auth codex-login`으로 로그인하세요."
@@ -710,13 +713,14 @@ async def _run_shell_shortcut(
     if not command:
         await print_system("Usage: !<command>")
         return
-    tool = bundle.tool_registry.get("bash")
+    tool = bundle.tool_registry.get("cmd") or bundle.tool_registry.get("bash")
     if tool is None:
-        await print_system("bash tool is not available.")
+        await print_system("command tool is not available.")
         return
 
     tool_input = {"command": command}
-    await render_event(ToolExecutionStarted(tool_name="bash", tool_input=tool_input))
+    tool_name = tool.name
+    await render_event(ToolExecutionStarted(tool_name=tool_name, tool_input=tool_input))
     try:
         result = await tool.execute(
             tool.input_model(**tool_input),
@@ -725,7 +729,7 @@ async def _run_shell_shortcut(
     except asyncio.CancelledError:
         await render_event(
             ToolExecutionCompleted(
-                tool_name="bash",
+                tool_name=tool_name,
                 output="Command cancelled.",
                 is_error=True,
             )
@@ -734,7 +738,7 @@ async def _run_shell_shortcut(
     except Exception as exc:
         await render_event(
             ToolExecutionCompleted(
-                tool_name="bash",
+                tool_name=tool_name,
                 output=str(exc),
                 is_error=True,
             )
@@ -743,7 +747,7 @@ async def _run_shell_shortcut(
 
     await render_event(
         ToolExecutionCompleted(
-            tool_name="bash",
+            tool_name=tool_name,
             output=result.output,
             is_error=result.is_error,
         )

@@ -15,7 +15,6 @@ _AUTH_KIND: dict[str, str] = {
     "copilot": "oauth_device",
     "openai_codex": "external_oauth",
     "anthropic_claude": "external_oauth",
-    "posco_gpt": "api_key",
 }
 
 _VOICE_REASON: dict[str, str] = {
@@ -26,7 +25,6 @@ _VOICE_REASON: dict[str, str] = {
     "copilot": "voice mode is not supported for GitHub Copilot",
     "openai_codex": "voice mode is not supported for Codex subscription auth",
     "anthropic_claude": "voice mode is not supported for Claude subscription auth",
-    "posco_gpt": "voice mode is not supported for P-GPT",
 }
 
 
@@ -55,13 +53,6 @@ def detect_provider(settings: Settings) -> ProviderInfo:
             auth_kind="external_oauth",
             voice_supported=False,
             voice_reason=_VOICE_REASON["anthropic_claude"],
-        )
-    if settings.provider == "posco_gpt" or settings.api_format == "posco_gpt":
-        return ProviderInfo(
-            name="posco_gpt",
-            auth_kind="api_key",
-            voice_supported=False,
-            voice_reason=_VOICE_REASON["posco_gpt"],
         )
     if settings.api_format == "copilot":
         return ProviderInfo(

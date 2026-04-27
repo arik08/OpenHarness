@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import sys
 
+from openharness.platforms import get_platform
+
 
 def test_create_default_tool_registry_does_not_import_mailbox_eagerly():
     for module_name in list(sys.modules):
@@ -16,6 +18,7 @@ def test_create_default_tool_registry_does_not_import_mailbox_eagerly():
     tools = importlib.import_module("openharness.tools")
     registry = tools.create_default_tool_registry()
 
-    assert registry.get("bash") is not None
+    command_tool = "cmd" if get_platform() == "windows" else "bash"
+    assert registry.get(command_tool) is not None
     assert "openharness.swarm.mailbox" not in sys.modules
     assert "openharness.swarm.lockfile" not in sys.modules

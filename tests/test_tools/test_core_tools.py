@@ -66,6 +66,51 @@ async def test_file_write_read_and_edit(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_file_edit_applies_multiple_replacements_in_one_call(tmp_path: Path):
+    context = ToolExecutionContext(cwd=tmp_path)
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\ntwo\n", encoding="utf-8")
+
+    edit_result = await FileEditTool().execute(
+        FileEditToolInput(
+            path="notes.txt",
+            edits=[
+                {"old_str": "one", "new_str": "ONE"},
+                {"old_str": "two", "new_str": "TWO", "replace_all": True},
+                {"old_str": "three", "new_str": "THREE"},
+            ],
+        ),
+        context,
+    )
+
+    assert edit_result.is_error is False
+    assert target.read_text(encoding="utf-8") == "ONE\nTWO\nTHREE\nTWO\n"
+
+
+@pytest.mark.asyncio
+async def test_file_edit_multi_replacement_does_not_partially_write_on_missing_text(tmp_path: Path):
+    context = ToolExecutionContext(cwd=tmp_path)
+    target = tmp_path / "notes.txt"
+    original = "one\ntwo\nthree\n"
+    target.write_text(original, encoding="utf-8")
+
+    edit_result = await FileEditTool().execute(
+        FileEditToolInput(
+            path="notes.txt",
+            edits=[
+                {"old_str": "one", "new_str": "ONE"},
+                {"old_str": "missing", "new_str": "MISSING"},
+            ],
+        ),
+        context,
+    )
+
+    assert edit_result.is_error is True
+    assert "edit 2" in edit_result.output
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
 async def test_glob_and_grep(tmp_path: Path):
     context = ToolExecutionContext(cwd=tmp_path)
     (tmp_path / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")

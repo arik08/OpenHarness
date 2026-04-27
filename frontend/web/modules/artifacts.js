@@ -6,6 +6,12 @@ const artifactPanelWidthKey = "openharness:artifactPanelWidth";
 const artifactPanelMinWidth = 320;
 const artifactPanelMaxWidth = 920;
 let artifactPanelReturnView = null;
+let artifactHistoryMode = "";
+let restoringArtifactHistory = false;
+let artifactHistoryBackPending = false;
+let activeArtifactFrameWindow = null;
+let artifactFrameBackFallbackTimer = 0;
+const artifactFrameBackMessage = "openharness:artifact-panel-back";
 const artifactExtensions = new Set([
   "html",
   "htm",
@@ -14,19 +20,164 @@ const artifactExtensions = new Set([
   "txt",
   "json",
   "csv",
+  "xml",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "log",
+  "py",
+  "js",
+  "mjs",
+  "cjs",
+  "ts",
+  "tsx",
+  "jsx",
+  "css",
+  "sql",
+  "sh",
+  "ps1",
+  "bat",
+  "cmd",
   "png",
+  "gif",
   "jpg",
   "jpeg",
   "webp",
   "svg",
   "pdf",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "ppt",
+  "pptx",
+  "zip",
 ]);
-const imageExtensions = new Set(["png", "jpg", "jpeg", "webp", "svg"]);
-const textExtensions = new Set(["md", "markdown", "txt", "json", "csv"]);
+const imageExtensions = new Set(["png", "gif", "jpg", "jpeg", "webp", "svg"]);
+const textExtensions = new Set([
+  "md",
+  "markdown",
+  "txt",
+  "json",
+  "csv",
+  "xml",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "log",
+  "py",
+  "js",
+  "mjs",
+  "cjs",
+  "ts",
+  "tsx",
+  "jsx",
+  "css",
+  "sql",
+  "sh",
+  "ps1",
+  "bat",
+  "cmd",
+]);
+const documentExtensions = new Set(["doc", "docx", "xls", "xlsx", "ppt", "pptx", "zip"]);
+const artifactPathExtensionPattern = "html?|md|markdown|txt|json|csv|xml|ya?ml|toml|ini|log|py|m?js|cjs|tsx?|jsx|css|sql|sh|ps1|bat|cmd|png|gif|jpe?g|webp|svg|pdf|docx?|xlsx?|pptx?|zip";
 const hiddenProjectFilePrefixes = [
   "autopilot-dashboard/",
   "docs/autopilot/",
 ];
+
+function isArtifactHistoryState(value) {
+  return Boolean(value && value.openharnessArtifactPanel === true);
+}
+
+function artifactHistoryState(view, artifact = null) {
+  return {
+    openharnessArtifactPanel: true,
+    view,
+    session: state.sessionId || "",
+    workspaceName: state.workspaceName || "",
+    path: artifact?.path || "",
+    name: artifact?.name || "",
+    kind: artifact?.kind || "",
+    label: artifact?.label || "",
+    size: artifact?.size,
+  };
+}
+
+function sameArtifactHistoryState(nextState) {
+  const current = history.state;
+  return isArtifactHistoryState(current)
+    && current.view === nextState.view
+    && String(current.path || "") === String(nextState.path || "");
+}
+
+function pushArtifactHistory(view, artifact = null) {
+  if (restoringArtifactHistory) {
+    artifactHistoryMode = view;
+    return;
+  }
+  const nextState = artifactHistoryState(view, artifact);
+  artifactHistoryMode = view;
+  if (sameArtifactHistoryState(nextState)) {
+    return;
+  }
+  history.pushState(nextState, "", window.location.href);
+}
+
+function isBackMouseButton(event) {
+  return event?.button === 3 || event?.button === 4;
+}
+
+function requestArtifactHistoryBack(event = null) {
+  if (!artifactHistoryMode || !isArtifactHistoryState(history.state)) {
+    return false;
+  }
+  if (artifactHistoryBackPending) {
+    return true;
+  }
+  artifactHistoryBackPending = true;
+  window.setTimeout(() => {
+    artifactHistoryBackPending = false;
+  }, 900);
+  history.back();
+  return true;
+}
+
+function clearArtifactFrameBackFallback() {
+  if (!artifactFrameBackFallbackTimer) {
+    return;
+  }
+  window.clearTimeout(artifactFrameBackFallbackTimer);
+  artifactFrameBackFallbackTimer = 0;
+}
+
+function withArtifactFrameBackBridge(content) {
+  const bridge = `
+<script>
+(() => {
+  let pending = false;
+  const sendBack = (event) => {
+    if (event.button !== 3 && event.button !== 4) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (pending) return;
+    pending = true;
+    setTimeout(() => { pending = false; }, 900);
+    parent.postMessage({ type: "${artifactFrameBackMessage}" }, "*");
+  };
+  window.addEventListener("mousedown", sendBack, true);
+  window.addEventListener("mouseup", sendBack, true);
+  window.addEventListener("auxclick", sendBack, true);
+})();
+</script>`;
+  const value = String(content || "");
+  if (/<\/body\s*>/i.test(value)) {
+    return value.replace(/<\/body\s*>/i, `${bridge}</body>`);
+  }
+  return `${value}${bridge}`;
+}
 
 function normalizeArtifactPath(value) {
   return String(value || "")
@@ -85,6 +236,11 @@ function sourceLanguageForArtifact(path) {
     txt: "plaintext",
     json: "json",
     csv: "csv",
+    yaml: "yaml",
+    yml: "yaml",
+    toml: "toml",
+    ini: "ini",
+    log: "plaintext",
     svg: "xml",
     xml: "xml",
     js: "javascript",
@@ -95,6 +251,7 @@ function sourceLanguageForArtifact(path) {
     jsx: "javascript",
     css: "css",
     py: "python",
+    sql: "sql",
     ps1: "powershell",
     sh: "bash",
     bat: "dos",
@@ -111,8 +268,18 @@ function artifactLabel(kind) {
   return "파일";
 }
 
+function artifactLabelForPath(path, kind = artifactKind(path)) {
+  if (kind === "file") {
+    const ext = artifactExtension(path);
+    if (documentExtensions.has(ext)) {
+      return ext.toUpperCase();
+    }
+  }
+  return artifactLabel(kind);
+}
+
 function labelForArtifact(artifact) {
-  return artifact.label || artifactLabel(artifact.kind);
+  return artifact.label || artifactLabelForPath(artifact.path, artifact.kind);
 }
 
 function artifactIcon(kind) {
@@ -138,10 +305,13 @@ function collectArtifactCandidates(text) {
   for (const match of value.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
     push(match[1]);
   }
-  for (const match of value.matchAll(/`([^`\n]+\.(?:html?|md|markdown|txt|json|csv|png|jpe?g|webp|svg|pdf))`/gi)) {
+  const backtickPattern = new RegExp(`\`([^\`\\n]+\\.(?:${artifactPathExtensionPattern}))\``, "gi");
+  const pathPattern = new RegExp(`(?:^|[\\s(["'])((?:[A-Za-z]:)?[^\\s<>"'()]*\\.(?:${artifactPathExtensionPattern}))`, "gim");
+
+  for (const match of value.matchAll(backtickPattern)) {
     push(match[1]);
   }
-  for (const match of value.matchAll(/(?:^|[\s(["'])((?:[A-Za-z]:)?[^\s<>"'()]*\.(?:html?|md|markdown|txt|json|csv|png|jpe?g|webp|svg|pdf))/gim)) {
+  for (const match of value.matchAll(pathPattern)) {
     push(match[1]);
   }
 
@@ -163,7 +333,7 @@ function collectArtifactCandidates(text) {
         path,
         name: artifactName(path),
         kind,
-        label: artifactLabel(kind),
+        label: artifactLabelForPath(path, kind),
       };
     });
 }
@@ -234,7 +404,7 @@ async function resolveExistingArtifacts(artifacts) {
           path: payload.path || artifact.path,
           name: payload.name || artifact.name,
           kind: payload.kind || artifact.kind,
-          label: artifactLabel(payload.kind || artifact.kind),
+          label: artifactLabelForPath(payload.path || artifact.path, payload.kind || artifact.kind),
           size: payload.size,
         };
       } catch {
@@ -337,6 +507,7 @@ function renderArtifactRenderedView(artifact, payload) {
   if (!els.artifactViewer) {
     return;
   }
+  activeArtifactFrameWindow = null;
   els.artifactViewer.textContent = "";
   if (payload.name && els.artifactPanelTitle) {
     els.artifactPanelTitle.textContent = payload.name;
@@ -350,7 +521,10 @@ function renderArtifactRenderedView(artifact, payload) {
     const iframe = document.createElement("iframe");
     iframe.className = "artifact-frame";
     iframe.sandbox = "allow-scripts";
-    iframe.srcdoc = payload.content || "";
+    iframe.addEventListener("load", () => {
+      activeArtifactFrameWindow = iframe.contentWindow;
+    });
+    iframe.srcdoc = withArtifactFrameBackBridge(payload.content);
     els.artifactViewer.append(iframe);
     return;
   }
@@ -365,8 +539,43 @@ function renderArtifactRenderedView(artifact, payload) {
   if (payload.kind === "pdf") {
     const frame = document.createElement("iframe");
     frame.className = "artifact-frame";
+    frame.addEventListener("load", () => {
+      activeArtifactFrameWindow = frame.contentWindow;
+    });
     frame.src = payload.dataUrl || "";
     els.artifactViewer.append(frame);
+    return;
+  }
+  if (payload.kind === "file") {
+    const wrap = document.createElement("div");
+    wrap.className = "artifact-file";
+    const message = document.createElement("p");
+    message.className = "artifact-empty";
+    message.textContent = "이 파일 형식은 미리보기 대신 다운로드로 열 수 있습니다.";
+    const download = document.createElement("button");
+    download.type = "button";
+    download.className = "artifact-file-download";
+    download.innerHTML = `
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M12 3v11"></path>
+        <path d="m7 10 5 5 5-5"></path>
+        <path d="M5 20h14"></path>
+      </svg>
+      <span>다운로드</span>
+    `;
+    download.addEventListener("click", async () => {
+      download.disabled = true;
+      try {
+        await downloadProjectFile(artifact, download);
+      } catch (error) {
+        setArtifactDownloadStatus(`다운로드 실패: ${error.message}`, true);
+        download.dataset.tooltip = `다운로드 실패: ${error.message}`;
+      } finally {
+        download.disabled = false;
+      }
+    });
+    wrap.append(message, download);
+    els.artifactViewer.append(wrap);
     return;
   }
   if (["md", "markdown"].includes(artifactExtension(artifact.path))) {
@@ -386,6 +595,7 @@ function renderArtifactSourceView(artifact, payload) {
   if (!els.artifactViewer) {
     return;
   }
+  activeArtifactFrameWindow = null;
   els.artifactViewer.textContent = "";
   if (payload.name && els.artifactPanelTitle) {
     els.artifactPanelTitle.textContent = payload.name;
@@ -438,30 +648,46 @@ function renderArtifactError(error) {
   }
 }
 
+function setArtifactDownloadStatus(message, isError = false) {
+  if (!els.artifactPanelMeta) {
+    return;
+  }
+  els.artifactPanelMeta.textContent = message;
+  els.artifactPanelMeta.classList.toggle("error", Boolean(isError));
+}
+
+async function saveArtifactCopy(artifact, folderPath = "") {
+  const response = await fetch("/api/artifact/save-copy", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      session: state.sessionId || "",
+      workspacePath: state.workspacePath || "",
+      workspaceName: state.workspaceName || "",
+      path: artifact.path,
+      folderPath,
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `HTTP ${response.status}`);
+  }
+  return payload.saved || {};
+}
+
 async function downloadProjectFile(artifact, control) {
   const suggestedName = artifact.name || artifactName(artifact.path);
   const downloadSettings = state.appSettings || {};
+  setArtifactDownloadStatus("다운로드 준비 중...");
   if (downloadSettings.downloadMode === "folder" && downloadSettings.downloadFolderPath) {
-    const response = await fetch("/api/artifact/save-copy", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        session: state.sessionId || "",
-        workspacePath: state.workspacePath || "",
-        workspaceName: state.workspaceName || "",
-        path: artifact.path,
-        folderPath: downloadSettings.downloadFolderPath,
-      }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload.error || `HTTP ${response.status}`);
-    }
+    const saved = await saveArtifactCopy(artifact, downloadSettings.downloadFolderPath);
+    const savedPath = saved.path || downloadSettings.downloadFolderPath;
+    setArtifactDownloadStatus(`저장됨: ${savedPath}`);
     if (control) {
-      control.dataset.tooltip = `저장됨: ${payload.saved?.path || downloadSettings.downloadFolderPath}`;
+      control.dataset.tooltip = `저장됨: ${savedPath}`;
       window.setTimeout(() => {
         if (control.isConnected) {
           control.dataset.tooltip = "다운로드";
@@ -480,29 +706,31 @@ async function downloadProjectFile(artifact, control) {
         if (control) {
           control.dataset.tooltip = "저장 취소됨";
         }
+        setArtifactDownloadStatus("저장 취소됨");
         return;
       }
       throw error;
     }
   }
 
-  const query = projectFileQuery({ path: artifact.path });
-  const response = await fetch(`/api/artifact/download?${query.toString()}`);
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    let message = body || `HTTP ${response.status}`;
-    try {
-      message = JSON.parse(body).error || message;
-    } catch {
-      // Keep the raw response text when the server does not return JSON.
-    }
-    throw new Error(message);
-  }
-  const blob = await response.blob();
   if (fileHandle) {
+    const query = projectFileQuery({ path: artifact.path });
+    const response = await fetch(`/api/artifact/download?${query.toString()}`);
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      let message = body || `HTTP ${response.status}`;
+      try {
+        message = JSON.parse(body).error || message;
+      } catch {
+        // Keep the raw response text when the server does not return JSON.
+      }
+      throw new Error(message);
+    }
+    const blob = await response.blob();
     const writable = await fileHandle.createWritable();
     await writable.write(blob);
     await writable.close();
+    setArtifactDownloadStatus("선택한 위치에 저장됨");
     if (control) {
       control.dataset.tooltip = "선택한 위치에 저장됨";
       window.setTimeout(() => {
@@ -514,26 +742,31 @@ async function downloadProjectFile(artifact, control) {
     return;
   }
 
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = suggestedName;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const saved = await saveArtifactCopy(artifact);
+  const savedPath = saved.path || suggestedName;
+  setArtifactDownloadStatus(`저장됨: ${savedPath}`);
   if (control) {
-    control.dataset.tooltip = "브라우저 다운로드 폴더에 저장됨";
+    control.dataset.tooltip = `저장됨: ${savedPath}`;
     window.setTimeout(() => {
       if (control.isConnected) {
         control.dataset.tooltip = "다운로드";
       }
-    }, 1600);
+    }, 3000);
   }
+  return;
 }
 
 function projectFileSortKey(file) {
   return String(file?.path || file?.name || "").replace(/\\/g, "/");
+}
+
+function projectFileRecentTime(file) {
+  const modified = Number(file?.mtimeMs);
+  if (Number.isFinite(modified) && modified > 0) {
+    return modified;
+  }
+  const created = Number(file?.birthtimeMs);
+  return Number.isFinite(created) && created > 0 ? created : 0;
 }
 
 function isVisibleProjectFile(file) {
@@ -543,20 +776,26 @@ function isVisibleProjectFile(file) {
 
 function sortedProjectFiles(files) {
   const source = Array.isArray(files) ? files.filter(isVisibleProjectFile) : [];
-  if (state.projectFileSortMode !== "path") {
-    return source;
-  }
-  return source.sort((left, right) =>
+  const comparePath = (left, right) =>
     projectFileSortKey(left).localeCompare(projectFileSortKey(right), "ko", {
       numeric: true,
       sensitivity: "base",
-    }),
+    });
+  if (state.projectFileSortMode === "path") {
+    return source.sort(comparePath);
+  }
+  return source.sort((left, right) =>
+    projectFileRecentTime(right) - projectFileRecentTime(left) || comparePath(left, right),
   );
 }
 
 function renderProjectFiles(files) {
   artifactPanelReturnView = null;
   setArtifactCloseMode("close");
+  if (state.artifactPanelOpen) {
+    artifactHistoryMode = "list";
+  }
+  activeArtifactFrameWindow = null;
   state.activeArtifactRaw = "";
   state.activeArtifactPayload = null;
   state.artifactSourceMode = false;
@@ -655,7 +894,7 @@ function renderProjectFiles(files) {
       path: file.path,
       name: file.name,
       kind: file.kind,
-      label: artifactLabel(file.kind),
+      label: artifactLabelForPath(file.path, file.kind),
       size: file.size,
     };
     const item = document.createElement("div");
@@ -696,6 +935,7 @@ function renderProjectFiles(files) {
       try {
         await downloadProjectFile(artifact, download);
       } catch (error) {
+        setArtifactDownloadStatus(`다운로드 실패: ${error.message}`, true);
         download.dataset.tooltip = `다운로드 실패: ${error.message}`;
       } finally {
         download.classList.remove("is-loading");
@@ -733,6 +973,8 @@ function renderProjectFiles(files) {
           },
           body: JSON.stringify({
             session: state.sessionId || "",
+            workspacePath: state.workspacePath || "",
+            workspaceName: state.workspaceName || "",
             path: artifact.path,
           }),
         });
@@ -777,6 +1019,7 @@ async function openProjectFiles() {
   updateArtifactCopyButton(false);
   updateArtifactSourceButton(false);
   setArtifactPanel(true);
+  pushArtifactHistory("list");
   if (els.artifactPanelTitle) {
     els.artifactPanelTitle.textContent = "프로젝트 파일";
   }
@@ -804,14 +1047,19 @@ async function openProjectFiles() {
   }
 }
 
-async function openArtifact(artifact) {
+async function openArtifact(artifact, options = {}) {
   state.activeArtifact = artifact;
-  if (els.artifactPanelTitle?.textContent === "프로젝트 파일") {
+  if (els.artifactPanelTitle?.textContent === "프로젝트 파일" || options.projectFilesReturn) {
     artifactPanelReturnView = {
       kind: "project-files",
       files: Array.isArray(state.projectFiles) ? state.projectFiles : [],
     };
     setArtifactCloseMode("back");
+    if (!options.fromHistory) {
+      pushArtifactHistory("detail", artifact);
+    } else {
+      artifactHistoryMode = "detail";
+    }
   }
   setArtifactPanel(true);
   showArtifactLoading(artifact);
@@ -831,7 +1079,11 @@ async function openArtifact(artifact) {
   }
 }
 
-function closeArtifactPanel() {
+function closeArtifactPanel(options = {}) {
+  const fromHistory = options?.fromHistory === true;
+  if (!fromHistory && requestArtifactHistoryBack()) {
+    return;
+  }
   if (artifactPanelReturnView?.kind === "project-files") {
     const files = artifactPanelReturnView.files || [];
     artifactPanelReturnView = null;
@@ -856,6 +1108,9 @@ function closeArtifactPanel() {
   state.activeArtifactPayload = null;
   state.artifactSourceMode = false;
   artifactPanelReturnView = null;
+  artifactHistoryMode = "";
+  activeArtifactFrameWindow = null;
+  clearArtifactFrameBackFallback();
   setArtifactCloseMode("close");
   updateArtifactCopyButton(false);
   updateArtifactSourceButton(false);
@@ -879,6 +1134,9 @@ function resetArtifacts() {
   state.activeArtifactPayload = null;
   state.artifactSourceMode = false;
   artifactPanelReturnView = null;
+  artifactHistoryMode = "";
+  activeArtifactFrameWindow = null;
+  clearArtifactFrameBackFallback();
   setArtifactCloseMode("close");
   updateArtifactCopyButton(false);
   updateArtifactSourceButton(false);
@@ -991,6 +1249,67 @@ function initializeArtifactPanel() {
   els.artifactPanelFullscreen?.addEventListener("click", toggleArtifactFullscreen);
   els.artifactPanelClose?.addEventListener("click", closeArtifactPanel);
   els.projectFilesButton?.addEventListener("click", openProjectFiles);
+  window.addEventListener("message", (event) => {
+    if (event.source !== activeArtifactFrameWindow || event.data?.type !== artifactFrameBackMessage) {
+      return;
+    }
+    clearArtifactFrameBackFallback();
+    artifactFrameBackFallbackTimer = window.setTimeout(() => {
+      artifactFrameBackFallbackTimer = 0;
+      requestArtifactHistoryBack();
+    }, 180);
+  });
+  window.addEventListener("popstate", (event) => {
+    clearArtifactFrameBackFallback();
+    artifactHistoryBackPending = false;
+    if (isArtifactHistoryState(event.state)) {
+      restoringArtifactHistory = true;
+      try {
+        if (event.state.view === "list") {
+          artifactHistoryMode = "list";
+          artifactPanelReturnView = null;
+          state.activeArtifact = null;
+          state.activeArtifactRaw = "";
+          state.activeArtifactPayload = null;
+          state.artifactSourceMode = false;
+          updateArtifactCopyButton(false);
+          updateArtifactSourceButton(false);
+          setArtifactFullscreen(false);
+          setArtifactPanel(true);
+          if (els.artifactPanelTitle) {
+            els.artifactPanelTitle.textContent = "프로젝트 파일";
+          }
+          if (els.artifactPanelMeta) {
+            els.artifactPanelMeta.textContent = `${(state.projectFiles || []).length}개 파일`;
+          }
+          renderProjectFiles(state.projectFiles || []);
+          return;
+        }
+        if (event.state.view === "detail" && event.state.path) {
+          const artifact = {
+            id: `project-file-${event.state.path}`,
+            path: event.state.path,
+            name: event.state.name || artifactName(event.state.path),
+            kind: event.state.kind || artifactKind(event.state.path),
+            label: event.state.label || artifactLabel(event.state.kind || artifactKind(event.state.path)),
+            size: event.state.size,
+          };
+          openArtifact(artifact, { fromHistory: true, projectFilesReturn: true });
+          return;
+        }
+      } finally {
+        restoringArtifactHistory = false;
+      }
+    }
+    if (artifactHistoryMode) {
+      restoringArtifactHistory = true;
+      try {
+        closeArtifactPanel({ fromHistory: true });
+      } finally {
+        restoringArtifactHistory = false;
+      }
+    }
+  });
   applyStoredArtifactPanelWidth();
   els.artifactResizeHandle?.addEventListener("pointerdown", (event) => {
     if (!els.artifactPanel || !els.appShell) {

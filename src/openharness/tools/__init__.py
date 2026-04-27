@@ -2,7 +2,8 @@
 
 from openharness.tools.ask_user_question_tool import AskUserQuestionTool
 from openharness.tools.agent_tool import AgentTool
-from openharness.tools.bash_tool import BashTool
+from openharness.platforms import get_platform
+from openharness.tools.bash_tool import BashTool, CmdTool
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolRegistry, ToolResult
 from openharness.tools.brief_tool import BriefTool
 from openharness.tools.config_tool import ConfigTool
@@ -46,8 +47,9 @@ from openharness.tools.web_search_tool import WebSearchTool
 def create_default_tool_registry(mcp_manager=None) -> ToolRegistry:
     """Return the default built-in tool registry."""
     registry = ToolRegistry()
+    command_tool = CmdTool() if get_platform() == "windows" else BashTool()
     for tool in (
-        BashTool(),
+        command_tool,
         AskUserQuestionTool(),
         FileReadTool(),
         FileWriteTool(),

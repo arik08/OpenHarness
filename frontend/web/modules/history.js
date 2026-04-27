@@ -36,6 +36,7 @@ function liveHistoryOptions() {
       description: slot.busy ? "진행 중" : "새 채팅",
       liveSlotId: slot.frontendId,
       savedSessionId: slot.savedSessionId || "",
+      workspace: slot.workspace || null,
       busy: Boolean(slot.busy),
       busyVisual: Boolean(slot.busyVisual),
     }));
@@ -47,20 +48,34 @@ function slotBelongsToCurrentWorkspace(slot) {
   }
   const currentPath = String(state.workspacePath || "").trim();
   const slotPath = String(slot.workspace?.path || "").trim();
-  if (currentPath) {
+  if (currentPath && slotPath) {
     return slotPath === currentPath;
   }
   const currentName = String(state.workspaceName || "").trim();
   const slotName = String(slot.workspace?.name || "").trim();
-  if (currentName) {
+  if (currentName && slotName) {
     return slotName === currentName;
+  }
+  return true;
+}
+
+function historyOptionBelongsToCurrentWorkspace(option) {
+  const currentPath = String(state.workspacePath || "").trim();
+  const optionPath = String(option?.workspace?.path || "").trim();
+  if (currentPath && optionPath) {
+    return optionPath === currentPath;
+  }
+  const currentName = String(state.workspaceName || "").trim();
+  const optionName = String(option?.workspace?.name || "").trim();
+  if (currentName && optionName) {
+    return optionName === currentName;
   }
   return true;
 }
 
 function renderHistory(options) {
   els.historyList.textContent = "";
-  const savedOptions = Array.isArray(options) ? options : [];
+  const savedOptions = (Array.isArray(options) ? options : []).filter(historyOptionBelongsToCurrentWorkspace);
   const savedById = new Map(savedOptions.map((option) => [String(option.value || ""), option]));
   const liveOptions = liveHistoryOptions().map((option) => {
     const saved = option.savedSessionId ? savedById.get(String(option.savedSessionId)) : null;
@@ -119,7 +134,7 @@ function renderHistory(options) {
         switchChatSlot(option.liveSlotId);
         return;
       }
-      await openHistorySession(option.value || "", formattedTitle);
+      await openHistorySession(option.value || "", formattedTitle, option);
     });
 
     const busySpinner = document.createElement("span");
@@ -152,7 +167,7 @@ function renderHistory(options) {
           });
           return;
         }
-        deleteHistorySession(option.value || "", item).catch((error) => {
+        deleteHistorySession(option.value || "", item, option).catch((error) => {
           item.classList.remove("deleting");
           appendMessage("system", `기록 삭제 실패: ${error.message}`);
           setBusy(false, STATUS_LABELS.error);

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 import time
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,10 @@ _TITLE_STOPWORDS = {
     "the",
     "with",
 }
+
+_KOREAN_COMMAND_VERB_RE = re.compile(
+    r"(?:정의|분석|조사|정리|작성|생성|제작|만들|구현|수정|고치|고쳐|점검|확인|설치|업데이트|추가|바꾸|바꿔|합치|합쳐|열|저장)"
+)
 
 
 def _sanitize_metadata(value: Any) -> Any:
@@ -101,11 +106,73 @@ def _title_tokens(text: str) -> set[str]:
     return tokens
 
 
+def _trim_title(text: str, limit: int = 34) -> str:
+    clean = " ".join(str(text or "").split()).strip(" .,!?:;\"'`“”‘’")
+    if len(clean) <= limit:
+        return clean
+    return clean[:limit].rstrip(" .,!?:;\"'`“”‘’")
+
+
+def _strip_korean_object_particle(text: str) -> str:
+    return re.sub(r"(을|를|이|가|은|는)$", "", text.strip())
+
+
+def _korean_fallback_session_title(clean: str) -> str:
+    text = clean.strip()
+    if not re.search(r"[가-힣]", text):
+        return ""
+
+    subject = ""
+    first_clause = re.split(r"[,.;\n]|그리고|그걸로|마지막으로|후에|다음으로", text, maxsplit=1)[0].strip()
+    match = _KOREAN_COMMAND_VERB_RE.search(first_clause)
+    if match:
+        subject = first_clause[: match.start()].strip()
+    if not subject:
+        match = re.match(r"(.+?)(?:에\s*대해|에\s*대해서|관련|위한)", text)
+        if match:
+            subject = match.group(1).strip()
+    if not subject:
+        subject = first_clause or text
+
+    subject = re.sub(r"^(?:이거|저거|그거|요거)\s*", "", subject)
+    subject = re.sub(r"\s+", " ", subject).strip(" .,!?:;\"'`“”‘’")
+    subject = _strip_korean_object_particle(subject)
+    subject = re.sub(r"\s*(?:다시|좀|한번|바로|같은데|것 같은데|나오는거 같은데)\s*$", "", subject).strip()
+
+    if not subject:
+        return ""
+
+    suffix = ""
+    if "보고서" in text:
+        suffix = "보고서"
+    elif re.search(r"\b(?:pptx|html|md)\b", text, flags=re.IGNORECASE):
+        suffix = "산출물"
+    elif "history" in text.lower() or "히스토리" in text or "채팅이력" in text:
+        suffix = "히스토리"
+    elif "제목" in subject or "제목" in text:
+        suffix = "점검"
+    elif re.search(r"설치|Installer|python-pptx", text, flags=re.IGNORECASE):
+        suffix = "설치 설정"
+    elif re.search(r"수정|고치|고쳐|문제|안보|안 바뀌|반응이 없", text):
+        suffix = "수정"
+    elif re.search(r"합치|합쳐|통합", text):
+        suffix = "통합"
+
+    title = subject
+    if suffix and suffix not in title:
+        title = f"{title} {suffix}"
+    return _trim_title(title)
+
+
 def fallback_session_title_from_user_text(text: str) -> str:
     clean = strip_internal_message_text(text)
     clean = " ".join(clean.split()).strip("\"'`“”‘’ ")
     if not clean or clean.startswith("The user explicitly selected the `"):
         return ""
+
+    korean_title = _korean_fallback_session_title(clean)
+    if korean_title:
+        return korean_title
 
     topic = ""
     story_like = bool(re.search(r"\bstor(?:y|ies)\b", clean, flags=re.IGNORECASE))
@@ -128,7 +195,27 @@ def fallback_session_title_from_user_text(text: str) -> str:
     title = (topic or clean).strip(" .,!?:;\"'`“”‘’")
     if story_like and title and "story" not in title.lower() and "스토리" not in title:
         title = f"{title} Story"
-    return title[:80]
+    return _trim_title(title, limit=64)
+
+
+def title_echoes_first_user(title: str, first_user_text: str) -> bool:
+    title_clean = strip_internal_message_text(title)
+    title_clean = " ".join(title_clean.split()).strip("\"'`“”‘’ ")
+    first_clean = strip_internal_message_text(first_user_text)
+    first_clean = " ".join(first_clean.split()).strip("\"'`“”‘’ ")
+    if not title_clean or not first_clean:
+        return False
+
+    folded_title = title_clean.casefold()
+    folded_first = first_clean.casefold()
+    has_korean = bool(re.search(r"[가-힣]", title_clean + first_clean))
+    prefix_threshold = 14 if has_korean else 24
+    similarity_threshold = 20 if has_korean else 32
+    if len(title_clean) >= prefix_threshold and folded_first.startswith(folded_title):
+        return True
+    if len(title_clean) >= similarity_threshold and SequenceMatcher(None, folded_title, folded_first[: len(title_clean) + 20]).ratio() >= 0.82:
+        return True
+    return False
 
 
 def title_matches_first_user(title: str, first_user_text: str) -> bool:
@@ -144,7 +231,7 @@ def title_matches_first_user(title: str, first_user_text: str) -> bool:
 
 def display_summary_for_first_user(summary: str, first_user_text: str) -> str:
     clean = strip_internal_message_text(summary)
-    if clean and title_matches_first_user(clean, first_user_text):
+    if clean and title_matches_first_user(clean, first_user_text) and not title_echoes_first_user(clean, first_user_text):
         return clean
     fallback = fallback_session_title_from_user_text(first_user_text)
     return fallback or clean

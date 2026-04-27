@@ -74,7 +74,7 @@ Supports CLI agent integration including OpenClaw, nanobot, Cursor, and more.
 
 <img src="assets/scene-context.png" width="140">
 
-<p align="center"><strong>• CLAUDE.md Discovery & Injection</strong></p>
+<p align="center"><strong>• Project Instruction Discovery & Injection</strong></p>
 <p align="center"><strong>• Context Compression (Auto-Compact)</strong></p>
 <p align="center"><strong>• MEMORY.md Persistent Memory</strong></p>
 <p align="center"><strong>• Session Resume & History</strong></p>
@@ -492,7 +492,7 @@ openharness/
   memory/          # 🧠 Memory — persistent cross-session knowledge
   tasks/           # 📋 Tasks — background task management
   coordinator/     # 🤝 Multi-Agent — subagent spawning, team coordination
-  prompts/         # 📝 Context — system prompt assembly, CLAUDE.md, skills
+  prompts/         # 📝 Context — system prompt assembly, project instructions, skills
   config/          # ⚙️ Settings — multi-layer config, migrations
   ui/              # 🖥️ React TUI — backend protocol + frontend
 ```

@@ -114,6 +114,7 @@ class BackendEvent(BaseModel):
         "assistant_complete",
         "line_complete",
         "tool_started",
+        "tool_progress",
         "tool_completed",
         "clear_transcript",
         "modal_request",
@@ -153,6 +154,7 @@ class BackendEvent(BaseModel):
     attempt: int | None = None
     compact_checkpoint: str | None = None
     compact_metadata: dict[str, Any] | None = None
+    quiet: bool = False
     # New fields for enhanced events
     todo_markdown: str | None = None
     plan_mode: str | None = None

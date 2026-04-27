@@ -27,16 +27,10 @@ def resolve_shell_command(
     """Return argv for the best available shell on the current platform."""
     resolved_platform = platform_name or get_platform()
     if resolved_platform == "windows":
-        powershell = shutil.which("pwsh") or shutil.which("powershell")
-        if powershell:
-            return [powershell, "-NoLogo", "-NoProfile", "-Command", command]
         cmd = shutil.which("cmd.exe")
         if cmd:
-            return [cmd, "/d", "/s", "/c", command]
-        bash = shutil.which("bash")
-        if bash:
-            return [bash, "-lc", command]
-        return ["cmd.exe", "/d", "/s", "/c", command]
+            return [cmd, "/d", "/s", "/c", _wrap_cmd_utf8(command)]
+        return ["cmd.exe", "/d", "/s", "/c", _wrap_cmd_utf8(command)]
 
     bash = shutil.which("bash")
     if bash:
@@ -98,6 +92,7 @@ async def create_shell_subprocess(
     )
     argv = direct_argv or resolve_shell_command(command, prefer_pty=prefer_pty)
     argv, cleanup_path = wrap_command_for_sandbox(argv, settings=resolved_settings)
+    subprocess_env = _subprocess_env(env, platform_name=resolved_platform)
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -106,7 +101,7 @@ async def create_shell_subprocess(
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
-            env=dict(env) if env is not None else None,
+            env=subprocess_env,
         )
     except Exception:
         if cleanup_path is not None:
@@ -120,6 +115,10 @@ async def create_shell_subprocess(
 
 def _resolve_windows_direct_command(command: str) -> list[str] | None:
     """Return argv for Windows commands that should bypass shell parsing."""
+    heredoc_argv = _translate_python_stdin_heredoc(command)
+    if heredoc_argv is not None:
+        return heredoc_argv
+
     printf_argv = _translate_simple_printf_redirection(command)
     if printf_argv is not None:
         return printf_argv
@@ -128,6 +127,8 @@ def _resolve_windows_direct_command(command: str) -> list[str] | None:
         parts = [_strip_outer_quotes(part) for part in shlex.split(command, posix=False)]
     except ValueError:
         return None
+    if parts and parts[0] == "&":
+        parts = parts[1:]
     if not parts:
         return None
 
@@ -136,6 +137,21 @@ def _resolve_windows_direct_command(command: str) -> list[str] | None:
         return None
 
     return [*_resolve_windows_python_launcher(parts[0]), *parts[1:]]
+
+
+def _wrap_cmd_utf8(command: str) -> str:
+    return f"chcp 65001>nul & {command}"
+
+
+def _subprocess_env(env: Mapping[str, str] | None, *, platform_name: PlatformName) -> dict[str, str] | None:
+    if platform_name != "windows":
+        return dict(env) if env is not None else None
+    merged = os.environ.copy()
+    if env is not None:
+        merged.update(env)
+    merged.setdefault("PYTHONUTF8", "1")
+    merged.setdefault("PYTHONIOENCODING", "utf-8")
+    return merged
 
 
 def _strip_outer_quotes(value: str) -> str:
@@ -160,6 +176,23 @@ def _translate_simple_printf_redirection(command: str) -> list[str] | None:
         "Path(__import__('sys').argv[1]).write_text(__import__('sys').argv[2], encoding='utf-8')"
     )
     return [sys.executable, "-c", script, target, match.group("text")]
+
+
+def _translate_python_stdin_heredoc(command: str) -> list[str] | None:
+    """Translate common Bash heredoc Python snippets for native Windows shells."""
+    match = re.fullmatch(
+        r"""\s*(?P<prefix>(?:python3?|py)(?:\.exe)?(?:\s+-3)?)\s+-\s+<<\s*(?P<quote>['"]?)(?P<tag>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)\s*\r?\n(?P<body>.*)\r?\n(?P=tag)\s*""",
+        command,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    prefix_parts = match.group("prefix").split()
+    if not prefix_parts:
+        return None
+    launcher = _resolve_windows_python_launcher(prefix_parts[0])
+    body = match.group("body").replace("\r\n", "\n")
+    return [*launcher, *prefix_parts[1:], "-c", body]
 
 
 def _resolve_windows_python_launcher(executable: str) -> list[str]:

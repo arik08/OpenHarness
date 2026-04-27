@@ -1,3 +1,5 @@
+import { compactToolProgressStatus } from "./state.js";
+
 export function createEvents(ctx) {
   const { state, els, STATUS_LABELS, commandDescription, updateState } = ctx;
   let restoringWorkflowEvents = [];
@@ -7,6 +9,7 @@ export function createEvents(ctx) {
   function updateTasks(...args) { return ctx.updateTasks(...args); }
   function updateSendState(...args) { return ctx.updateSendState(...args); }
   function requestHistory(...args) { return ctx.requestHistory(...args); }
+  function cachedHistoryForWorkspace(...args) { return ctx.cachedHistoryForWorkspace?.(...args) || []; }
   function renderHistory(...args) { return ctx.renderHistory(...args); }
   function appendMessage(...args) { return ctx.appendMessage(...args); }
   function setChatTitle(...args) { return ctx.setChatTitle(...args); }
@@ -15,10 +18,14 @@ export function createEvents(ctx) {
   function collapseWorkflowPanel(...args) { return ctx.collapseWorkflowPanel(...args); }
   function finalizeWorkflowSummary(...args) { return ctx.finalizeWorkflowSummary(...args); }
   function failWorkflowPanel(...args) { return ctx.failWorkflowPanel?.(...args); }
+  function startWorkflowFinalAnswer(...args) { return ctx.startWorkflowFinalAnswer?.(...args); }
+  function clearWorkflowFinalAnswerStep(...args) { return ctx.clearWorkflowFinalAnswerStep?.(...args); }
+  function markWorkflowFinalAnswerDone(...args) { return ctx.markWorkflowFinalAnswerDone?.(...args); }
   function setMarkdown(...args) { return ctx.setMarkdown(...args); }
   function scrollMessagesToBottom(...args) { return ctx.scrollMessagesToBottom(...args); }
   function finishScrollRestore(...args) { return ctx.finishScrollRestore(...args); }
   function appendWorkflowEvent(...args) { return ctx.appendWorkflowEvent(...args); }
+  function appendWorkflowProgress(...args) { return ctx.appendWorkflowProgress?.(...args); }
   function appendWorkflowInputDelta(...args) { return ctx.appendWorkflowInputDelta?.(...args); }
   function markActiveHistory(...args) { return ctx.markActiveHistory?.(...args); }
   function showModal(...args) { return ctx.showModal(...args); }
@@ -44,6 +51,23 @@ const STREAMING_MAX_CHARS_PER_FLUSH = 12;
 function streamingStartBufferMs() {
   const configured = Number(state.appSettings?.streamStartBufferMs);
   return Math.max(0, Math.min(2000, Number.isFinite(configured) ? configured : STREAMING_START_BUFFER_MS));
+}
+
+function streamingScrollOptions(duration = state.appSettings?.streamScrollDurationMs ?? 2000) {
+  return {
+    smooth: true,
+    duration,
+    followTail: true,
+  };
+}
+
+function syncStreamingStyleOptions() {
+  const followLead = Number(state.appSettings?.streamFollowLeadPx);
+  const revealDuration = Number(state.appSettings?.streamRevealDurationMs);
+  const revealWipe = Number(state.appSettings?.streamRevealWipePercent);
+  els.messages.style.setProperty("--stream-follow-lead", `${Math.max(0, Math.min(220, Number.isFinite(followLead) ? followLead : 60))}px`);
+  els.messages.style.setProperty("--stream-reveal-duration", `${Math.max(0, Math.min(2000, Number.isFinite(revealDuration) ? revealDuration : 420))}ms`);
+  els.messages.style.setProperty("--stream-reveal-wipe", `${Math.max(100, Math.min(400, Number.isFinite(revealWipe) ? revealWipe : 180))}%`);
 }
 
 function normalizeSkills(skills) {
@@ -153,6 +177,8 @@ function revealRenderedStreamingContent(startIndex, endIndex) {
     if (revealText) {
       const span = document.createElement("span");
       span.className = "stream-reveal-sentence";
+      span.style.setProperty("--stream-reveal-duration", els.messages.style.getPropertyValue("--stream-reveal-duration"));
+      span.style.setProperty("--stream-reveal-wipe", els.messages.style.getPropertyValue("--stream-reveal-wipe"));
       span.textContent = revealText;
       fragment.append(span);
     }
@@ -253,6 +279,7 @@ function keepStreamingTailVisible() {
     els.messages.classList.remove("streaming-follow");
     return;
   }
+  syncStreamingStyleOptions();
   els.messages.classList.add("streaming-follow");
   if (streamingScrollTimer) {
     return;
@@ -260,7 +287,7 @@ function keepStreamingTailVisible() {
   streamingScrollTimer = window.setTimeout(() => {
     streamingScrollTimer = 0;
     if (!state.restoringHistory && state.autoFollowMessages) {
-      scrollMessagesToBottom({ smooth: true, duration: state.appSettings?.streamScrollDurationMs ?? 1200 });
+      scrollMessagesToBottom(streamingScrollOptions());
     }
   }, 60);
 }
@@ -273,7 +300,7 @@ function settleStreamingTailVisible() {
   window.clearTimeout(streamingScrollTimer);
   requestAnimationFrame(() => {
     els.messages.classList.remove("streaming-follow");
-    scrollMessagesToBottom({ smooth: true, duration: 760 });
+    scrollMessagesToBottom(streamingScrollOptions(760));
   });
 }
 
@@ -295,6 +322,7 @@ function renderStreamingAssistant(revealStart = null) {
   state.assistantNode.dataset.displayText = displayText;
   streamingLiveNode = null;
   streamingRenderedTextLength = countRenderedStreamingText(state.assistantNode);
+  syncStreamingStyleOptions();
   revealRenderedStreamingContent(previousLength, streamingRenderedTextLength);
   if (!state.restoringHistory && state.autoFollowMessages) {
     keepStreamingTailVisible();
@@ -373,10 +401,19 @@ function handleEvent(event) {
     state.plugins = normalizePlugins(event.plugins);
     setBusy(false, STATUS_LABELS.ready);
     updateState(event.state);
+    ctx.updateModelSettingsRows?.();
     updateTasks(event.tasks || []);
     updateSendState();
+    if (state.skipNextReadyHistoryRefresh) {
+      state.skipNextReadyHistoryRefresh = false;
+      if (state.clearHistoryOnNextReady) {
+        renderHistory(cachedHistoryForWorkspace());
+      }
+      state.clearHistoryOnNextReady = false;
+      return;
+    }
     requestHistory().catch(() => {
-      renderHistory([]);
+      renderHistory(cachedHistoryForWorkspace());
     });
     return;
   }
@@ -389,6 +426,7 @@ function handleEvent(event) {
       state.plugins = normalizePlugins(event.plugins);
     }
     updateState(event.state);
+    ctx.updateModelSettingsRows?.();
     updateSlashMenu();
     return;
   }
@@ -443,9 +481,6 @@ function handleEvent(event) {
       if (!userText.trim()) {
         return;
       }
-      if (state.chatTitle === "MyHarness" && !userText.startsWith("/")) {
-        setChatTitle(userText);
-      }
       appendMessage("user", userText);
       return;
     }
@@ -490,6 +525,10 @@ function handleEvent(event) {
   if (event.type === "active_session") {
     state.activeHistoryId = String(event.value || "").trim() || null;
     state.pendingScrollRestoreId = null;
+    if (state.restoreTimeoutId) {
+      window.clearTimeout(state.restoreTimeoutId);
+      state.restoreTimeoutId = 0;
+    }
     state.restoringHistory = false;
     state.batchingHistoryRestore = false;
     state.suppressNextLineCompleteScroll = false;
@@ -509,6 +548,10 @@ function handleEvent(event) {
     restoringWorkflowInputDeltas = [];
     state.activeHistoryId = String(event.value || "").trim() || null;
     state.pendingScrollRestoreId = state.activeHistoryId;
+    if (state.restoreTimeoutId) {
+      window.clearTimeout(state.restoreTimeoutId);
+      state.restoreTimeoutId = 0;
+    }
     state.restoringHistory = true;
     state.batchingHistoryRestore = false;
     state.suppressNextLineCompleteScroll = true;
@@ -555,6 +598,9 @@ function handleEvent(event) {
       state.assistantNode.dataset.rawText = "";
       state.assistantNode.dataset.displayText = "";
       streamingRenderedTextLength = 0;
+      if (!state.restoringHistory) {
+        startWorkflowFinalAnswer();
+      }
     }
     const message = event.message || "";
     const nextText = (state.assistantNode.dataset.rawText || "") + message;
@@ -587,22 +633,32 @@ function handleEvent(event) {
       state.assistantNode.classList.remove("streaming-text");
       const finalText = event.message || state.assistantNode.dataset.rawText || "";
       setMarkdown(state.assistantNode, finalText);
-      extractAndRenderArtifacts(finalText, state.assistantNode);
       if (isFinalAssistantAnswer) {
+        extractAndRenderArtifacts(finalText, state.assistantNode);
         attachAssistantActions(state.assistantNode, finalText);
+        markWorkflowFinalAnswerDone();
+      } else {
+        clearWorkflowFinalAnswerStep();
       }
       state.assistantNode = null;
     } else if (event.message) {
       const node = appendMessage("assistant", event.message);
-      extractAndRenderArtifacts(event.message, node);
       if (isFinalAssistantAnswer) {
+        extractAndRenderArtifacts(event.message, node);
         attachAssistantActions(node, event.message);
+        markWorkflowFinalAnswerDone();
+      } else {
+        clearWorkflowFinalAnswerStep();
       }
     }
     return;
   }
 
   if (event.type === "line_complete") {
+    if (state.restoreTimeoutId && state.restoringHistory) {
+      window.clearTimeout(state.restoreTimeoutId);
+      state.restoreTimeoutId = 0;
+    }
     resetStreamingState();
     state.assistantNode = null;
     state.projectFilesLoadedForSession = "";
@@ -617,17 +673,30 @@ function handleEvent(event) {
       restoringWorkflowInputDeltas = [];
       state.batchingHistoryRestore = false;
     }
-    finalizeWorkflowSummary();
-    collapseWorkflowPanel();
-    if (state.restoringHistory) {
-      requestAnimationFrame(finishScrollRestore);
-    } else if (state.suppressNextLineCompleteScroll) {
-      state.suppressNextLineCompleteScroll = false;
-    } else {
-      settleStreamingTailVisible();
+    if (!event.quiet) {
+      finalizeWorkflowSummary();
+      collapseWorkflowPanel();
+      if (state.restoringHistory) {
+        requestAnimationFrame(finishScrollRestore);
+      } else if (state.suppressNextLineCompleteScroll) {
+        state.suppressNextLineCompleteScroll = false;
+      } else {
+        settleStreamingTailVisible();
+      }
     }
     setBusy(false, STATUS_LABELS.ready);
-    requestHistory().catch(() => {});
+    if (!event.quiet) {
+      requestHistory().catch(() => {});
+    }
+    return;
+  }
+
+  if (event.type === "tool_progress") {
+    setBusy(true, compactToolProgressStatus(event, STATUS_LABELS.processing));
+    if (state.batchingHistoryRestore) {
+      return;
+    }
+    appendWorkflowProgress(event);
     return;
   }
 
@@ -658,6 +727,12 @@ function handleEvent(event) {
   if (event.type === "error") {
     state.switchingWorkspace = false;
     state.batchingHistoryRestore = false;
+    state.restoringHistory = false;
+    state.ignoreScrollSave = false;
+    if (state.restoreTimeoutId) {
+      window.clearTimeout(state.restoreTimeoutId);
+      state.restoreTimeoutId = 0;
+    }
     state.suppressNextLineCompleteScroll = false;
     restoringWorkflowEvents = [];
     restoringWorkflowInputDeltas = [];
@@ -672,6 +747,12 @@ function handleEvent(event) {
   if (event.type === "shutdown") {
     state.switchingWorkspace = false;
     state.batchingHistoryRestore = false;
+    state.restoringHistory = false;
+    state.ignoreScrollSave = false;
+    if (state.restoreTimeoutId) {
+      window.clearTimeout(state.restoreTimeoutId);
+      state.restoreTimeoutId = 0;
+    }
     state.suppressNextLineCompleteScroll = false;
     restoringWorkflowEvents = [];
     restoringWorkflowInputDeltas = [];

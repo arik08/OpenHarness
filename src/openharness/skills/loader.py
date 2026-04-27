@@ -38,7 +38,6 @@ def load_skill_registry(
     registry = SkillRegistry()
     loaded: list[SkillDefinition] = []
     loaded.extend(get_bundled_skills())
-    loaded.extend(load_program_skills())
     loaded.extend(load_user_skills())
     loaded.extend(load_project_skills(cwd))
     loaded.extend(load_skills_from_dirs(extra_skill_dirs))
@@ -50,6 +49,9 @@ def load_skill_registry(
             if not plugin.enabled:
                 continue
             loaded.extend(plugin.skills)
+    # Register program-local skills last so the OpenHarness installation's
+    # .skills directory is the default source of truth for bundled behavior.
+    loaded.extend(load_program_skills())
     project_preferences = load_project_preferences(cwd) if cwd is not None else None
     disabled_skill_names = set(project_preferences.disabled_skills) if project_preferences is not None else None
     for skill in apply_skill_enabled_state(loaded, disabled_skill_names):

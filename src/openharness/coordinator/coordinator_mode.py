@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 from xml.sax.saxutils import escape, unescape
 
+from openharness.platforms import get_platform
+
 
 # ---------------------------------------------------------------------------
 # TeamRegistry (kept for backward compatibility)
@@ -164,8 +166,13 @@ _AGENT_TOOL_NAME = "agent"
 _SEND_MESSAGE_TOOL_NAME = "send_message"
 _TASK_STOP_TOOL_NAME = "task_stop"
 
+
+def _command_tool_name() -> str:
+    return "cmd" if get_platform() == "windows" else "bash"
+
+
 _WORKER_TOOLS = [
-    "bash",
+    "{command_tool}",
     "file_read",
     "file_edit",
     "file_write",
@@ -180,7 +187,7 @@ _WORKER_TOOLS = [
     "skill",
 ]
 
-_SIMPLE_WORKER_TOOLS = ["bash", "file_read", "file_edit"]
+_SIMPLE_WORKER_TOOLS = ["{command_tool}", "file_read", "file_edit"]
 
 
 def is_coordinator_mode() -> bool:
@@ -227,7 +234,9 @@ def get_coordinator_user_context(
         return {}
 
     is_simple = os.environ.get("CLAUDE_CODE_SIMPLE", "").lower() in {"1", "true", "yes"}
-    tools = sorted(_SIMPLE_WORKER_TOOLS if is_simple else _WORKER_TOOLS)
+    command_tool = _command_tool_name()
+    tool_template = _SIMPLE_WORKER_TOOLS if is_simple else _WORKER_TOOLS
+    tools = sorted(command_tool if tool == "{command_tool}" else tool for tool in tool_template)
     worker_tools_str = ", ".join(tools)
 
     content = (
@@ -255,7 +264,7 @@ def get_coordinator_system_prompt() -> str:
 
     if is_simple:
         worker_capabilities = (
-            "Workers have access to Bash, Read, and Edit tools, "
+            f"Workers have access to {_command_tool_name()}, Read, and Edit tools, "
             "plus MCP tools from configured MCP servers."
         )
     else:

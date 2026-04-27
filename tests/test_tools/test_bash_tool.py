@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from openharness.tools.base import ToolExecutionContext
-from openharness.tools.bash_tool import BashTool, BashToolInput
+from openharness.tools.bash_tool import BashTool, BashToolInput, _format_output
 
 
 class _FakeStdout:
@@ -135,6 +135,22 @@ async def test_bash_tool_timeout_returns_partial_output_for_real_command(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_bash_tool_drains_large_output_while_process_runs(tmp_path: Path):
+    result = await BashTool().execute(
+        BashToolInput(
+            command="python -c \"import sys; sys.stdout.write('x' * 200000); sys.stdout.flush()\"",
+            timeout_seconds=5,
+        ),
+        ToolExecutionContext(cwd=tmp_path),
+    )
+
+    assert result.is_error is False
+    assert result.output.startswith("x")
+    assert "...[truncated]..." in result.output
+    assert result.metadata["returncode"] == 0
+
+
+@pytest.mark.asyncio
 async def test_bash_tool_collects_combined_output(monkeypatch, tmp_path: Path):
     process = _FakeProcess(
         stdout=_FakeStdout([b"line one\n", b"line two\n", b""]),
@@ -179,3 +195,21 @@ async def test_bash_tool_uses_devnull_stdin_for_non_interactive_shell(monkeypatc
     assert result.is_error is False
     assert seen_kwargs["stdin"] == asyncio.subprocess.DEVNULL
     assert seen_kwargs["prefer_pty"] is True
+
+
+def test_bash_tool_decodes_windows_cp949_output():
+    output = _format_output(bytearray("한글 출력".encode("cp949")))
+
+    assert output == "한글 출력"
+
+
+@pytest.mark.asyncio
+async def test_bash_tool_preflights_interactive_python_repl(tmp_path: Path):
+    result = await BashTool().execute(
+        BashToolInput(command="python", timeout_seconds=1),
+        ToolExecutionContext(cwd=tmp_path),
+    )
+
+    assert result.is_error is True
+    assert result.metadata["interactive_required"] is True
+    assert "interactive Python session" in result.output

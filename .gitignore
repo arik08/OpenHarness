@@ -32,6 +32,7 @@ frontend/web/node_modules/
 .openharness/*
 !.openharness/settings.json
 !.openharness/credentials.example.json
+tests/test_api/PGPT_OpenAI_Compatible.py
 Playground/
 react_tui_smoke.txt
 .playwright-mcp/

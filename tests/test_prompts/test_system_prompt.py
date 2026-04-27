@@ -77,3 +77,40 @@ def test_build_system_prompt_encourages_parallel_research_tools():
     assert "2-3 `web_fetch` calls" in prompt
     assert "Avoid 4 or more parallel web calls" in prompt
     assert "call those `web_fetch` or `web_search` tools in parallel" in prompt
+    assert "Escalate blocked web research by source importance" in prompt
+    assert "central to the answer" in prompt
+    assert 'invoke `skill(name="insane-search")`' in prompt
+    assert "401, 402, 403, 429" in prompt
+    assert "source-importance test" in prompt
+    assert "casual lead, duplicate source, low-value search result" in prompt
+    assert "Do not use `insane-search` for simple web searches" in prompt
+
+
+def test_build_system_prompt_plans_substantial_tasks_first():
+    env = _make_env()
+    prompt = build_system_prompt(env=env)
+
+    assert "For substantial tasks, share a short execution plan" in prompt
+    assert "3+ files" in prompt
+    assert "broad refactors" in prompt
+    assert "Do not add a plan for tiny, obvious, or purely informational tasks" in prompt
+
+
+def test_build_system_prompt_prefers_existing_files_and_batched_edits():
+    env = _make_env()
+    prompt = build_system_prompt(env=env)
+
+    assert "Use repository context and senior engineering judgment" in prompt
+    assert 'Do not treat words like "write an html"' in prompt
+    assert "Treat requests such as" in prompt
+    assert "Search for and read the likely existing file" in prompt
+    assert "small tweak, bug fix, style change, text change, or behavior change" in prompt
+    assert "standalone preview, demo, script, report, or sample" in prompt
+    assert "Avoid `index.html` for newly created artifacts whenever possible" in prompt
+    assert "too generic for users and future AI sessions" in prompt
+    assert "Do not reuse a generic file such as `index.html`" in prompt
+    assert "For unrelated standalone HTML previews or demos" in prompt
+    assert "required app/framework/hosting entrypoint would otherwise break" in prompt
+    assert "If both editing and creating are plausible" in prompt
+    assert "batch them into one `edit_file` call with the `edits` array" in prompt
+    assert "issue the necessary `edit_file` calls in the same assistant response" in prompt

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import locale
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -14,11 +17,15 @@ from openharness.utils.shell import create_shell_subprocess
 
 
 class BashToolInput(BaseModel):
-    """Arguments for the bash tool."""
+    """Arguments for a command shell tool."""
 
     command: str = Field(description="Shell command to execute")
     cwd: str | None = Field(default=None, description="Working directory override")
     timeout_seconds: int = Field(default=600, ge=1, le=600)
+
+
+class CmdToolInput(BashToolInput):
+    """Arguments for the Windows cmd tool."""
 
 
 class BashTool(BaseTool):
@@ -54,12 +61,12 @@ class BashTool(BaseTool):
                 await _terminate_process(process, force=False)
             raise
 
+        output_task = asyncio.create_task(_collect_output(process.stdout))
         try:
             await asyncio.wait_for(process.wait(), timeout=arguments.timeout_seconds)
         except asyncio.TimeoutError:
-            output_buffer = await _drain_available_output(process.stdout)
             await _terminate_process(process, force=True)
-            output_buffer.extend(await _read_remaining_output(process))
+            output_buffer = await _finish_output_collection(output_task)
             return ToolResult(
                 output=_format_timeout_output(
                     output_buffer,
@@ -71,15 +78,26 @@ class BashTool(BaseTool):
             )
         except asyncio.CancelledError:
             await _terminate_process(process, force=False)
+            output_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await output_task
             raise
 
-        output_buffer = await _read_remaining_output(process)
+        output_buffer = await _finish_output_collection(output_task)
         text = _format_output(output_buffer)
         return ToolResult(
             output=text,
             is_error=process.returncode != 0,
             metadata={"returncode": process.returncode},
         )
+
+
+class CmdTool(BashTool):
+    """Execute a Windows cmd.exe command with stdout/stderr capture."""
+
+    name = "cmd"
+    description = "Run a Windows cmd.exe command in the local repository."
+    input_model = CmdToolInput
 
 
 async def _terminate_process(process: asyncio.subprocess.Process, *, force: bool) -> None:
@@ -97,38 +115,55 @@ async def _terminate_process(process: asyncio.subprocess.Process, *, force: bool
         await process.wait()
 
 
-async def _read_remaining_output(process: asyncio.subprocess.Process) -> bytearray:
-    output_buffer = bytearray()
-    if process.stdout is not None:
-        output_buffer.extend(await process.stdout.read())
-    return output_buffer
-
-
-async def _drain_available_output(
-    stream: asyncio.StreamReader | None,
-    *,
-    read_timeout: float = 0.05,
-) -> bytearray:
+async def _collect_output(stream: asyncio.StreamReader | None) -> bytearray:
     output_buffer = bytearray()
     if stream is None:
         return output_buffer
     while True:
-        try:
-            chunk = await asyncio.wait_for(stream.read(65536), timeout=read_timeout)
-        except asyncio.TimeoutError:
-            return output_buffer
+        chunk = await stream.read(65536)
         if not chunk:
             return output_buffer
         output_buffer.extend(chunk)
 
 
+async def _finish_output_collection(output_task: asyncio.Task[bytearray]) -> bytearray:
+    try:
+        return await asyncio.wait_for(output_task, timeout=2.0)
+    except asyncio.TimeoutError:
+        output_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await output_task
+        return bytearray()
+
+
 def _format_output(output_buffer: bytearray) -> str:
-    text = output_buffer.decode("utf-8", errors="replace").replace("\r\n", "\n").strip()
+    text = _decode_output(output_buffer).replace("\r\n", "\n").strip()
     if not text:
         return "(no output)"
     if len(text) > 12000:
         return f"{text[:12000]}\n...[truncated]..."
     return text
+
+
+def _decode_output(output_buffer: bytearray) -> str:
+    data = bytes(output_buffer)
+    if not data:
+        return ""
+    candidates = ["utf-8", locale.getpreferredencoding(False), "cp949", "mbcs"]
+    seen: set[str] = set()
+    decoded_with_replacement: list[str] = []
+    for encoding in candidates:
+        if not encoding or encoding.lower() in seen:
+            continue
+        seen.add(encoding.lower())
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            with contextlib.suppress(LookupError):
+                decoded_with_replacement.append(data.decode(encoding, errors="replace"))
+    if decoded_with_replacement:
+        return min(decoded_with_replacement, key=lambda value: value.count("\ufffd"))
+    return data.decode("utf-8", errors="replace")
 
 
 def _format_timeout_output(output_buffer: bytearray, *, command: str, timeout_seconds: int) -> str:
@@ -144,11 +179,22 @@ def _format_timeout_output(output_buffer: bytearray, *, command: str, timeout_se
 
 def _preflight_interactive_command(command: str) -> str | None:
     lowered_command = command.lower()
+    stripped_command = lowered_command.strip()
+    if re.fullmatch(r"(python3?|py)(?:\.exe)?(?:\s+-3)?(?:\s+-i)?", stripped_command):
+        return (
+            "This command starts an interactive Python session, but the command tool is non-interactive. "
+            "Use a one-shot command such as `python -c \"...\"` instead."
+        )
+    if re.fullmatch(r"(python3?|py)(?:\.exe)?(?:\s+-3)?\s+-", stripped_command):
+        return (
+            "`python -` expects Python code from standard input, but the command tool does not provide live stdin. "
+            "Use `python -c \"...\"` or a translated heredoc form that OpenHarness supports on Windows."
+        )
     if not _looks_like_interactive_scaffold(lowered_command):
         return None
     return (
         "This command appears to require interactive input before it can continue. "
-        "The bash tool is non-interactive, so it cannot answer installer/scaffold prompts live. "
+        "The command tool is non-interactive, so it cannot answer installer/scaffold prompts live. "
         "Prefer non-interactive flags (for example --yes, -y, --skip-install, --defaults, --non-interactive), "
         "or run the scaffolding step once in an external terminal before asking the agent to continue."
     )
@@ -159,7 +205,7 @@ def _interactive_command_hint(*, command: str, output: str) -> str | None:
     if _looks_like_interactive_scaffold(lowered_command) or _looks_like_prompt(output):
         return (
             "This command appears to require interactive input. "
-            "The bash tool is non-interactive, so prefer non-interactive flags "
+            "The command tool is non-interactive, so prefer non-interactive flags "
             "(for example --yes, -y, --skip-install, or similar) or run the "
             "scaffolding step once in an external terminal before continuing."
         )

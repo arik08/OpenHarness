@@ -21,7 +21,12 @@ class FileWriteTool(BaseTool):
     """Write complete file contents."""
 
     name = "write_file"
-    description = "Create or overwrite a text file in the local repository."
+    description = (
+        "Create or intentionally overwrite a complete text file in the local repository. "
+        "For changes to an existing file, prefer read_file followed by edit_file unless a full rewrite is clearly intended. "
+        "Avoid generic names like index.html for newly created artifacts unless the user explicitly asks for that name "
+        "or a required app/framework/hosting entrypoint would otherwise break."
+    )
     input_model = FileWriteToolInput
 
     async def execute(

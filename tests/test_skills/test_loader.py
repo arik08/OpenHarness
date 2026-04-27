@@ -58,6 +58,56 @@ def test_load_skill_registry_includes_program_dot_skills(tmp_path: Path, monkeyp
     assert str(program_root / ".skills" / "program-guide" / "SKILL.md") == program_guide.path
 
 
+def test_program_dot_skills_take_priority_over_other_skill_dirs(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    program_root = tmp_path / "program"
+    package_skills_dir = program_root / "src" / "openharness" / "skills"
+    package_skills_dir.mkdir(parents=True)
+    (program_root / "pyproject.toml").write_text("[project]\nname = 'fixture'\n", encoding="utf-8")
+    monkeypatch.setattr(skill_loader, "__file__", str(package_skills_dir / "loader.py"))
+
+    user_skill_dir = get_user_skills_dir() / "skill-creator"
+    user_skill_dir.mkdir(parents=True)
+    (user_skill_dir / "SKILL.md").write_text(
+        "---\nname: skill-creator\n"
+        "description: User config copy\n---\n\n"
+        "# User Skill Creator\nUse the user config folder.\n",
+        encoding="utf-8",
+    )
+    project_skill_dir = tmp_path / "workspace" / ".skills" / "skill-creator"
+    project_skill_dir.mkdir(parents=True)
+    (project_skill_dir / "SKILL.md").write_text(
+        "---\nname: skill-creator\n"
+        "description: Workspace copy\n---\n\n"
+        "# Workspace Skill Creator\nUse the workspace folder.\n",
+        encoding="utf-8",
+    )
+    extra_skill_dir = tmp_path / "extra" / "skill-creator"
+    extra_skill_dir.mkdir(parents=True)
+    (extra_skill_dir / "SKILL.md").write_text(
+        "---\nname: skill-creator\n"
+        "description: Extra copy\n---\n\n"
+        "# Extra Skill Creator\nUse the extra folder.\n",
+        encoding="utf-8",
+    )
+    program_skill_dir = program_root / ".skills" / "skill-creator"
+    program_skill_dir.mkdir(parents=True)
+    (program_skill_dir / "SKILL.md").write_text(
+        "---\nname: skill-creator\n"
+        "description: Program-local copy\n---\n\n"
+        "# Program Skill Creator\nUse the OpenHarness program-local .skills folder.\n",
+        encoding="utf-8",
+    )
+
+    registry = load_skill_registry(tmp_path / "workspace", extra_skill_dirs=[tmp_path / "extra"])
+    skill_creator = registry.get("skill-creator")
+
+    assert skill_creator is not None
+    assert skill_creator.source == "program"
+    assert str(program_root / ".skills" / "skill-creator" / "SKILL.md") == skill_creator.path
+    assert "OpenHarness program-local .skills" in skill_creator.content
+
+
 def test_load_skill_registry_includes_project_dot_skills(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
     skill_dir = tmp_path / ".skills" / "ship"

@@ -1,9 +1,10 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import crypto from "node:crypto";
 import { createReadStream } from "node:fs";
-import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
@@ -14,10 +15,12 @@ const webRoot = normalize(root);
 const assetsRoot = normalize(join(repoRoot, "assets"));
 const vendorRoot = normalize(join(root, "node_modules"));
 const playgroundRoot = normalize(join(repoRoot, "Playground"));
+const sharedWorkspaceScopeName = "shared";
 const defaultWorkspaceName = "Default";
 const projectPreferencesRel = join(".openharness", "preferences.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
+let workspaceScopeMode = normalizeWorkspaceScopeMode(process.env.OPENHARNESS_WORKSPACE_SCOPE);
 const protocolPrefix = "OHJSON:";
 const sessions = new Map();
 let server = null;
@@ -70,12 +73,39 @@ const artifactTypes = {
   ".txt": { kind: "text", mime: "text/plain; charset=utf-8", encoding: "text" },
   ".json": { kind: "text", mime: "application/json; charset=utf-8", encoding: "text" },
   ".csv": { kind: "text", mime: "text/csv; charset=utf-8", encoding: "text" },
+  ".xml": { kind: "text", mime: "application/xml; charset=utf-8", encoding: "text" },
+  ".yaml": { kind: "text", mime: "text/yaml; charset=utf-8", encoding: "text" },
+  ".yml": { kind: "text", mime: "text/yaml; charset=utf-8", encoding: "text" },
+  ".toml": { kind: "text", mime: "text/plain; charset=utf-8", encoding: "text" },
+  ".ini": { kind: "text", mime: "text/plain; charset=utf-8", encoding: "text" },
+  ".log": { kind: "text", mime: "text/plain; charset=utf-8", encoding: "text" },
+  ".py": { kind: "text", mime: "text/x-python; charset=utf-8", encoding: "text" },
+  ".js": { kind: "text", mime: "text/javascript; charset=utf-8", encoding: "text" },
+  ".mjs": { kind: "text", mime: "text/javascript; charset=utf-8", encoding: "text" },
+  ".cjs": { kind: "text", mime: "text/javascript; charset=utf-8", encoding: "text" },
+  ".ts": { kind: "text", mime: "text/typescript; charset=utf-8", encoding: "text" },
+  ".tsx": { kind: "text", mime: "text/typescript; charset=utf-8", encoding: "text" },
+  ".jsx": { kind: "text", mime: "text/javascript; charset=utf-8", encoding: "text" },
+  ".css": { kind: "text", mime: "text/css; charset=utf-8", encoding: "text" },
+  ".sql": { kind: "text", mime: "application/sql; charset=utf-8", encoding: "text" },
+  ".sh": { kind: "text", mime: "text/x-shellscript; charset=utf-8", encoding: "text" },
+  ".ps1": { kind: "text", mime: "text/plain; charset=utf-8", encoding: "text" },
+  ".bat": { kind: "text", mime: "text/plain; charset=utf-8", encoding: "text" },
+  ".cmd": { kind: "text", mime: "text/plain; charset=utf-8", encoding: "text" },
   ".png": { kind: "image", mime: "image/png", encoding: "base64" },
+  ".gif": { kind: "image", mime: "image/gif", encoding: "base64" },
   ".jpg": { kind: "image", mime: "image/jpeg", encoding: "base64" },
   ".jpeg": { kind: "image", mime: "image/jpeg", encoding: "base64" },
   ".webp": { kind: "image", mime: "image/webp", encoding: "base64" },
   ".svg": { kind: "image", mime: "image/svg+xml", encoding: "base64" },
   ".pdf": { kind: "pdf", mime: "application/pdf", encoding: "base64" },
+  ".doc": { kind: "file", mime: "application/msword", encoding: "binary" },
+  ".docx": { kind: "file", mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", encoding: "binary" },
+  ".xls": { kind: "file", mime: "application/vnd.ms-excel", encoding: "binary" },
+  ".xlsx": { kind: "file", mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", encoding: "binary" },
+  ".ppt": { kind: "file", mime: "application/vnd.ms-powerpoint", encoding: "binary" },
+  ".pptx": { kind: "file", mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation", encoding: "binary" },
+  ".zip": { kind: "file", mime: "application/zip", encoding: "binary" },
 };
 const artifactListSkipDirs = new Set([".git", ".openharness", "node_modules", "__pycache__", ".venv", "venv"]);
 const artifactListMaxItems = 300;
@@ -86,6 +116,52 @@ const projectFileListSkipPrefixes = [
 ];
 const shellCommandTimeoutMs = 60_000;
 const shellOutputMaxChars = 24_000;
+
+function normalizeWorkspaceScopeMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  return mode === "ip" || mode === "client_ip" || mode === "client-ip" ? "ip" : "shared";
+}
+
+function forwardedAddressFromRequest(request) {
+  const forwarded = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || String(request.socket?.remoteAddress || "");
+}
+
+function normalizeClientAddress(value) {
+  let address = String(value || "").trim();
+  if (!address) {
+    return "127.0.0.1";
+  }
+  if (address.startsWith("::ffff:")) {
+    address = address.slice("::ffff:".length);
+  }
+  if (address === "::1") {
+    return "127.0.0.1";
+  }
+  return address.replace(/^\[|\]$/g, "");
+}
+
+function safeWorkspaceScopeName(value) {
+  const name = normalizeClientAddress(value).replace(/[^A-Za-z0-9._-]/g, "_").replace(/_+/g, "_");
+  return name || "127.0.0.1";
+}
+
+function workspaceScopeFromRequest(request) {
+  const name = workspaceScopeMode === "ip"
+    ? safeWorkspaceScopeName(forwardedAddressFromRequest(request))
+    : sharedWorkspaceScopeName;
+  const scopeRoot = normalize(join(playgroundRoot, name));
+  const rel = relative(playgroundRoot, scopeRoot);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel) || rel.includes("\\") || rel.includes("/")) {
+    throw new Error("Workspace scope must stay directly inside Playground");
+  }
+  return { mode: workspaceScopeMode, name, root: scopeRoot };
+}
+
+function defaultWorkspaceScope() {
+  const scopeRoot = normalize(join(playgroundRoot, sharedWorkspaceScopeName));
+  return { mode: "shared", name: sharedWorkspaceScopeName, root: scopeRoot };
+}
 
 function resolvePath(url) {
   const pathname = decodeURIComponent(new URL(url, `http://localhost:${port}`).pathname);
@@ -174,10 +250,9 @@ async function readArtifactPreview(session, artifactPath) {
   if (!info.isFile()) {
     throw new Error("Artifact is not a file");
   }
-  if (info.size > artifactPreviewMaxBytes) {
+  if (type.encoding !== "binary" && info.size > artifactPreviewMaxBytes) {
     throw new Error("Artifact is too large to preview");
   }
-  const body = await readFile(target);
   const payload = {
     path: rel,
     name: rel.split(/[\\/]/).pop() || rel,
@@ -185,6 +260,10 @@ async function readArtifactPreview(session, artifactPath) {
     mime: type.mime,
     size: info.size,
   };
+  if (type.encoding === "binary") {
+    return payload;
+  }
+  const body = await readFile(target);
   if (type.encoding === "base64") {
     payload.dataUrl = `data:${type.mime};base64,${body.toString("base64")}`;
   } else {
@@ -210,6 +289,8 @@ async function readArtifactMetadata(session, artifactPath) {
     kind: type.kind,
     mime: type.mime,
     size: info.size,
+    mtimeMs: info.mtimeMs,
+    birthtimeMs: info.birthtimeMs,
   };
 }
 
@@ -238,13 +319,13 @@ function asciiHeaderFilename(name) {
   return safe || "download";
 }
 
-async function workspaceSessionFromRequest(params, artifactPath = "") {
+async function workspaceSessionFromRequest(params, artifactPath = "", scope = defaultWorkspaceScope()) {
   const session = sessions.get(params.get("session"));
   if (session) {
     return session;
   }
   if (!params.get("workspacePath") && !params.get("workspaceName") && artifactPath) {
-    const workspaces = await listWorkspaces();
+    const workspaces = await listWorkspaces(scope);
     for (const workspace of workspaces) {
       try {
         const { target } = workspaceRelativeTarget(workspace.path, artifactPath);
@@ -260,7 +341,7 @@ async function workspaceSessionFromRequest(params, artifactPath = "") {
   const workspace = workspaceFromHistoryRequest({
     workspacePath: params.get("workspacePath"),
     workspaceName: params.get("workspaceName"),
-  });
+  }, scope);
   return { workspace };
 }
 
@@ -278,7 +359,7 @@ async function deleteArtifactFile(session, artifactPath) {
 }
 
 async function copyArtifactToFolder(session, artifactPath, folderPath) {
-  const directory = normalize(String(folderPath || "").trim());
+  const directory = normalize(String(folderPath || defaultDownloadFolder()).trim());
   if (!directory || !isAbsolute(directory)) {
     throw new Error("저장 폴더는 절대 경로여야 합니다");
   }
@@ -298,6 +379,17 @@ async function copyArtifactToFolder(session, artifactPath, folderPath) {
   };
 }
 
+function defaultDownloadFolder() {
+  const home = String(process.env.USERPROFILE || process.env.HOME || "").trim();
+  if (home) {
+    const downloads = normalize(join(home, "Downloads"));
+    if (existsSync(downloads)) {
+      return downloads;
+    }
+  }
+  return normalize(join(repoRoot, "downloads"));
+}
+
 async function openFolderDialog(initialPath = "") {
   if (process.platform !== "win32") {
     throw new Error("Folder picker is only available on Windows in this build");
@@ -309,15 +401,28 @@ Add-Type -AssemblyName System.Drawing
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
 $dialog.Description = "저장할 폴더를 선택하세요"
 $dialog.ShowNewFolderButton = $true
+$owner = New-Object System.Windows.Forms.Form
+$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.Opacity = 0
+$owner.ShowInTaskbar = $false
+$owner.TopMost = $true
 $initial = [Environment]::GetFolderPath("MyDocuments")
 if ($env:OPENHARNESS_DIALOG_INITIAL -and (Test-Path -LiteralPath $env:OPENHARNESS_DIALOG_INITIAL -PathType Container)) {
   $initial = $env:OPENHARNESS_DIALOG_INITIAL
 }
 $dialog.SelectedPath = $initial
-$result = $dialog.ShowDialog()
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-  [Console]::Out.Write($dialog.SelectedPath)
-  exit 0
+try {
+  $owner.Show()
+  $owner.Activate()
+  $result = $dialog.ShowDialog($owner)
+  if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.Write($dialog.SelectedPath)
+    exit 0
+  }
+} finally {
+  $dialog.Dispose()
+  $owner.Dispose()
 }
 exit 2
 `;
@@ -365,8 +470,12 @@ async function saveArtifactFile(session, artifactPath, content) {
     requestedPath = `${requestedPath}.md`;
   }
   const ext = extname(requestedPath).toLowerCase();
-  if (!artifactTypes[ext]) {
+  const type = artifactTypes[ext];
+  if (!type) {
     throw new Error("Unsupported artifact type");
+  }
+  if (type.encoding !== "text") {
+    throw new Error("Only text artifacts can be saved from assistant text");
   }
   let { target, rel } = workspaceRelativeTarget(session.workspace.path, requestedPath);
   const dotIndex = rel.lastIndexOf(".");
@@ -428,6 +537,8 @@ async function listProjectArtifacts(session) {
         kind: type.kind,
         mime: type.mime,
         size: info.size,
+        mtimeMs: info.mtimeMs,
+        birthtimeMs: info.birthtimeMs,
       });
     }
   }
@@ -479,6 +590,8 @@ async function listProjectFiles(session) {
         kind: type.kind,
         mime: type.mime,
         size: info.size,
+        mtimeMs: info.mtimeMs,
+        birthtimeMs: info.birthtimeMs,
       });
     }
   }
@@ -511,20 +624,26 @@ function normalizeWorkspaceName(value) {
     .replace(/_+/g, "_");
 }
 
-function workspacePathFromName(name) {
+function workspaceScopeOrDefault(scope) {
+  return scope && scope.root ? scope : defaultWorkspaceScope();
+}
+
+function workspacePathFromName(name, scope = defaultWorkspaceScope()) {
+  const activeScope = workspaceScopeOrDefault(scope);
   const validation = validateWorkspaceName(name);
   if (!validation.ok) {
     throw new Error(validation.error);
   }
-  const workspacePath = normalize(join(playgroundRoot, validation.name));
-  const rel = relative(playgroundRoot, workspacePath);
+  const workspacePath = normalize(join(activeScope.root, validation.name));
+  const rel = relative(activeScope.root, workspacePath);
   if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error("Workspace path must stay inside Playground");
   }
-  return { name: validation.name, path: workspacePath };
+  return { name: validation.name, path: workspacePath, scope: activeScope };
 }
 
-function workspaceFromDirectoryName(name) {
+function workspaceFromDirectoryName(name, scope = defaultWorkspaceScope()) {
+  const activeScope = workspaceScopeOrDefault(scope);
   const displayName = String(name || "").trim();
   if (!displayName) {
     throw new Error("Project name is required");
@@ -535,21 +654,29 @@ function workspaceFromDirectoryName(name) {
   if (reservedWorkspaceNames.has(displayName.toUpperCase())) {
     throw new Error("Project name is reserved on Windows");
   }
-  const workspacePath = normalize(join(playgroundRoot, displayName));
-  const rel = relative(playgroundRoot, workspacePath);
+  const workspacePath = normalize(join(activeScope.root, displayName));
+  const rel = relative(activeScope.root, workspacePath);
   if (!rel || rel.startsWith("..") || isAbsolute(rel) || rel.includes("\\") || rel.includes("/")) {
     throw new Error("Workspace path must stay inside Playground");
   }
-  return { name: displayName, path: workspacePath };
+  return { name: displayName, path: workspacePath, scope: activeScope };
 }
 
-function workspaceFromPath(candidate) {
+function workspaceFromPath(candidate, scope = defaultWorkspaceScope()) {
+  const activeScope = workspaceScopeOrDefault(scope);
   const workspacePath = normalize(String(candidate || ""));
-  const rel = relative(playgroundRoot, workspacePath);
-  if (!rel || rel.startsWith("..") || isAbsolute(rel) || rel.includes("\\") || rel.includes("/")) {
-    throw new Error("Workspace cwd must be a direct Playground child");
+  const scopedRel = relative(activeScope.root, workspacePath);
+  if (scopedRel && !scopedRel.startsWith("..") && !isAbsolute(scopedRel) && !scopedRel.includes("\\") && !scopedRel.includes("/")) {
+    return workspaceFromDirectoryName(scopedRel, activeScope);
   }
-  return workspaceFromDirectoryName(rel);
+  const rootRel = relative(playgroundRoot, workspacePath);
+  if (rootRel && !rootRel.startsWith("..") && !isAbsolute(rootRel)) {
+    const parts = rootRel.split(/[\\/]/).filter(Boolean);
+    if (parts.length === 1 || parts.length === 2) {
+      return workspaceFromDirectoryName(parts[parts.length - 1], activeScope);
+    }
+  }
+  throw new Error("Workspace cwd must stay inside the current Playground scope");
 }
 
 function projectPreferencesPath(workspace) {
@@ -562,6 +689,17 @@ function globalConfigDir() {
     return normalize(envDir);
   }
   return normalize(join(process.env.USERPROFILE || process.env.HOME || ".", ".openharness"));
+}
+
+function maskSecret(value) {
+  const raw = String(value || "");
+  if (!raw) {
+    return "";
+  }
+  if (raw.length <= 8) {
+    return "••••";
+  }
+  return `${raw.slice(0, 4)}••••${raw.slice(-4)}`;
 }
 
 async function readJsonFileIfExists(path) {
@@ -577,32 +715,40 @@ async function writeJsonFile(path, payload) {
   await writeFile(path, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
-function maskSecret(value) {
-  const raw = String(value || "");
-  if (!raw) {
-    return "";
-  }
-  if (raw.length <= 8) {
-    return "••••";
-  }
-  return `${raw.slice(0, 4)}••••${raw.slice(-4)}`;
-}
-
-async function readPoscoGptSettings() {
-  const credentials = await readJsonFileIfExists(join(globalConfigDir(), "credentials.json")) || {};
-  const entry = credentials.posco_gpt && typeof credentials.posco_gpt === "object" ? credentials.posco_gpt : {};
+async function readWorkspaceScopeSettings(request = null) {
+  const settings = await readJsonFileIfExists(join(globalConfigDir(), "settings.json")) || {};
+  const mode = normalizeWorkspaceScopeMode(settings.web_workspace_scope || settings.workspace_scope || workspaceScopeMode);
   return {
-    apiKeyConfigured: Boolean(entry.api_key),
-    apiKeyMasked: maskSecret(entry.api_key),
-    empNo: String(entry.emp_no || ""),
-    compNo: String(entry.comp_no || "30"),
+    mode,
+    scope: request ? workspaceScopeFromRequest(request) : null,
   };
 }
 
-async function savePoscoGptSettings(body = {}) {
+async function saveWorkspaceScopeSettings(body = {}, request = null) {
+  const mode = normalizeWorkspaceScopeMode(body.mode);
+  workspaceScopeMode = mode;
+  const settingsPath = join(globalConfigDir(), "settings.json");
+  const settings = await readJsonFileIfExists(settingsPath) || {};
+  settings.web_workspace_scope = mode;
+  await writeJsonFile(settingsPath, settings);
+  return readWorkspaceScopeSettings(request);
+}
+
+async function readPgptSettings() {
+  const credentials = await readJsonFileIfExists(join(globalConfigDir(), "credentials.json")) || {};
+  const entry = credentials.pgpt && typeof credentials.pgpt === "object" ? credentials.pgpt : {};
+  return {
+    apiKeyConfigured: Boolean(entry.api_key),
+    apiKeyMasked: maskSecret(entry.api_key),
+    employeeNo: String(entry.employee_no || entry.system_code || ""),
+    companyCode: String(entry.company_code || "30"),
+  };
+}
+
+async function savePgptSettings(body = {}) {
   const credentialsPath = join(globalConfigDir(), "credentials.json");
   const credentials = await readJsonFileIfExists(credentialsPath) || {};
-  const current = credentials.posco_gpt && typeof credentials.posco_gpt === "object" ? credentials.posco_gpt : {};
+  const current = credentials.pgpt && typeof credentials.pgpt === "object" ? credentials.pgpt : {};
   const next = { ...current };
   if (Object.prototype.hasOwnProperty.call(body, "apiKey")) {
     const value = String(body.apiKey || "").trim();
@@ -610,15 +756,15 @@ async function savePoscoGptSettings(body = {}) {
       next.api_key = value;
     }
   }
-  if (Object.prototype.hasOwnProperty.call(body, "empNo")) {
-    next.emp_no = String(body.empNo || "").trim();
+  if (Object.prototype.hasOwnProperty.call(body, "employeeNo")) {
+    next.employee_no = String(body.employeeNo || "").trim();
   }
-  if (Object.prototype.hasOwnProperty.call(body, "compNo")) {
-    next.comp_no = String(body.compNo || "").trim() || "30";
+  if (Object.prototype.hasOwnProperty.call(body, "companyCode")) {
+    next.company_code = String(body.companyCode || "").trim() || "30";
   }
-  credentials.posco_gpt = next;
+  credentials.pgpt = next;
   await writeJsonFile(credentialsPath, credentials);
-  return readPoscoGptSettings();
+  return readPgptSettings();
 }
 
 function normalizeProjectPreferences(raw = {}) {
@@ -661,8 +807,8 @@ async function globalPreferencesSnapshot() {
   });
 }
 
-async function ensureDefaultPreferences() {
-  const workspace = workspacePathFromName(defaultWorkspaceName);
+async function ensureDefaultPreferences(scope = defaultWorkspaceScope()) {
+  const workspace = workspacePathFromName(defaultWorkspaceName, scope);
   await mkdir(workspace.path, { recursive: true });
   const preferencesPath = projectPreferencesPath(workspace);
   try {
@@ -677,12 +823,12 @@ async function ensureDefaultPreferences() {
   return preferencesPath;
 }
 
-async function copyDefaultPreferencesToWorkspace(workspace) {
+async function copyDefaultPreferencesToWorkspace(workspace, scope = defaultWorkspaceScope()) {
   if (workspace.name === defaultWorkspaceName) {
-    await ensureDefaultPreferences();
+    await ensureDefaultPreferences(scope);
     return;
   }
-  const source = await ensureDefaultPreferences();
+  const source = await ensureDefaultPreferences(scope);
   const target = projectPreferencesPath(workspace);
   try {
     await stat(target);
@@ -697,9 +843,84 @@ async function copyDefaultPreferencesToWorkspace(workspace) {
   await writeFile(target, `${JSON.stringify(normalizeProjectPreferences(raw), null, 2)}\n`, "utf8");
 }
 
-async function ensureWorkspace(name = defaultWorkspaceName) {
-  const workspace = workspacePathFromName(name);
+function legacyWorkspacePath(name) {
+  const validation = validateWorkspaceName(name);
+  if (!validation.ok) {
+    throw new Error(validation.error);
+  }
+  const workspacePath = normalize(join(playgroundRoot, validation.name));
+  const rel = relative(playgroundRoot, workspacePath);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel) || rel.includes("\\") || rel.includes("/")) {
+    throw new Error("Legacy workspace path must stay directly inside Playground");
+  }
+  return workspacePath;
+}
+
+async function copyLegacyWorkspaceIfNeeded(workspace, scope = defaultWorkspaceScope()) {
+  if (scope.name !== sharedWorkspaceScopeName) {
+    return false;
+  }
+  let targetExists = false;
+  try {
+    targetExists = (await stat(workspace.path)).isDirectory();
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  if (targetExists) {
+    return false;
+  }
+  const legacyPath = legacyWorkspacePath(workspace.name);
+  try {
+    const info = await stat(legacyPath);
+    if (!info.isDirectory()) {
+      return false;
+    }
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+  await mkdir(dirname(workspace.path), { recursive: true });
+  await cp(legacyPath, workspace.path, { recursive: true, errorOnExist: false, force: false });
+  return true;
+}
+
+async function looksLikeLegacyWorkspace(path) {
+  try {
+    const entries = await readdir(path, { withFileTypes: true });
+    return entries.some((entry) => entry.name === ".openharness" || entry.isFile());
+  } catch {
+    return false;
+  }
+}
+
+async function copyLegacyWorkspacesIfNeeded(scope = defaultWorkspaceScope()) {
+  if (scope.name !== sharedWorkspaceScopeName) {
+    return;
+  }
   await mkdir(playgroundRoot, { recursive: true });
+  const entries = await readdir(playgroundRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === sharedWorkspaceScopeName || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(entry.name)) {
+      continue;
+    }
+    try {
+      const workspace = workspaceFromDirectoryName(entry.name, scope);
+      if (await looksLikeLegacyWorkspace(join(playgroundRoot, entry.name))) {
+        await copyLegacyWorkspaceIfNeeded(workspace, scope);
+      }
+    } catch {
+      // Ignore folders that are not valid project names.
+    }
+  }
+}
+
+async function ensureWorkspace(name = defaultWorkspaceName, scope = defaultWorkspaceScope()) {
+  const workspace = workspacePathFromName(name, scope);
+  await mkdir(scope.root, { recursive: true });
   let existed = false;
   try {
     existed = (await stat(workspace.path)).isDirectory();
@@ -708,9 +929,12 @@ async function ensureWorkspace(name = defaultWorkspaceName) {
       throw error;
     }
   }
-  await mkdir(workspace.path, { recursive: true });
+  const copiedLegacy = await copyLegacyWorkspaceIfNeeded(workspace, scope);
+  if (!copiedLegacy) {
+    await mkdir(workspace.path, { recursive: true });
+  }
   if (!existed) {
-    await copyDefaultPreferencesToWorkspace(workspace);
+    await copyDefaultPreferencesToWorkspace(workspace, scope);
   }
   return workspace;
 }
@@ -719,8 +943,8 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function deleteWorkspace(name) {
-  const workspace = workspacePathFromName(name);
+async function deleteWorkspace(name, scope = defaultWorkspaceScope()) {
+  const workspace = workspacePathFromName(name, scope);
   const activeSession = [...sessions.values()].find(
     (session) => session.workspace?.path === workspace.path && !session.shuttingDown
   );
@@ -745,15 +969,16 @@ async function deleteWorkspace(name) {
   return workspace;
 }
 
-async function listWorkspaces() {
-  await mkdir(playgroundRoot, { recursive: true });
-  const entries = await readdir(playgroundRoot, { withFileTypes: true });
+async function listWorkspaces(scope = defaultWorkspaceScope()) {
+  await copyLegacyWorkspacesIfNeeded(scope);
+  await mkdir(scope.root, { recursive: true });
+  const entries = await readdir(scope.root, { withFileTypes: true });
   const directories = (
     await Promise.all(entries
       .filter((entry) => entry.isDirectory())
       .map(async (entry) => {
       try {
-        const workspace = workspaceFromDirectoryName(entry.name);
+        const workspace = workspaceFromDirectoryName(entry.name, scope);
         const info = await stat(workspace.path);
         return { ...workspace, createdAt: info.birthtimeMs || info.ctimeMs || 0 };
       } catch {
@@ -768,7 +993,7 @@ async function listWorkspaces() {
     })
     .map(({ createdAt, ...workspace }) => workspace);
   if (!directories.length) {
-    return [await ensureWorkspace(defaultWorkspaceName)];
+    return [await ensureWorkspace(defaultWorkspaceName, scope)];
   }
   return directories;
 }
@@ -839,7 +1064,7 @@ async function readSessionListItem(path) {
   };
 }
 
-async function listWorkspaceHistory(workspace) {
+async function listWorkspaceHistory(workspace, options = {}) {
   const sessionDir = sessionDirectoryForWorkspace(workspace);
   let entries = [];
   try {
@@ -878,21 +1103,40 @@ async function listWorkspaceHistory(workspace) {
     // latest.json is optional.
   }
 
-  return items
+  const sorted = items.sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0));
+  if (options.includeCreatedAt) {
+    return sorted;
+  }
+  return sorted.map(({ createdAt, ...item }) => item);
+}
+
+async function listAllWorkspaceHistory(scope = defaultWorkspaceScope()) {
+  const workspaces = await listWorkspaces(scope);
+  const grouped = await Promise.all(workspaces.map(async (workspace) => {
+    const items = await listWorkspaceHistory(workspace, { includeCreatedAt: true });
+    return items.map(({ createdAt, ...item }) => ({
+      ...item,
+      description: item.description ? `${workspace.name} · ${item.description}` : workspace.name,
+      workspace,
+      createdAt,
+    }));
+  }));
+  return grouped
+    .flat()
     .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))
     .map(({ createdAt, ...item }) => item);
 }
 
-function workspaceFromHistoryRequest(paramsOrBody = {}) {
+function workspaceFromHistoryRequest(paramsOrBody = {}, scope = defaultWorkspaceScope()) {
   const workspacePath = String(paramsOrBody.workspacePath || "").trim();
   const workspaceName = String(paramsOrBody.workspaceName || paramsOrBody.name || "").trim();
   if (workspacePath) {
-    return workspaceFromPath(workspacePath);
+    return workspaceFromPath(workspacePath, scope);
   }
   if (workspaceName) {
-    return workspaceFromDirectoryName(workspaceName);
+    return workspaceFromDirectoryName(workspaceName, scope);
   }
-  return workspacePathFromName(defaultWorkspaceName);
+  return workspacePathFromName(defaultWorkspaceName, scope);
 }
 
 async function deleteWorkspaceHistoryItem(workspace, sessionId) {
@@ -927,19 +1171,20 @@ async function deleteWorkspaceHistoryItem(workspace, sessionId) {
 }
 
 async function resolveSessionWorkspace(options = {}) {
+  const scope = workspaceScopeOrDefault(options.workspaceScope);
   if (options.cwd) {
-    const workspace = workspaceFromPath(options.cwd);
+    const workspace = workspaceFromPath(options.cwd, scope);
     try {
       const info = await stat(workspace.path);
       if (info.isDirectory()) {
         return workspace;
       }
     } catch {
-      return ensureWorkspace(defaultWorkspaceName);
+      return ensureWorkspace(workspace.name, scope);
     }
     return workspace;
   }
-  return ensureWorkspace(defaultWorkspaceName);
+  return ensureWorkspace(defaultWorkspaceName, scope);
 }
 
 function sendBackend(session, payload) {
@@ -963,16 +1208,13 @@ function trimShellOutput(value) {
 
 function shellCommandForPlatform(command) {
   if (process.platform === "win32") {
+    const pythonHeredoc = pythonHeredocCommandForWindows(command);
+    if (pythonHeredoc) {
+      return pythonHeredoc;
+    }
     return {
-      file: "powershell.exe",
-      args: [
-        "-NoLogo",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $OutputEncoding=[System.Text.Encoding]::UTF8; ${command}`,
-      ],
+      file: "cmd.exe",
+      args: ["/d", "/s", "/c", `chcp 65001>nul & ${command}`],
     };
   }
   return {
@@ -981,21 +1223,46 @@ function shellCommandForPlatform(command) {
   };
 }
 
+function pythonHeredocCommandForWindows(command) {
+  const match = String(command || "").match(/^\s*(?<prefix>(?:python3?|py)(?:\.exe)?(?:\s+-3)?)\s+-\s+<<\s*(?<quote>['"]?)(?<tag>[A-Za-z_][A-Za-z0-9_]*)\k<quote>\s*\r?\n(?<body>[\s\S]*)\r?\n\k<tag>\s*$/i);
+  if (!match?.groups) {
+    return null;
+  }
+  const prefixParts = match.groups.prefix.trim().split(/\s+/);
+  const launcher = /^py(?:\.exe)?$/i.test(prefixParts[0]) ? prefixParts[0] : "py";
+  const launcherArgs = /^py(?:\.exe)?$/i.test(prefixParts[0]) ? prefixParts.slice(1) : ["-3"];
+  return {
+    file: launcher,
+    args: [...launcherArgs, "-c", String(match.groups.body || "").replace(/\r\n/g, "\n")],
+  };
+}
+
+function shellEnvironment(extra = {}) {
+  return {
+    ...process.env,
+    PYTHONUNBUFFERED: "1",
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+    ...extra,
+  };
+}
+
 async function runShellCommand(options = {}) {
   const command = String(options.command || "").trim();
   if (!command) {
     throw new Error("Command is required");
   }
+  const scope = workspaceScopeOrDefault(options.workspaceScope);
   const workspace = options.cwd
-    ? workspaceFromPath(options.cwd)
-    : options.session?.workspace || await ensureWorkspace(defaultWorkspaceName);
+    ? workspaceFromPath(options.cwd, scope)
+    : options.session?.workspace || await ensureWorkspace(defaultWorkspaceName, scope);
   const { file, args } = shellCommandForPlatform(command);
   return await new Promise((resolve) => {
     const child = spawn(file, args, {
       cwd: workspace.path,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      env: shellEnvironment(),
     });
     let stdout = "";
     let stderr = "";
@@ -1046,9 +1313,10 @@ async function streamShellCommand(options = {}, request, response) {
   if (!command) {
     throw new Error("Command is required");
   }
+  const scope = workspaceScopeOrDefault(options.workspaceScope);
   const workspace = options.cwd
-    ? workspaceFromPath(options.cwd)
-    : options.session?.workspace || await ensureWorkspace(defaultWorkspaceName);
+    ? workspaceFromPath(options.cwd, scope)
+    : options.session?.workspace || await ensureWorkspace(defaultWorkspaceName, scope);
   const { file, args } = shellCommandForPlatform(command);
 
   response.writeHead(200, {
@@ -1095,7 +1363,7 @@ async function streamShellCommand(options = {}, request, response) {
     cwd: workspace.path,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    env: shellEnvironment(),
   });
 
   const finish = (event) => {
@@ -1382,17 +1650,18 @@ function liveSessionPayload(session) {
 }
 
 async function handleApi(request, response, pathname) {
+  const workspaceScope = workspaceScopeFromRequest(request);
   if (request.method === "GET" && pathname === "/api/workspaces") {
-    const workspaces = await listWorkspaces();
-    json(response, 200, { root: playgroundRoot, workspaces });
+    const workspaces = await listWorkspaces(workspaceScope);
+    json(response, 200, { root: workspaceScope.root, scope: workspaceScope, workspaces });
     return true;
   }
 
   if (request.method === "POST" && pathname === "/api/workspaces") {
     try {
       const body = await readJson(request);
-      const workspace = await ensureWorkspace(body.name);
-      const workspaces = await listWorkspaces();
+      const workspace = await ensureWorkspace(body.name, workspaceScope);
+      const workspaces = await listWorkspaces(workspaceScope);
       json(response, 200, { workspace, workspaces });
     } catch (error) {
       json(response, 400, { error: error.message || "Invalid workspace" });
@@ -1403,8 +1672,8 @@ async function handleApi(request, response, pathname) {
   if (request.method === "DELETE" && pathname === "/api/workspaces") {
     try {
       const body = await readJson(request);
-      const workspace = await deleteWorkspace(body.name);
-      const workspaces = await listWorkspaces();
+      const workspace = await deleteWorkspace(body.name, workspaceScope);
+      const workspaces = await listWorkspaces(workspaceScope);
       json(response, 200, { deleted: workspace, workspaces });
     } catch (error) {
       json(response, 400, { error: error.message || "Could not delete workspace" });
@@ -1415,14 +1684,20 @@ async function handleApi(request, response, pathname) {
   if (request.method === "GET" && pathname === "/api/history") {
     try {
       const params = new URL(request.url, `http://localhost:${port}`).searchParams;
-      const workspace = workspaceFromHistoryRequest({
-        workspacePath: params.get("workspacePath"),
-        workspaceName: params.get("workspaceName"),
-      });
-      json(response, 200, {
-        workspace,
-        options: await listWorkspaceHistory(workspace),
-      });
+      const workspacePath = params.get("workspacePath");
+      const workspaceName = params.get("workspaceName");
+      if (workspacePath || workspaceName) {
+        const workspace = workspaceFromHistoryRequest({ workspacePath, workspaceName }, workspaceScope);
+        json(response, 200, {
+          workspace,
+          options: (await listWorkspaceHistory(workspace)).map((item) => ({ ...item, workspace })),
+        });
+      } else {
+        json(response, 200, {
+          workspace: null,
+          options: await listAllWorkspaceHistory(workspaceScope),
+        });
+      }
     } catch (error) {
       json(response, 400, { error: error.message || "Could not list history" });
     }
@@ -1432,7 +1707,7 @@ async function handleApi(request, response, pathname) {
   if (request.method === "DELETE" && pathname === "/api/history") {
     try {
       const body = await readJson(request);
-      const workspace = workspaceFromHistoryRequest(body);
+      const workspace = workspaceFromHistoryRequest(body, workspaceScope);
       const deleted = await deleteWorkspaceHistoryItem(workspace, body.sessionId);
       json(response, deleted ? 200 : 404, { deleted, workspace });
     } catch (error) {
@@ -1444,6 +1719,7 @@ async function handleApi(request, response, pathname) {
   if (request.method === "POST" && pathname === "/api/session") {
     try {
       const options = await readJson(request);
+      options.workspaceScope = workspaceScope;
       const session = await createBackendSession(options);
       json(response, 200, { sessionId: session.id, workspace: session.workspace });
     } catch (error) {
@@ -1465,21 +1741,40 @@ async function handleApi(request, response, pathname) {
     return true;
   }
 
-  if (request.method === "GET" && pathname === "/api/settings/posco-gpt") {
+  if (request.method === "GET" && pathname === "/api/settings/pgpt") {
     try {
-      json(response, 200, await readPoscoGptSettings());
+      json(response, 200, await readPgptSettings());
     } catch (error) {
       json(response, 400, { error: error.message || "Could not read P-GPT settings" });
     }
     return true;
   }
 
-  if (request.method === "POST" && pathname === "/api/settings/posco-gpt") {
+  if (request.method === "POST" && pathname === "/api/settings/pgpt") {
     try {
       const body = await readJson(request);
-      json(response, 200, await savePoscoGptSettings(body));
+      json(response, 200, await savePgptSettings(body));
     } catch (error) {
       json(response, 400, { error: error.message || "Could not save P-GPT settings" });
+    }
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/settings/workspace-scope") {
+    try {
+      json(response, 200, await readWorkspaceScopeSettings(request));
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not read workspace scope settings" });
+    }
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/settings/workspace-scope") {
+    try {
+      const body = await readJson(request);
+      json(response, 200, await saveWorkspaceScopeSettings(body, request));
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not save workspace scope settings" });
     }
     return true;
   }
@@ -1523,12 +1818,15 @@ async function handleApi(request, response, pathname) {
 
   if (request.method === "GET" && pathname === "/api/artifact") {
     const params = new URL(request.url, `http://localhost:${port}`).searchParams;
-    const session = sessions.get(params.get("session"));
-    if (!session) {
-      json(response, 404, { error: "Unknown session" });
-      return true;
-    }
     try {
+      const sessionId = params.get("session");
+      const session = sessionId
+        ? sessions.get(sessionId)
+        : await workspaceSessionFromRequest(params, params.get("path"), workspaceScope);
+      if (!session) {
+        json(response, 404, { error: "Unknown session" });
+        return true;
+      }
       const payload = await readArtifactPreview(session, params.get("path"));
       json(response, 200, payload);
     } catch (error) {
@@ -1539,12 +1837,15 @@ async function handleApi(request, response, pathname) {
 
   if (request.method === "GET" && pathname === "/api/artifact/resolve") {
     const params = new URL(request.url, `http://localhost:${port}`).searchParams;
-    const session = sessions.get(params.get("session"));
-    if (!session) {
-      json(response, 404, { error: "Unknown session" });
-      return true;
-    }
     try {
+      const sessionId = params.get("session");
+      const session = sessionId
+        ? sessions.get(sessionId)
+        : await workspaceSessionFromRequest(params, params.get("path"), workspaceScope);
+      if (!session) {
+        json(response, 404, { error: "Unknown session" });
+        return true;
+      }
       const payload = await readArtifactMetadata(session, params.get("path"));
       json(response, 200, payload);
     } catch (error) {
@@ -1557,7 +1858,7 @@ async function handleApi(request, response, pathname) {
     const params = new URL(request.url, `http://localhost:${port}`).searchParams;
     try {
       const artifactPath = params.get("path");
-      const session = await workspaceSessionFromRequest(params, artifactPath);
+      const session = await workspaceSessionFromRequest(params, artifactPath, workspaceScope);
       const payload = await artifactDownloadTarget(session, artifactPath);
       const encodedName = encodeURIComponent(payload.name).replace(/[!'()*]/g, (char) =>
         `%${char.charCodeAt(0).toString(16).toUpperCase()}`
@@ -1583,7 +1884,7 @@ async function handleApi(request, response, pathname) {
       if (body.session) params.set("session", body.session);
       if (body.workspacePath) params.set("workspacePath", body.workspacePath);
       if (body.workspaceName) params.set("workspaceName", body.workspaceName);
-      const session = await workspaceSessionFromRequest(params, body.path);
+      const session = await workspaceSessionFromRequest(params, body.path, workspaceScope);
       const saved = await copyArtifactToFolder(session, body.path, body.folderPath);
       json(response, 200, { saved });
     } catch (error) {
@@ -1593,13 +1894,13 @@ async function handleApi(request, response, pathname) {
   }
 
   if (request.method === "DELETE" && pathname === "/api/artifact") {
-    const body = await readJson(request);
-    const session = sessions.get(body.session);
-    if (!session) {
-      json(response, 404, { error: "Unknown session" });
-      return true;
-    }
     try {
+      const body = await readJson(request);
+      const params = new URLSearchParams();
+      if (body.session) params.set("session", body.session);
+      if (body.workspacePath) params.set("workspacePath", body.workspacePath);
+      if (body.workspaceName) params.set("workspaceName", body.workspaceName);
+      const session = await workspaceSessionFromRequest(params, body.path, workspaceScope);
       const deleted = await deleteArtifactFile(session, body.path);
       json(response, 200, { deleted });
     } catch (error) {
@@ -1645,7 +1946,7 @@ async function handleApi(request, response, pathname) {
   if (request.method === "GET" && pathname === "/api/project-files") {
     const params = new URL(request.url, `http://localhost:${port}`).searchParams;
     try {
-      const session = await workspaceSessionFromRequest(params);
+      const session = await workspaceSessionFromRequest(params, "", workspaceScope);
       json(response, 200, {
         workspace: session.workspace,
         files: await listProjectFiles(session),
@@ -1696,6 +1997,7 @@ async function handleApi(request, response, pathname) {
         command: body.command,
         cwd: body.cwd,
         session,
+        workspaceScope,
       });
       json(response, 200, result);
     } catch (error) {
@@ -1712,6 +2014,7 @@ async function handleApi(request, response, pathname) {
         command: body.command,
         cwd: body.cwd,
         session,
+        workspaceScope,
       }, request, response);
     } catch (error) {
       if (!response.headersSent) {
@@ -1806,6 +2109,11 @@ process.once("exit", () => {
   shutdownAllSessions("process exit");
 });
 
+if (!String(process.env.OPENHARNESS_WORKSPACE_SCOPE || "").trim()) {
+  const savedScopeSettings = await readJsonFileIfExists(join(globalConfigDir(), "settings.json")) || {};
+  workspaceScopeMode = normalizeWorkspaceScopeMode(savedScopeSettings.web_workspace_scope || savedScopeSettings.workspace_scope || workspaceScopeMode);
+}
+
 server.listen(port, host, () => {
   const localUrl = `http://localhost:${port}`;
   const lanUrl = getLanUrl();
@@ -1818,4 +2126,5 @@ server.listen(port, host, () => {
   if (lanUrl) {
     console.log(`  ${lanUrl}`);
   }
+  console.log(`Workspace scope: ${workspaceScopeMode}`);
 });

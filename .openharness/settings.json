@@ -1,25 +1,29 @@
 {
   "api_key": "",
-  "model": "gpt-5.5",
+  "model": "gpt-5.4",
   "max_tokens": 16384,
-  "base_url": null,
+  "base_url": "http://pgpt.posco.com/s0la01-gpt/v1",
   "timeout": 30.0,
   "context_window_tokens": null,
   "auto_compact_threshold_tokens": null,
   "api_format": "openai",
-  "provider": "openai_codex",
-  "active_profile": "codex",
+  "provider": "openai",
+  "active_profile": "p-gpt",
   "profiles": {
     "p-gpt": {
       "label": "P-GPT",
-      "provider": "posco_gpt",
-      "api_format": "posco_gpt",
-      "auth_source": "posco_gpt_api_key",
-      "default_model": "gpt-5.4-mini",
-      "base_url": "http://pgpt.posco.com/s0la01-gpt/gptApi/personalApi",
-      "last_model": null,
+      "provider": "openai",
+      "api_format": "openai",
+      "auth_source": "pgpt_api_key",
+      "default_model": "gpt-5.4",
+      "base_url": "http://pgpt.posco.com/s0la01-gpt/v1",
+      "last_model": "gpt-5.4",
       "credential_slot": null,
-      "allowed_models": [],
+      "allowed_models": [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano"
+      ],
       "context_window_tokens": null,
       "auto_compact_threshold_tokens": null
     },
@@ -30,7 +34,7 @@
       "auth_source": "codex_subscription",
       "default_model": "gpt-5.5",
       "base_url": null,
-      "last_model": null,
+      "last_model": "gpt-5.5",
       "credential_slot": null,
       "allowed_models": [],
       "context_window_tokens": null,
@@ -187,3 +191,4 @@
   "passes": 1,
   "verbose": false
 }
+

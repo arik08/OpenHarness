@@ -710,7 +710,7 @@ async def test_auth_feedback_and_project_context_commands(tmp_path: Path, monkey
 
 
 @pytest.mark.asyncio
-async def test_login_stores_posco_gpt_identity(tmp_path: Path, monkeypatch):
+async def test_login_stores_pgpt_openai_compatible_identity(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
     from openharness.auth.storage import load_credential
@@ -725,32 +725,9 @@ async def test_login_stores_posco_gpt_identity(tmp_path: Path, monkeypatch):
     login_result = await login_command.handler(login_args, context)
 
     assert "Stored P-GPT credentials" in login_result.message
-    assert load_credential("posco_gpt", "api_key") == "pgpt-key"
-    assert load_credential("posco_gpt", "emp_no") == "E12345"
-    assert load_credential("posco_gpt", "comp_no") == "30"
-
-
-@pytest.mark.asyncio
-async def test_login_stores_posco_gpt_json_identity(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
-    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
-    from openharness.auth.storage import load_credential
-    from openharness.config import save_settings
-    from openharness.config.settings import Settings
-
-    save_settings(Settings(active_profile="p-gpt"))
-    registry = create_default_command_registry()
-    context = _make_context(tmp_path)
-
-    login_command, login_args = registry.lookup(
-        '/login {"apiKey":"pgpt-key","empNo":"E12345","compNo":"30"}'
-    )
-    login_result = await login_command.handler(login_args, context)
-
-    assert "Stored P-GPT credentials" in login_result.message
-    assert load_credential("posco_gpt", "api_key") == "pgpt-key"
-    assert load_credential("posco_gpt", "emp_no") == "E12345"
-    assert load_credential("posco_gpt", "comp_no") == "30"
+    assert load_credential("pgpt", "api_key") == "pgpt-key"
+    assert load_credential("pgpt", "employee_no") == "E12345"
+    assert load_credential("pgpt", "company_code") == "30"
 
 
 @pytest.mark.asyncio
@@ -848,7 +825,7 @@ async def test_init_and_bridge_commands(tmp_path: Path, monkeypatch):
     init_command, init_args = registry.lookup("/init")
     init_result = await init_command.handler(init_args, context)
     assert "Initialized project files" in init_result.message or "already initialized" in init_result.message
-    assert (tmp_path / "CLAUDE.md").exists()
+    assert (tmp_path / "AGENTS.md").exists()
     assert (tmp_path / ".openharness" / "memory" / "MEMORY.md").exists()
 
     bridge_show_command, bridge_show_args = registry.lookup("/bridge show")

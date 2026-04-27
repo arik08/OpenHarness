@@ -1,4 +1,4 @@
-"""Tests for CLAUDE.md loading."""
+"""Tests for project instruction loading."""
 
 from __future__ import annotations
 
@@ -12,7 +12,13 @@ from openharness.config.paths import (
 from openharness.engine.messages import ConversationMessage, TextBlock
 from openharness.personalization import rules as personalization_rules
 from openharness.personalization.session_hook import update_rules_from_session
-from openharness.prompts import build_runtime_system_prompt, discover_claude_md_files, load_claude_md_prompt
+from openharness.prompts import (
+    build_runtime_system_prompt,
+    discover_claude_md_files,
+    discover_project_instruction_files,
+    load_claude_md_prompt,
+    load_project_instructions_prompt,
+)
 from openharness.config.settings import Settings
 
 
@@ -31,6 +37,21 @@ def test_discover_claude_md_files(tmp_path: Path):
     assert rules_dir / "python.md" in files
 
 
+def test_discover_project_instruction_files_includes_agents_md(tmp_path: Path):
+    repo = tmp_path / "repo"
+    nested = repo / "pkg" / "mod"
+    nested.mkdir(parents=True)
+    (repo / "AGENTS.md").write_text("openharness instructions", encoding="utf-8")
+    (repo / "OPENHARNESS.md").write_text("project instructions", encoding="utf-8")
+    (repo / "CLAUDE.md").write_text("legacy instructions", encoding="utf-8")
+
+    files = discover_project_instruction_files(nested)
+
+    assert repo / "AGENTS.md" in files
+    assert repo / "OPENHARNESS.md" in files
+    assert repo / "CLAUDE.md" in files
+
+
 def test_load_claude_md_prompt(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -43,12 +64,25 @@ def test_load_claude_md_prompt(tmp_path: Path):
     assert "be careful" in prompt
 
 
+def test_load_project_instructions_prompt_prefers_general_project_files(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "AGENTS.md").write_text("plan before larger edits", encoding="utf-8")
+
+    prompt = load_project_instructions_prompt(repo)
+
+    assert prompt is not None
+    assert "Project Instructions" in prompt
+    assert "AGENTS.md" in prompt
+    assert "plan before larger edits" in prompt
+
+
 def test_build_runtime_system_prompt_combines_sections(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "CLAUDE.md").write_text("repo rules", encoding="utf-8")
+    (repo / "AGENTS.md").write_text("repo rules", encoding="utf-8")
 
     prompt = build_runtime_system_prompt(Settings(), cwd=repo, latest_user_prompt="hello")
 
@@ -67,7 +101,10 @@ def test_build_runtime_system_prompt_guides_artifact_filenames(tmp_path: Path, m
     prompt = build_runtime_system_prompt(Settings(), cwd=repo, latest_user_prompt="make a tetris html")
 
     assert "meaningful kebab-case filename" in prompt
-    assert "`index.html` only when the user explicitly asks" in prompt
+    assert "Avoid `index.html` for newly created artifacts whenever possible" in prompt
+    assert "Use `index.html` only when the user explicitly asks" in prompt
+    assert "Do not reuse a generic file such as `index.html`" in prompt
+    assert "For unrelated standalone HTML previews or demos" in prompt
 
 
 def test_build_runtime_system_prompt_includes_project_context_and_fast_mode(tmp_path: Path, monkeypatch):

@@ -447,24 +447,24 @@ def _record_tool_carryover(
         pattern = str(tool_input.get("pattern") or "").strip()
         if pattern:
             _remember_verified_work(context.tool_metadata, f"Checked repository matches for grep pattern {pattern[:180]}")
-    elif tool_name == "bash":
+    elif tool_name in {"bash", "cmd"}:
         command = str(tool_input.get("command") or "").strip()
         summary = tool_output.splitlines()[0].strip() if tool_output.strip() else "no output"
         _remember_verified_work(
             context.tool_metadata,
-            f"Ran bash command {command[:160]} [{summary[:120]}]",
+            f"Ran command {command[:160]} [{summary[:120]}]",
         )
     if tool_name == "read_file" and resolved_file_path is not None:
         _remember_work_log(
             context.tool_metadata,
             entry=f"Read file {resolved_file_path}",
         )
-    elif tool_name == "bash":
+    elif tool_name in {"bash", "cmd"}:
         command = str(tool_input.get("command") or "").strip()
         summary = tool_output.splitlines()[0].strip() if tool_output.strip() else "no output"
         _remember_work_log(
             context.tool_metadata,
-            entry=f"Ran bash: {command[:160]} [{summary[:120]}]",
+            entry=f"Ran command: {command[:160]} [{summary[:120]}]",
         )
     elif tool_name == "grep":
         pattern = str(tool_input.get("pattern") or "").strip()
@@ -728,6 +728,8 @@ async def _execute_tool_call(
     log.debug("tool_call start: %s id=%s", tool_name, tool_use_id)
 
     tool = context.tool_registry.get(tool_name)
+    if tool is None and tool_name == "bash":
+        tool = context.tool_registry.get("cmd")
     if tool is None:
         log.warning("unknown tool: %s", tool_name)
         return ToolResultBlock(

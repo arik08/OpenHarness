@@ -37,7 +37,7 @@ _KNOWN_PROVIDERS = [
     "moonshot",
     "gemini",
     "minimax",
-    "posco_gpt",
+    "pgpt",
 ]
 
 _AUTH_SOURCES = [
@@ -52,7 +52,7 @@ _AUTH_SOURCES = [
     "moonshot_api_key",
     "gemini_api_key",
     "minimax_api_key",
-    "posco_gpt_api_key",
+    "pgpt_api_key",
 ]
 
 _PROFILE_BY_PROVIDER = {
@@ -64,7 +64,7 @@ _PROFILE_BY_PROVIDER = {
     "moonshot": "moonshot",
     "gemini": "gemini",
     "minimax": "minimax",
-    "posco_gpt": "p-gpt",
+    "pgpt": "p-gpt",
 }
 
 
@@ -145,20 +145,26 @@ class AuthManager:
                     configured = True
                     origin = "file"
                     state = "configured"
-            elif source == "posco_gpt_api_key":
-                has_emp_no = bool(os.environ.get("POSCO_EMP_NO") or load_credential("posco_gpt", "emp_no"))
-                if os.environ.get("POSCO_API_KEY") and has_emp_no:
+            elif source == "pgpt_api_key":
+                has_employee_no = bool(
+                    os.environ.get("PGPT_EMPLOYEE_NO")
+                    or os.environ.get("PGPT_SYSTEM_CODE")
+                    or os.environ.get("POSCO_EMP_NO")
+                    or load_credential("pgpt", "employee_no")
+                    or load_credential("pgpt", "system_code")
+                )
+                if os.environ.get("PGPT_API_KEY") and has_employee_no:
                     configured = True
                     origin = "env"
                     state = "configured"
-                elif load_credential(storage_provider, "api_key") and has_emp_no:
+                elif load_credential(storage_provider, "api_key") and has_employee_no:
                     configured = True
                     origin = "file"
                     state = "configured"
-                elif os.environ.get("POSCO_API_KEY") or load_credential(storage_provider, "api_key"):
+                elif os.environ.get("PGPT_API_KEY") or load_credential(storage_provider, "api_key"):
                     origin = "partial"
-                    state = "missing_emp_no"
-                    detail = "P-GPT requires empNo."
+                    state = "missing_employee_no"
+                    detail = "P-GPT requires employee number."
             elif source in {"codex_subscription", "claude_subscription"}:
                 from openharness.auth.external import default_binding_for_provider
 
@@ -279,15 +285,21 @@ class AuthManager:
                     configured = True
                     source = "file"
 
-            elif provider == "posco_gpt":
-                has_emp_no = bool(os.environ.get("POSCO_EMP_NO") or load_credential("posco_gpt", "emp_no"))
-                if os.environ.get("POSCO_API_KEY") and has_emp_no:
+            elif provider == "pgpt":
+                has_employee_no = bool(
+                    os.environ.get("PGPT_EMPLOYEE_NO")
+                    or os.environ.get("PGPT_SYSTEM_CODE")
+                    or os.environ.get("POSCO_EMP_NO")
+                    or load_credential("pgpt", "employee_no")
+                    or load_credential("pgpt", "system_code")
+                )
+                if os.environ.get("PGPT_API_KEY") and has_employee_no:
                     configured = True
                     source = "env"
-                elif load_credential("posco_gpt", "api_key") and has_emp_no:
+                elif load_credential("pgpt", "api_key") and has_employee_no:
                     configured = True
                     source = "file"
-                elif os.environ.get("POSCO_API_KEY") or load_credential("posco_gpt", "api_key"):
+                elif os.environ.get("PGPT_API_KEY") or load_credential("pgpt", "api_key"):
                     source = "partial"
 
             elif provider in ("bedrock", "vertex"):

@@ -151,39 +151,13 @@ class CommandContext:
 CommandHandler = Callable[[str, CommandContext], Awaitable[CommandResult]]
 
 
-def _parse_posco_login_args(args: str) -> dict[str, str]:
-    """Parse P-GPT login args from either positional or key=value form."""
+def _parse_pgpt_login_args(args: str) -> dict[str, str]:
     raw = args.strip()
-    if raw.startswith("{"):
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            payload = None
-        if isinstance(payload, dict):
-            return {
-                "api_key": str(payload.get("apiKey") or payload.get("api_key") or "").strip(),
-                "emp_no": str(payload.get("empNo") or payload.get("emp_no") or "").strip(),
-                "comp_no": str(payload.get("compNo") or payload.get("comp_no") or "30").strip() or "30",
-            }
-
     tokens = raw.split()
-    keyed: dict[str, str] = {}
-    for token in tokens:
-        if "=" not in token:
-            continue
-        key, value = token.split("=", 1)
-        normalized = key.strip().lower().replace("-", "_")
-        keyed[normalized] = value.strip()
-    if keyed:
-        return {
-            "api_key": keyed.get("apikey") or keyed.get("api_key") or "",
-            "emp_no": keyed.get("empno") or keyed.get("emp_no") or "",
-            "comp_no": keyed.get("compno") or keyed.get("comp_no") or "30",
-        }
     return {
         "api_key": tokens[0] if len(tokens) >= 1 else "",
-        "emp_no": tokens[1] if len(tokens) >= 2 else "",
-        "comp_no": tokens[2] if len(tokens) >= 3 else "30",
+        "employee_no": tokens[1] if len(tokens) >= 2 else "",
+        "company_code": tokens[2] if len(tokens) >= 3 else "30",
     }
 
 
@@ -745,15 +719,15 @@ def create_default_command_registry(
         project_dir = get_project_config_dir(context.cwd)
         created: list[str] = []
 
-        claudemd = Path(context.cwd) / "CLAUDE.md"
-        if not claudemd.exists():
-            claudemd.write_text(
+        agents_md = Path(context.cwd) / "AGENTS.md"
+        if not agents_md.exists():
+            agents_md.write_text(
                 "# Project Instructions\n\n"
                 "- Use OpenHarness tools deliberately.\n"
                 "- Keep changes minimal and verify with tests when possible.\n",
                 encoding="utf-8",
             )
-            created.append(str(claudemd.relative_to(Path(context.cwd))))
+            created.append(str(agents_md.relative_to(Path(context.cwd))))
 
         for relative, content in (
             (
@@ -995,16 +969,16 @@ def create_default_command_registry(
                     f"- base_url: {settings.base_url or '(default)'}\n"
                     f"- model: {settings.model}\n"
                     f"- api_key: {masked}\n"
-                    f"Usage: {'/login API_KEY EMP_NO [COMP_NO]' if profile.provider == 'posco_gpt' else '/login API_KEY'}"
+                    f"Usage: {'/login API_KEY EMPLOYEE_NO [COMPANY_CODE]' if profile.auth_source == 'pgpt_api_key' else '/login API_KEY'}"
                 )
             )
-        if profile.provider == "posco_gpt":
-            values = _parse_posco_login_args(api_key)
-            if not values.get("api_key") or not values.get("emp_no"):
-                return CommandResult(message="Usage: /login API_KEY EMP_NO [COMP_NO]")
+        if profile.auth_source == "pgpt_api_key":
+            values = _parse_pgpt_login_args(api_key)
+            if not values.get("api_key") or not values.get("employee_no"):
+                return CommandResult(message="Usage: /login API_KEY EMPLOYEE_NO [COMPANY_CODE]")
             manager.store_profile_credential(profile_name, "api_key", values["api_key"])
-            manager.store_profile_credential(profile_name, "emp_no", values["emp_no"])
-            manager.store_profile_credential(profile_name, "comp_no", values.get("comp_no") or "30")
+            manager.store_profile_credential(profile_name, "employee_no", values["employee_no"])
+            manager.store_profile_credential(profile_name, "company_code", values.get("company_code") or "30")
             return CommandResult(message="Stored P-GPT credentials in ~/.openharness/credentials.json")
         manager.store_profile_credential(profile_name, "api_key", api_key)
         return CommandResult(message="Stored API key in ~/.openharness/settings.json")

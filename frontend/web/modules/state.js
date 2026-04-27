@@ -1,7 +1,10 @@
 const appSettingsKey = "openharness:appSettings";
 const defaultAppSettings = {
-  streamScrollDurationMs: 1200,
+  streamScrollDurationMs: 2000,
   streamStartBufferMs: 180,
+  streamFollowLeadPx: 60,
+  streamRevealDurationMs: 420,
+  streamRevealWipePercent: 180,
   downloadMode: "ask",
   downloadFolderPath: "",
 };
@@ -11,11 +14,17 @@ function loadAppSettings() {
     const parsed = JSON.parse(localStorage.getItem(appSettingsKey) || "{}");
     const parsedScrollDuration = Number(parsed.streamScrollDurationMs);
     const parsedStartBuffer = Number(parsed.streamStartBufferMs);
+    const parsedFollowLead = Number(parsed.streamFollowLeadPx);
+    const parsedRevealDuration = Number(parsed.streamRevealDurationMs);
+    const parsedRevealWipe = Number(parsed.streamRevealWipePercent);
     return {
       ...defaultAppSettings,
       ...parsed,
       streamScrollDurationMs: Math.max(0, Math.min(5000, Number.isFinite(parsedScrollDuration) ? parsedScrollDuration : defaultAppSettings.streamScrollDurationMs)),
       streamStartBufferMs: Math.max(0, Math.min(2000, Number.isFinite(parsedStartBuffer) ? parsedStartBuffer : defaultAppSettings.streamStartBufferMs)),
+      streamFollowLeadPx: Math.max(0, Math.min(220, Number.isFinite(parsedFollowLead) ? parsedFollowLead : defaultAppSettings.streamFollowLeadPx)),
+      streamRevealDurationMs: Math.max(0, Math.min(2000, Number.isFinite(parsedRevealDuration) ? parsedRevealDuration : defaultAppSettings.streamRevealDurationMs)),
+      streamRevealWipePercent: Math.max(100, Math.min(400, Number.isFinite(parsedRevealWipe) ? parsedRevealWipe : defaultAppSettings.streamRevealWipePercent)),
       downloadMode: parsed.downloadMode === "folder" ? "folder" : "ask",
       downloadFolderPath: String(parsed.downloadFolderPath || ""),
     };
@@ -32,8 +41,14 @@ export function saveAppSettings(nextSettings) {
   };
   const scrollDuration = Number(state.appSettings.streamScrollDurationMs);
   const startBuffer = Number(state.appSettings.streamStartBufferMs);
+  const followLead = Number(state.appSettings.streamFollowLeadPx);
+  const revealDuration = Number(state.appSettings.streamRevealDurationMs);
+  const revealWipe = Number(state.appSettings.streamRevealWipePercent);
   state.appSettings.streamScrollDurationMs = Math.max(0, Math.min(5000, Number.isFinite(scrollDuration) ? scrollDuration : defaultAppSettings.streamScrollDurationMs));
   state.appSettings.streamStartBufferMs = Math.max(0, Math.min(2000, Number.isFinite(startBuffer) ? startBuffer : defaultAppSettings.streamStartBufferMs));
+  state.appSettings.streamFollowLeadPx = Math.max(0, Math.min(220, Number.isFinite(followLead) ? followLead : defaultAppSettings.streamFollowLeadPx));
+  state.appSettings.streamRevealDurationMs = Math.max(0, Math.min(2000, Number.isFinite(revealDuration) ? revealDuration : defaultAppSettings.streamRevealDurationMs));
+  state.appSettings.streamRevealWipePercent = Math.max(100, Math.min(400, Number.isFinite(revealWipe) ? revealWipe : defaultAppSettings.streamRevealWipePercent));
   state.appSettings.downloadMode = state.appSettings.downloadMode === "folder" ? "folder" : "ask";
   state.appSettings.downloadFolderPath = String(state.appSettings.downloadFolderPath || "");
   localStorage.setItem(appSettingsKey, JSON.stringify(state.appSettings));
@@ -44,6 +59,7 @@ export const state = {
   sessionId: null,
   clientId: localStorage.getItem("openharness:clientId") || "",
   chatSlots: new Map(),
+  activeSlotByWorkspace: new Map(),
   activeFrontendId: "",
   ready: false,
   busy: false,
@@ -52,6 +68,8 @@ export const state = {
   source: null,
   chatTitle: "MyHarness",
   activeHistoryId: null,
+  historyOptions: [],
+  historyByWorkspace: new Map(),
   commands: [],
   skills: [],
   mcpServers: [],
@@ -65,6 +83,7 @@ export const state = {
   restoringHistory: false,
   batchingHistoryRestore: false,
   pendingScrollRestoreId: null,
+  restoreTimeoutId: 0,
   suppressNextLineCompleteScroll: false,
   ignoreScrollSave: false,
   autoFollowMessages: true,
@@ -79,8 +98,12 @@ export const state = {
   appSettings: loadAppSettings(),
   workspaceName: localStorage.getItem("openharness:workspaceName") || "",
   workspacePath: "",
+  workspaceScope: { mode: "shared", name: "shared", root: "" },
   workspaces: [],
   switchingWorkspace: false,
+  historyLoading: false,
+  skipNextReadyHistoryRefresh: false,
+  clearHistoryOnNextReady: false,
   returnToSettingsOnDismiss: false,
   workflowNode: null,
   workflowList: null,
@@ -97,6 +120,7 @@ export const state = {
   attachments: [],
   pastedTexts: [],
   composerToken: null,
+  inlineQuestion: null,
 };
 
 if (!state.clientId) {
@@ -124,6 +148,7 @@ export const els = {
   taskList: document.querySelector("#taskList"),
   modalHost: document.querySelector("#modalHost"),
   historyList: document.querySelector("#historyList"),
+  historyRefresh: document.querySelector("#historyRefresh"),
   chatTitleButton: document.querySelector("#chatTitle"),
   chatTitle: document.querySelector("#chatTitle span"),
   projectFilesButton: document.querySelector("#projectFilesButton"),
@@ -166,6 +191,18 @@ export const STATUS_LABELS = {
   startFailed: "시작 실패",
   connectionError: "연결 오류",
 };
+
+export function compactToolProgressStatus(event, fallback = "처리 중") {
+  const lower = String(event?.tool_name || "").toLowerCase();
+  if (lower.includes("bash") || lower.includes("shell")) return "명령 실행 중";
+  if (lower.includes("web_fetch")) return "웹 페이지 확인 중";
+  if (lower.includes("web_search")) return "웹 검색 중";
+  if (lower.includes("grep")) return "텍스트 검색 중";
+  if (lower.includes("glob")) return "파일 목록 확인 중";
+  if (lower.includes("read")) return "파일 읽는 중";
+  if (lower.includes("write") || lower.includes("edit") || lower.includes("notebook")) return "파일 작업 중";
+  return fallback;
+}
 
 export const COMMAND_DESCRIPTIONS = {
   "/agents": "에이전트와 팀 작업을 조회합니다",
@@ -276,9 +313,10 @@ function updatePlanModeIndicator() {
 export function formatProviderName(value) {
   const normalized = String(value || "").trim();
   const labels = {
-    posco_gpt: "P-GPT",
     "openai-codex": "Codex",
     openai_codex: "Codex",
+    pgpt: "P-GPT",
+    "p-gpt": "P-GPT",
     github_copilot: "GitHub Copilot",
     anthropic: "Anthropic",
     "claude-subscription": "Claude",

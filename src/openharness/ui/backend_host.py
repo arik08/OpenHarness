@@ -40,7 +40,11 @@ from openharness.project_preferences import (
     set_project_skill_enabled,
 )
 from openharness.prompts import build_runtime_system_prompt
-from openharness.services.session_storage import fallback_session_title_from_user_text, title_matches_first_user
+from openharness.services.session_storage import (
+    fallback_session_title_from_user_text,
+    title_echoes_first_user,
+    title_matches_first_user,
+)
 from openharness.skills import load_skill_registry
 from openharness.skills.types import SkillDefinition
 from openharness.tasks import get_task_manager
@@ -54,6 +58,28 @@ log = logging.getLogger(__name__)
 
 _PROTOCOL_PREFIX = "OHJSON:"
 _BUILT_IN_SKILL_SOURCES = {"bundled"}
+_TOOL_PROGRESS_FIRST_DELAY_SECONDS = 2.5
+_TOOL_PROGRESS_INTERVAL_SECONDS = 3.0
+
+
+def _truncate_progress_text(value: object, limit: int = 96) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit - 3]}..."
+
+
+def _tool_progress_message(tool_name: str, tool_input: dict[str, object] | None, elapsed_seconds: int) -> str:
+    lower = tool_name.lower()
+    payload = tool_input or {}
+    if "bash" in lower or "shell" in lower:
+        command = _truncate_progress_text(payload.get("command"))
+        return f"명령 실행 중... {elapsed_seconds}초 경과" + (f" · {command}" if command else "")
+    if "write" in lower or "edit" in lower or "notebook" in lower:
+        path = _truncate_progress_text(payload.get("file_path") or payload.get("path"))
+        return f"파일 작업 중... {elapsed_seconds}초 경과" + (f" · {path}" if path else "")
+    target = _truncate_progress_text(payload.get("url") or payload.get("query") or payload.get("pattern"))
+    return f"{tool_name} 실행 중... {elapsed_seconds}초 경과" + (f" · {target}" if target else "")
 
 
 @dataclass(frozen=True)
@@ -270,7 +296,14 @@ class ReactBackendHost:
                 continue
             await self._request_queue.put(request)
 
-    async def _process_line(self, line: str, *, transcript_line: str | None = None, attachments=None) -> bool:
+    async def _process_line(
+        self,
+        line: str,
+        *,
+        transcript_line: str | None = None,
+        attachments=None,
+        quiet: bool = False,
+    ) -> bool:
         assert self._bundle is not None
         attachments = attachments or []
         image_blocks: list[ImageBlock] = []
@@ -296,14 +329,50 @@ class ReactBackendHost:
         if image_blocks:
             suffix = f" [image attachments: {len(image_blocks)}]"
             transcript_text = f"{transcript_text}{suffix}" if transcript_text else suffix.strip()
-        await self._emit(
-            BackendEvent(type="transcript_item", item=TranscriptItem(role="user", text=transcript_text))
-        )
+        if not quiet:
+            await self._emit(
+                BackendEvent(type="transcript_item", item=TranscriptItem(role="user", text=transcript_text))
+            )
 
         async def _print_system(message: str) -> None:
+            if quiet:
+                return
             await self._emit(
                 BackendEvent(type="transcript_item", item=TranscriptItem(role="system", text=message))
             )
+
+        tool_progress_tasks: dict[str, list[asyncio.Task[None]]] = {}
+
+        async def _tool_progress_loop(tool_name: str, tool_input: dict[str, object] | None) -> None:
+            started_at = time.monotonic()
+            await asyncio.sleep(_TOOL_PROGRESS_FIRST_DELAY_SECONDS)
+            while True:
+                elapsed = max(1, round(time.monotonic() - started_at))
+                await self._emit(
+                    BackendEvent(
+                        type="tool_progress",
+                        tool_name=tool_name,
+                        tool_input=tool_input or {},
+                        message=_tool_progress_message(tool_name, tool_input, elapsed),
+                    )
+                )
+                await asyncio.sleep(_TOOL_PROGRESS_INTERVAL_SECONDS)
+
+        def _start_tool_progress(tool_name: str, tool_input: dict[str, object] | None) -> None:
+            task = asyncio.create_task(_tool_progress_loop(tool_name, tool_input))
+            tool_progress_tasks.setdefault(tool_name, []).append(task)
+
+        async def _stop_tool_progress(tool_name: str) -> None:
+            tasks = tool_progress_tasks.pop(tool_name, [])
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        async def _stop_all_tool_progress() -> None:
+            tool_names = list(tool_progress_tasks)
+            for tool_name in tool_names:
+                await _stop_tool_progress(tool_name)
 
         async def _render_event(event: StreamEvent) -> None:
             if isinstance(event, AssistantTextDelta):
@@ -345,6 +414,7 @@ class ReactBackendHost:
                 return
             if isinstance(event, ToolExecutionStarted):
                 self._last_tool_inputs[event.tool_name] = event.tool_input or {}
+                _start_tool_progress(event.tool_name, event.tool_input or {})
                 await self._emit(
                     BackendEvent(
                         type="tool_started",
@@ -360,6 +430,7 @@ class ReactBackendHost:
                 )
                 return
             if isinstance(event, ToolExecutionCompleted):
+                await _stop_tool_progress(event.tool_name)
                 await self._emit(
                     BackendEvent(
                         type="tool_completed",
@@ -411,6 +482,8 @@ class ReactBackendHost:
         first_token = (line.strip().split(maxsplit=1) or [""])[0].lower()
         started_at = time.monotonic()
         try:
+            if first_token != "/clear" and not first_token.startswith("/") and not quiet:
+                await self._maybe_update_session_title_from_prompt(transcript_text)
             should_continue = await handle_line(
                 self._bundle,
                 effective_prompt,
@@ -419,7 +492,7 @@ class ReactBackendHost:
                 clear_output=_clear_output,
             )
             self._bundle.engine.tool_metadata["workflow_duration_seconds"] = max(1, round(time.monotonic() - started_at))
-            if first_token != "/clear":
+            if first_token != "/clear" and not quiet:
                 self._save_current_session_snapshot()
             await self._emit(self._status_snapshot())
             await self._emit(BackendEvent.tasks_snapshot(get_task_manager().list_tasks()))
@@ -434,12 +507,35 @@ class ReactBackendHost:
                     self._set_saved_session_id(parts[1].strip().split()[0])
             if first_token in {"/reload-plugins", "/skills"}:
                 await self._emit(BackendEvent.skills_snapshot(self._skill_snapshots()))
-            if first_token != "/clear":
+            if first_token != "/clear" and not quiet:
                 await self._maybe_update_session_title()
-            await self._emit(BackendEvent(type="line_complete"))
+            await self._emit(BackendEvent(type="line_complete", quiet=quiet))
             return should_continue
         finally:
+            await _stop_all_tool_progress()
             release_mutation_lock(self._bundle.engine.tool_metadata.pop("mutation_lock_token", None))
+
+    async def _maybe_update_session_title_from_prompt(self, user_text: str) -> None:
+        assert self._bundle is not None
+        metadata = self._bundle.engine.tool_metadata
+        if str(metadata.get("session_title") or "").strip():
+            return
+        clean_user_text = user_text.strip()
+        if not clean_user_text:
+            return
+        try:
+            title = await asyncio.wait_for(self._generate_session_title_from_user_text(clean_user_text), timeout=8)
+        except Exception as exc:
+            log.debug("Could not generate initial session title: %s", exc)
+            title = ""
+        if title and (not title_matches_first_user(title, clean_user_text) or title_echoes_first_user(title, clean_user_text)):
+            title = fallback_session_title_from_user_text(clean_user_text)
+        if not title:
+            title = fallback_session_title_from_user_text(clean_user_text)
+        if not title:
+            return
+        metadata["session_title"] = title
+        await self._emit(BackendEvent(type="session_title", message=title))
 
     async def _maybe_update_session_title(self) -> None:
         assert self._bundle is not None
@@ -457,7 +553,7 @@ class ReactBackendHost:
             log.debug("Could not generate session title: %s", exc)
             return
         first_user_text = user_messages[0].text.strip()
-        if title and not title_matches_first_user(title, first_user_text):
+        if title and (not title_matches_first_user(title, first_user_text) or title_echoes_first_user(title, first_user_text)):
             title = fallback_session_title_from_user_text(first_user_text)
         if not title:
             return
@@ -495,8 +591,42 @@ class ReactBackendHost:
             "- Keep it under 24 Korean characters or 7 English words.\n"
             "- Preserve exact product, game, company, file, and project names from the first user message.\n"
             "- If the first user message names a subject, the title must include that subject.\n"
+            "- Do not copy the user's full request; summarize the subject and outcome only.\n"
+            "- Prefer noun phrases like '삼성전자 메모리 경쟁사 보고서' over command phrases.\n"
             "- Do not use quotes, punctuation-heavy phrasing, or generic words like '대화'.\n\n"
             + "\n".join(snippets)
+        )
+        request = ApiMessageRequest(
+            model=self._bundle.engine.model,
+            messages=[ConversationMessage.from_user_text(prompt)],
+            system_prompt="You write concise, specific chat history titles.",
+            max_tokens=32,
+            tools=[],
+        )
+        title = ""
+        async for event in self._bundle.api_client.stream_message(request):
+            if isinstance(event, ApiMessageCompleteEvent):
+                title = event.message.text.strip()
+                break
+        return self._clean_session_title(title)
+
+    async def _generate_session_title_from_user_text(self, user_text: str) -> str:
+        assert self._bundle is not None
+        text = " ".join(user_text.strip().split())
+        if not text:
+            return ""
+        prompt = (
+            "Create a short chat history title for the user's question below.\n"
+            "Rules:\n"
+            "- Reply with only the title text.\n"
+            "- Korean is preferred if the question is Korean.\n"
+            "- Keep it under 24 Korean characters or 7 English words.\n"
+            "- Preserve exact product, game, company, file, and project names from the question.\n"
+            "- If the question names a subject, the title must include that subject.\n"
+            "- Do not copy the user's full request; summarize the subject and outcome only.\n"
+            "- Prefer noun phrases like '삼성전자 메모리 경쟁사 보고서' over command phrases.\n"
+            "- Do not use quotes, punctuation-heavy phrasing, or generic words like '대화'.\n\n"
+            f"user: {text[:1000]}"
         )
         request = ApiMessageRequest(
             model=self._bundle.engine.model,
@@ -705,7 +835,8 @@ class ReactBackendHost:
             await self._emit(BackendEvent(type="error", message=f"Unknown select command: {command_name}"))
             await self._emit(BackendEvent(type="line_complete"))
             return True
-        return await self._process_line(line, transcript_line=f"/{command}")
+        quiet = command in {"provider", "model", "effort"}
+        return await self._process_line(line, transcript_line=f"/{command}", quiet=quiet)
 
     def _build_select_command_line(self, command: str, value: str) -> str | None:
         if command == "provider":
@@ -1170,7 +1301,15 @@ class ReactBackendHost:
                 for value, label, description in CLAUDE_MODEL_ALIAS_OPTIONS
             ]
         families: list[tuple[str, str]] = []
-        if provider_name in {"openai-codex", "openai", "openai-compatible", "openrouter", "github_copilot"}:
+        if provider_name == "pgpt":
+            families.extend(
+                [
+                    ("gpt-5.4", "P-GPT GPT-5.4"),
+                    ("gpt-5.4-mini", "P-GPT GPT-5.4 mini"),
+                    ("gpt-5.4-nano", "P-GPT GPT-5.4 nano"),
+                ]
+            )
+        elif provider_name in {"openai-codex", "openai", "openai-compatible", "openrouter", "github_copilot"}:
             families.extend(
                 [
                     ("gpt-5.5", "OpenAI flagship"),
@@ -1209,14 +1348,6 @@ class ReactBackendHost:
                     ("MiniMax-M2.7-highspeed", "MiniMax fast"),
                 ]
             )
-        elif provider_name == "posco_gpt":
-            families.extend(
-                [
-                    ("gpt-5.4-mini", "P-GPT 기본 모델"),
-                    ("gpt-5.4", "P-GPT GPT-5.4"),
-                ]
-            )
-
         seen: set[str] = set()
         options: list[dict[str, object]] = []
         for value, description in [(current_model, "Current model"), *families]:

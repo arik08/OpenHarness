@@ -2,13 +2,16 @@ const scrollStorageKey = "openharness:scrollPositions";
 let scrollRestoreTimer = 0;
 let scrollSaveTimer = 0;
 let scrollAnimationFrame = 0;
+let userScrollIntentUntil = 0;
 let busyVisualTimer = 0;
 let pendingBusyLabel = "";
 const BUSY_VISUAL_DELAY_MS = 280;
+const NEAR_BOTTOM_PX = 96;
 
 export function createUI(ctx) {
   const { state, els, STATUS_LABELS } = ctx;
   function markActiveHistory(...args) { return ctx.markActiveHistory(...args); }
+  function showImagePreview(...args) { return ctx.showImagePreview?.(...args); }
 
 function readScrollPositions() {
   try {
@@ -53,18 +56,112 @@ function forgetScrollPosition(sessionId) {
   localStorage.setItem(scrollStorageKey, JSON.stringify(positions));
 }
 
-function isNearMessageBottom() {
-  const remaining = els.messages.scrollHeight - els.messages.clientHeight - els.messages.scrollTop;
-  return remaining <= 36;
+function isNearMessageBottom(container = els.messages) {
+  const remaining = container.scrollHeight - container.clientHeight - container.scrollTop;
+  return remaining <= NEAR_BOTTOM_PX;
+}
+
+function stopMessagesAutoFollow() {
+  window.cancelAnimationFrame(scrollAnimationFrame);
+  scrollAnimationFrame = 0;
+  state.autoFollowMessages = false;
+  state.autoScrollUntil = 0;
+  els.messages.classList.remove("streaming-follow");
+}
+
+function markMessagesUserScrollIntent() {
+  userScrollIntentUntil = Date.now() + 900;
+}
+
+function updateAutoFollowFromScroll(container = els.messages) {
+  if (state.restoringHistory || state.ignoreScrollSave) {
+    return;
+  }
+  const currentTop = container.scrollTop;
+  const previousTop = Number(container.dataset.lastScrollTop);
+  const movedUp = Number.isFinite(previousTop) && currentTop < previousTop - 2;
+  if (movedUp) {
+    if (Date.now() <= userScrollIntentUntil || Date.now() >= state.autoScrollUntil) {
+      stopMessagesAutoFollow();
+    }
+  } else if (Date.now() < state.autoScrollUntil) {
+    state.autoFollowMessages = true;
+  } else {
+    state.autoFollowMessages = isNearMessageBottom(container);
+  }
+  container.dataset.lastScrollTop = String(currentTop);
 }
 
 function scrollMessagesToBottom(options = {}) {
   const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  const tail = els.messages.lastElementChild;
+  const block = ["start", "center", "end", "nearest"].includes(options.block) ? options.block : null;
+  const inline = ["start", "center", "end", "nearest"].includes(options.inline) ? options.inline : null;
+  const canUseNativeAlignment = tail && (block || inline);
+  if (canUseNativeAlignment) {
+    window.cancelAnimationFrame(scrollAnimationFrame);
+    const containerRect = els.messages.getBoundingClientRect();
+    const tailRect = tail.getBoundingClientRect();
+    const tailTop = tailRect.top - containerRect.top + els.messages.scrollTop;
+    const tailLeft = tailRect.left - containerRect.left + els.messages.scrollLeft;
+    const maxTop = Math.max(0, els.messages.scrollHeight - els.messages.clientHeight);
+    const maxLeft = Math.max(0, els.messages.scrollWidth - els.messages.clientWidth);
+    const nearest = (start, size, current, viewportSize, max) => {
+      if (start >= current && start + size <= current + viewportSize) {
+        return current;
+      }
+      if (start < current) {
+        return start;
+      }
+      return Math.min(max, start + size - viewportSize);
+    };
+    const targetFor = (alignment, start, size, current, viewportSize, max) => {
+      if (alignment === "start") {
+        return start;
+      }
+      if (alignment === "center") {
+        return start - ((viewportSize - size) / 2);
+      }
+      if (alignment === "nearest") {
+        return nearest(start, size, current, viewportSize, max);
+      }
+      return start + size - viewportSize;
+    };
+    const targetTop = Math.max(0, Math.min(maxTop, targetFor(block || "end", tailTop, tailRect.height, els.messages.scrollTop, els.messages.clientHeight, maxTop)));
+    const targetLeft = Math.max(0, Math.min(maxLeft, targetFor(inline || "nearest", tailLeft, tailRect.width, els.messages.scrollLeft, els.messages.clientWidth, maxLeft)));
+    const duration = Number(options.duration || 760);
+    if (options.smooth && !reduceMotion) {
+      const startTop = els.messages.scrollTop;
+      const startLeft = els.messages.scrollLeft;
+      const leftDistance = targetLeft - startLeft;
+      const startedAt = performance.now();
+      state.autoScrollUntil = Date.now() + duration + 260;
+
+      const step = (now) => {
+        const progress = Math.min(1, (now - startedAt) / duration);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const liveTargetTop = options.followTail
+          ? Math.max(0, els.messages.scrollHeight - els.messages.clientHeight)
+          : targetTop;
+        els.messages.scrollTop = startTop + (liveTargetTop - startTop) * eased;
+        els.messages.scrollLeft = startLeft + leftDistance * eased;
+        if (progress < 1 && state.autoFollowMessages) {
+          scrollAnimationFrame = window.requestAnimationFrame(step);
+        } else {
+          els.messages.dataset.lastScrollTop = String(els.messages.scrollTop);
+        }
+      };
+      scrollAnimationFrame = window.requestAnimationFrame(step);
+      return;
+    }
+    state.autoScrollUntil = Date.now() + 120;
+    els.messages.scrollTop = targetTop;
+    els.messages.scrollLeft = targetLeft;
+    return;
+  }
   if (options.smooth && !reduceMotion) {
     window.cancelAnimationFrame(scrollAnimationFrame);
     const start = els.messages.scrollTop;
-    const target = els.messages.scrollHeight - els.messages.clientHeight;
-    const distance = target - start;
     const duration = Number(options.duration || 760);
     const startedAt = performance.now();
     state.autoScrollUntil = Date.now() + duration + 260;
@@ -72,9 +169,12 @@ function scrollMessagesToBottom(options = {}) {
     const step = (now) => {
       const progress = Math.min(1, (now - startedAt) / duration);
       const eased = 1 - Math.pow(1 - progress, 3);
-      els.messages.scrollTop = start + distance * eased;
+      const target = Math.max(0, els.messages.scrollHeight - els.messages.clientHeight);
+      els.messages.scrollTop = start + (target - start) * eased;
       if (progress < 1 && state.autoFollowMessages) {
         scrollAnimationFrame = window.requestAnimationFrame(step);
+      } else {
+        els.messages.dataset.lastScrollTop = String(els.messages.scrollTop);
       }
     };
     scrollAnimationFrame = window.requestAnimationFrame(step);
@@ -96,6 +196,10 @@ function finishScrollRestore() {
     }
   }
   state.pendingScrollRestoreId = null;
+  if (state.restoreTimeoutId) {
+    window.clearTimeout(state.restoreTimeoutId);
+    state.restoreTimeoutId = 0;
+  }
   state.restoringHistory = false;
   state.batchingHistoryRestore = false;
   requestAnimationFrame(() => {
@@ -240,7 +344,7 @@ function updateSendState() {
   els.send.disabled =
     state.switchingWorkspace
     || (state.busy && !showStop)
-    || (!shellCommand && !state.ready)
+    || (!shellCommand && state.sessionId && !state.ready)
     || (!state.busy && !hasText && state.attachments.length === 0);
   els.send.classList.toggle("is-stop", showStop);
   els.send.setAttribute("aria-label", showStop ? "작업 중단" : "메시지 보내기");
@@ -413,24 +517,7 @@ function setComposerTokenFromSelection(item) {
 }
 
 function updateComposerTokenFromInput() {
-  if (state.composerToken) {
-    return false;
-  }
-  if ((els.input.selectionStart || 0) !== els.input.value.length) {
-    return false;
-  }
-  const parsed = parseComposerToken(els.input.value);
-  if (!parsed) {
-    return false;
-  }
-  els.input.value = parsed.rest;
-  els.input.setSelectionRange(els.input.value.length, els.input.value.length);
-  setComposerToken({ raw: parsed.raw, kind: parsed.kind, label: parsed.label });
-  if (ctx.closeSlashMenu) {
-    ctx.closeSlashMenu();
-  }
-  autoSizeInput();
-  return true;
+  return false;
 }
 
 function buildComposerLine(value = els.input.value) {
@@ -520,10 +607,37 @@ function renderAttachments() {
     const image = document.createElement("img");
     image.src = `data:${attachment.mediaType};base64,${attachment.data}`;
     image.alt = attachment.name || "첨부 이미지";
+    image.tabIndex = 0;
+    image.setAttribute("role", "button");
+    image.title = "크게 보기";
+    image.addEventListener("click", () => {
+      showImagePreview({
+        src: image.src,
+        name: attachment.name || "이미지",
+        alt: image.alt,
+      });
+    });
+    image.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        showImagePreview({
+          src: image.src,
+          name: attachment.name || "이미지",
+          alt: image.alt,
+        });
+      }
+    });
 
     const label = document.createElement("span");
     label.textContent = attachment.name || "이미지";
     label.title = attachment.name || "이미지";
+    label.addEventListener("click", () => {
+      showImagePreview({
+        src: image.src,
+        name: attachment.name || "이미지",
+        alt: image.alt,
+      });
+    });
 
     const remove = document.createElement("button");
     remove.type = "button";
@@ -531,6 +645,12 @@ function renderAttachments() {
     remove.setAttribute("aria-label", "첨부 이미지 삭제");
     remove.dataset.id = attachment.id;
     remove.textContent = "x";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      state.attachments = state.attachments.filter((item) => item.id !== attachment.id);
+      renderAttachments();
+      updateSendState();
+    });
 
     item.append(image, label, remove);
     els.attachmentTray.append(item);
@@ -554,6 +674,9 @@ els.composerToken?.addEventListener("click", () => {
     restoreScrollPosition,
     forgetScrollPosition,
     isNearMessageBottom,
+    markMessagesUserScrollIntent,
+    stopMessagesAutoFollow,
+    updateAutoFollowFromScroll,
     scrollMessagesToBottom,
     finishScrollRestore,
     scheduleScrollRestore,

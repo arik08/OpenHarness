@@ -14,7 +14,7 @@ from openharness.config.settings import Settings
 from openharness.coordinator.coordinator_mode import get_coordinator_system_prompt, is_coordinator_mode
 from openharness.memory import find_relevant_memories, load_memory_prompt
 from openharness.personalization.rules import load_local_rules
-from openharness.prompts.claudemd import load_claude_md_prompt
+from openharness.prompts.project_instructions import load_project_instructions_prompt
 from openharness.prompts.system_prompt import build_system_prompt
 from openharness.skills.loader import load_skill_registry
 
@@ -112,9 +112,9 @@ def build_runtime_system_prompt(
     if not is_coordinator_mode():
         sections.append(_build_delegation_section())
 
-    claude_md = load_claude_md_prompt(cwd)
-    if claude_md:
-        sections.append(claude_md)
+    project_instructions = load_project_instructions_prompt(cwd)
+    if project_instructions:
+        sections.append(project_instructions)
 
     local_rules = load_local_rules()
     if local_rules:

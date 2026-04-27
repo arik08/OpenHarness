@@ -10,7 +10,7 @@ import pytest
 
 from openharness.api.client import ApiMessageCompleteEvent
 from openharness.api.usage import UsageSnapshot
-from openharness.engine.stream_events import CompactProgressEvent
+from openharness.engine.stream_events import AssistantTextDelta, CompactProgressEvent, ToolExecutionCompleted, ToolExecutionStarted
 from openharness.engine.messages import ConversationMessage, TextBlock
 from openharness.ui.backend_host import BackendHostConfig, ReactBackendHost, run_backend_host
 from openharness.ui.protocol import BackendEvent
@@ -173,6 +173,38 @@ async def test_backend_host_processes_model_turn(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_backend_host_emits_title_before_answer_stream(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("피자 추천")))
+    host._bundle = await build_runtime(api_client=StaticApiClient("피자 추천"))
+    events = []
+
+    async def _emit(event):
+        events.append(event)
+
+    async def _fake_handle_line(bundle, line, print_system, render_event, clear_output):
+        del bundle, line, print_system, clear_output
+        await render_event(AssistantTextDelta(text="답변 시작"))
+        return True
+
+    monkeypatch.setattr("openharness.ui.backend_host.handle_line", _fake_handle_line)
+    host._emit = _emit  # type: ignore[method-assign]
+    await start_runtime(host._bundle)
+    try:
+        should_continue = await host._process_line("서울 피자 맛집 추천해줘")
+    finally:
+        await close_runtime(host._bundle)
+
+    assert should_continue is True
+    event_types = [event.type for event in events]
+    assert event_types.index("session_title") < event_types.index("assistant_delta")
+    assert next(event for event in events if event.type == "session_title").message == "피자 추천"
+
+
+@pytest.mark.asyncio
 async def test_backend_host_forces_skill_from_dollar_prefix(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
@@ -251,6 +283,45 @@ async def test_backend_host_emits_compact_progress_event(tmp_path, monkeypatch):
         and event.compact_phase == "compact_start"
         and event.compact_checkpoint == "compact_start"
         and event.compact_metadata == {"token_count": 12345}
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_backend_host_emits_tool_progress_heartbeat(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr("openharness.ui.backend_host._TOOL_PROGRESS_FIRST_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr("openharness.ui.backend_host._TOOL_PROGRESS_INTERVAL_SECONDS", 0.01)
+
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    host._bundle = await build_runtime(api_client=StaticApiClient("unused"))
+    events = []
+
+    async def _emit(event):
+        events.append(event)
+
+    async def _fake_handle_line(bundle, line, print_system, render_event, clear_output):
+        del bundle, line, print_system, clear_output
+        await render_event(ToolExecutionStarted(tool_name="bash", tool_input={"command": "python make_deck.py"}))
+        await asyncio.sleep(0.035)
+        await render_event(ToolExecutionCompleted(tool_name="bash", output="done", is_error=False))
+        return True
+
+    monkeypatch.setattr("openharness.ui.backend_host.handle_line", _fake_handle_line)
+    host._emit = _emit  # type: ignore[method-assign]
+    await start_runtime(host._bundle)
+    try:
+        should_continue = await host._process_line("make pptx")
+    finally:
+        await close_runtime(host._bundle)
+
+    assert should_continue is True
+    assert any(
+        event.type == "tool_progress"
+        and event.tool_name == "bash"
+        and "명령 실행 중" in (event.message or "")
         for event in events
     )
 

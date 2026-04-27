@@ -1,3 +1,5 @@
+import { compactToolProgressStatus } from "./state.js";
+
 export function createApi(ctx) {
   const { state, els, STATUS_LABELS } = ctx;
   function handleEvent(...args) { return ctx.handleEvent(...args); }
@@ -8,6 +10,7 @@ export function createApi(ctx) {
   function appendMessage(...args) { return ctx.appendMessage(...args); }
   function setMarkdown(...args) { return ctx.setMarkdown(...args); }
   function scrollMessagesToBottom(...args) { return ctx.scrollMessagesToBottom(...args); }
+  function updateAutoFollowFromScroll(...args) { return ctx.updateAutoFollowFromScroll(...args); }
   function autoSizeInput(...args) { return ctx.autoSizeInput(...args); }
   function setBusy(...args) { return ctx.setBusy(...args); }
   function saveScrollPosition(...args) { return ctx.saveScrollPosition(...args); }
@@ -133,10 +136,86 @@ function setActiveWorkspace(workspace) {
   }
   state.workspaceName = workspace.name || "";
   state.workspacePath = workspace.path || "";
+  if (workspace.scope) {
+    state.workspaceScope = workspace.scope;
+  }
   if (state.workspaceName) {
     localStorage.setItem("openharness:workspaceName", state.workspaceName);
   }
   updateWorkspaceDisplay();
+}
+
+function workspaceHistoryKey(workspace = null) {
+  const path = String(workspace?.path || state.workspacePath || "").trim();
+  if (path) {
+    return `path:${path}`;
+  }
+  const name = String(workspace?.name || state.workspaceName || "").trim();
+  return name ? `name:${name}` : "";
+}
+
+function cachedHistoryForWorkspace(workspace = null) {
+  return (state.historyOptions || []).filter((option) => historyOptionBelongsToWorkspace(option, workspace));
+}
+
+function cacheHistoryForWorkspace(options, workspace = null) {
+  state.historyOptions = Array.isArray(options) ? options : [];
+  const key = workspaceHistoryKey(workspace);
+  if (!key) {
+    return;
+  }
+  state.historyByWorkspace.set(key, cachedHistoryForWorkspace(workspace));
+}
+
+function historyOptionBelongsToWorkspace(option, workspace = null) {
+  const targetPath = String(workspace?.path || state.workspacePath || "").trim();
+  const optionPath = String(option?.workspace?.path || "").trim();
+  if (targetPath && optionPath) {
+    return optionPath === targetPath;
+  }
+  const targetName = String(workspace?.name || state.workspaceName || "").trim();
+  const optionName = String(option?.workspace?.name || "").trim();
+  if (targetName && optionName) {
+    return optionName === targetName;
+  }
+  return true;
+}
+
+function slotBelongsToWorkspace(slot, workspace = null) {
+  if (!slot) {
+    return false;
+  }
+  const targetPath = String(workspace?.path || state.workspacePath || "").trim();
+  const slotPath = String(slot.workspace?.path || "").trim();
+  if (targetPath) {
+    return slotPath === targetPath;
+  }
+  const targetName = String(workspace?.name || state.workspaceName || "").trim();
+  const slotName = String(slot.workspace?.name || "").trim();
+  return targetName ? slotName === targetName : true;
+}
+
+function rememberActiveSlotForWorkspace(slot) {
+  const key = workspaceHistoryKey(slot?.workspace || null);
+  if (key && slot?.frontendId) {
+    state.activeSlotByWorkspace.set(key, slot.frontendId);
+  }
+}
+
+function liveSlotForWorkspace(workspace = null) {
+  const key = workspaceHistoryKey(workspace);
+  const rememberedId = key ? state.activeSlotByWorkspace.get(key) : "";
+  const rememberedSlot = rememberedId ? state.chatSlots.get(rememberedId) : null;
+  if (rememberedSlot && slotBelongsToWorkspace(rememberedSlot, workspace)) {
+    return rememberedSlot;
+  }
+  const slots = [...state.chatSlots.values()].filter((slot) => slotBelongsToWorkspace(slot, workspace));
+  return (
+    slots.find((slot) => slot.busy)
+    || slots.find((slot) => slot.hasConversation || slot.savedSessionId || slot.showInHistory)
+    || slots[0]
+    || null
+  );
 }
 
 function createFrontendId() {
@@ -151,13 +230,7 @@ function attachMessageScroll(container) {
   }
   container.dataset.slotScrollAttached = "true";
   container.addEventListener("scroll", () => {
-    if (!state.restoringHistory && !state.ignoreScrollSave) {
-      if (Date.now() < state.autoScrollUntil) {
-        state.autoFollowMessages = true;
-      } else {
-        state.autoFollowMessages = ctx.isNearMessageBottom();
-      }
-    }
+    updateAutoFollowFromScroll(container);
     ctx.scheduleScrollPositionSave();
   });
 }
@@ -193,6 +266,7 @@ function snapshotActiveSlot() {
 
 function restoreSlot(slot) {
   state.activeFrontendId = slot.frontendId;
+  rememberActiveSlotForWorkspace(slot);
   state.sessionId = slot.backendSessionId;
   state.ready = Boolean(slot.ready);
   state.busy = Boolean(slot.busy);
@@ -200,6 +274,10 @@ function restoreSlot(slot) {
   state.assistantNode = slot.assistantNode || null;
   state.activeHistoryId = slot.savedSessionId || null;
   state.pendingScrollRestoreId = slot.pendingScrollRestoreId || null;
+  if (!slot.restoringHistory && state.restoreTimeoutId) {
+    window.clearTimeout(state.restoreTimeoutId);
+    state.restoreTimeoutId = 0;
+  }
   state.restoringHistory = Boolean(slot.restoringHistory);
   state.batchingHistoryRestore = Boolean(slot.batchingHistoryRestore);
   state.ignoreScrollSave = Boolean(slot.ignoreScrollSave);
@@ -226,6 +304,20 @@ function restoreSlot(slot) {
   );
   updateSendState();
   markActiveHistory();
+}
+
+function createDetachedMessageView() {
+  const node = document.createElement("section");
+  node.classList.add("messages", "chat-slot-messages");
+  node.setAttribute("aria-live", "polite");
+  const current = document.querySelector(".chat-panel .composer");
+  current?.before(node);
+  attachMessageScroll(node);
+  document.querySelectorAll(".chat-slot-messages").forEach((candidate) => {
+    candidate.classList.toggle("hidden", candidate !== node);
+  });
+  els.messages = node;
+  return node;
 }
 
 function createChatSlot({ sessionId, workspace, container = null, makeActive = true }) {
@@ -347,6 +439,16 @@ function updateSlotFromEvent(slot, event) {
   if (event.type === "ready") {
     slot.ready = true;
   }
+  if (
+    event.type === "status"
+    || event.type === "tool_started"
+    || event.type === "tool_progress"
+    || event.type === "assistant_delta"
+    || event.type === "assistant_complete"
+  ) {
+    slot.busy = true;
+    slot.busyVisual = true;
+  }
   if (event.type === "clear_transcript") {
     slot.hasConversation = false;
     slot.showInHistory = !slot.suppressNewChatHistory;
@@ -402,7 +504,10 @@ function handleSessionEvent(sessionId, event) {
   }
   handleEvent(event);
   if (slot.busy && !["line_complete", "error", "shutdown"].includes(event.type)) {
-    setBusy(true, STATUS_LABELS.processing);
+    setBusy(
+      true,
+      event.type === "tool_progress" ? compactToolProgressStatus(event, STATUS_LABELS.processing) : STATUS_LABELS.processing,
+    );
   }
   snapshotActiveSlot();
 }
@@ -413,6 +518,7 @@ function switchChatSlot(frontendId) {
     return;
   }
   snapshotActiveSlot();
+  setActiveWorkspace(slot.workspace);
   resetWorkflowPanel();
   restoreSlot(slot);
   processPendingSlotEvents(slot);
@@ -481,6 +587,9 @@ async function restoreLiveSlots() {
 
 async function loadWorkspaces() {
   const data = await getJson("/api/workspaces");
+  if (data.scope) {
+    state.workspaceScope = data.scope;
+  }
   state.workspaces = Array.isArray(data.workspaces) ? data.workspaces : [];
   return state.workspaces;
 }
@@ -502,6 +611,18 @@ async function startSession() {
   if (restored > 0) {
     return;
   }
+  const slot = await startBackendSlot({ makeActive: true });
+  state.sessionId = slot.backendSessionId;
+  if (els.sessionId) {
+    els.sessionId.textContent = state.sessionId;
+  }
+}
+
+async function ensureBackendSession() {
+  if (state.sessionId && state.ready) {
+    return;
+  }
+  setStatus(STATUS_LABELS.startingBackend, "busy");
   const slot = await startBackendSlot({ makeActive: true });
   state.sessionId = slot.backendSessionId;
   if (els.sessionId) {
@@ -618,10 +739,13 @@ async function sendLine(line) {
     data: attachment.data,
     name: attachment.name,
   })).filter((attachment) => attachment.media_type && attachment.data);
-  if ((!text && attachments.length === 0) || !state.sessionId) {
+  if (!text && attachments.length === 0) {
     if (!shellCommand) {
       return;
     }
+  }
+  if (!shellCommand && !state.sessionId) {
+    await ensureBackendSession();
   }
   if (!shellCommand && state.busy) {
     if (activeRunningSlotCount() >= 3) {
@@ -641,7 +765,7 @@ async function sendLine(line) {
   if (planModeCommand) {
     previewPlanModeCommand(text);
   }
-  if (state.chatTitle === "MyHarness" && !text.startsWith("/")) {
+  if (shellCommand && state.chatTitle === "MyHarness") {
     setChatTitle(text || "이미지 첨부");
   }
   if (shellCommand) {
@@ -717,46 +841,103 @@ async function shutdownSession(sessionId = state.sessionId) {
   await postJson("/api/shutdown", { sessionId });
 }
 
-async function restartSessionForWorkspace(workspace) {
+async function restartSessionForWorkspace(workspace, options = {}) {
+  const {
+    clearHistory = true,
+    startBackend = false,
+    shutdownPrevious = startBackend,
+    statusLabel = "프로젝트 전환 중",
+  } = options || {};
+  const previousSlots = [...state.chatSlots.values()];
+  if (!shutdownPrevious) {
+    snapshotActiveSlot();
+  }
   state.switchingWorkspace = true;
   state.ready = false;
-  setBusy(true, "프로젝트 전환 중");
-  const previousSlots = [...state.chatSlots.values()];
-  state.sessionId = null;
-  for (const slot of previousSlots) {
-    slot.source?.close();
-    if (slot.container !== els.messages) {
-      slot.container.remove();
-    }
+  setStatus(statusLabel, "busy");
+  setBusy(true, statusLabel);
+  if (els.historyRefresh) {
+    els.historyRefresh.disabled = true;
   }
-  state.chatSlots.clear();
+  state.sessionId = null;
+  if (shutdownPrevious) {
+    for (const slot of previousSlots) {
+      slot.source?.close();
+      if (slot.container !== els.messages) {
+        slot.container.remove();
+      }
+    }
+    state.chatSlots.clear();
+    state.activeSlotByWorkspace.clear();
+  } else {
+    document.querySelectorAll(".chat-slot-messages").forEach((node) => {
+      node.classList.add("hidden");
+    });
+  }
   state.activeFrontendId = "";
   setActiveWorkspace(workspace);
-  requestHistory().catch(() => {
-    ctx.renderHistory?.([]);
-  });
+  state.skipNextReadyHistoryRefresh = true;
+  state.clearHistoryOnNextReady = Boolean(clearHistory);
   state.assistantNode = null;
   state.activeHistoryId = null;
   state.pendingScrollRestoreId = null;
+  if (state.restoreTimeoutId) {
+    window.clearTimeout(state.restoreTimeoutId);
+    state.restoreTimeoutId = 0;
+  }
   state.restoringHistory = false;
   state.batchingHistoryRestore = false;
   state.ignoreScrollSave = false;
-  renderWelcome();
-  markActiveHistory();
-  resetWorkflowPanel();
-  resetArtifacts();
+  const targetSlot = !shutdownPrevious && !startBackend ? liveSlotForWorkspace(workspace) : null;
+  if (targetSlot) {
+    switchChatSlot(targetSlot.frontendId);
+    if (clearHistory) {
+      ctx.renderHistory?.(cachedHistoryForWorkspace(workspace));
+    }
+  } else {
+    createDetachedMessageView();
+    renderWelcome();
+    markActiveHistory();
+    if (clearHistory) {
+      ctx.renderHistory?.(cachedHistoryForWorkspace(workspace));
+    }
+    resetWorkflowPanel();
+    resetArtifacts();
+  }
   clearComposerToken();
   clearPastedTexts();
   clearAttachments();
   try {
-    await Promise.all(previousSlots.map((slot) =>
-      slot.backendSessionId ? shutdownSession(slot.backendSessionId).catch(() => {}) : Promise.resolve()
-    ));
-    await startSession();
+    const shutdownPreviousRequest = shutdownPrevious
+      ? Promise.all(previousSlots.map((slot) =>
+          slot.backendSessionId ? shutdownSession(slot.backendSessionId).catch(() => {}) : Promise.resolve()
+        ))
+      : Promise.resolve();
+    if (startBackend) {
+      await shutdownPreviousRequest;
+      await startSession();
+    } else if (targetSlot) {
+      setStatus(
+        state.busyVisual ? STATUS_LABELS.processing : state.ready ? STATUS_LABELS.ready : STATUS_LABELS.connecting,
+        state.busyVisual ? "busy" : state.ready ? "ready" : "",
+      );
+    } else {
+      setBusy(false, STATUS_LABELS.ready);
+      setStatus(STATUS_LABELS.ready, "ready");
+    }
     state.switchingWorkspace = false;
+    if (els.historyRefresh) {
+      els.historyRefresh.disabled = false;
+    }
+    if (clearHistory) {
+      requestHistory().catch(() => {});
+    }
     updateSendState();
   } catch (error) {
     state.switchingWorkspace = false;
+    if (els.historyRefresh) {
+      els.historyRefresh.disabled = false;
+    }
     setBusy(false, STATUS_LABELS.error);
     updateSendState();
     throw error;
@@ -776,6 +957,36 @@ async function deleteWorkspace(name) {
     localStorage.removeItem("openharness:workspaceName");
   }
   return data;
+}
+
+async function readWorkspaceScopeSettings() {
+  const data = await getJson("/api/settings/workspace-scope");
+  if (data.scope) {
+    state.workspaceScope = data.scope;
+  }
+  return data;
+}
+
+async function changeWorkspaceScope(mode) {
+  const previousName = state.workspaceName || localStorage.getItem("openharness:workspaceName") || "Default";
+  const data = await postJson("/api/settings/workspace-scope", { mode });
+  if (data.scope) {
+    state.workspaceScope = data.scope;
+  }
+  const workspaces = await loadWorkspaces();
+  const selected =
+    workspaces.find((workspace) => workspace.name === previousName)
+    || workspaces.find((workspace) => workspace.name === "Default")
+    || workspaces[0];
+  if (selected) {
+    await restartSessionForWorkspace(selected, {
+      clearHistory: true,
+      startBackend: true,
+      shutdownPrevious: true,
+      statusLabel: "작업공간 범위 전환 중",
+    });
+  }
+  return { ...data, workspaces, workspace: selected || null };
 }
 
 async function setSystemPrompt(value) {
@@ -801,7 +1012,7 @@ async function refreshSkills() {
   await sendBackendRequest({ type: "refresh_skills" });
 }
 
-async function openHistorySession(sessionId, title) {
+async function openHistorySession(sessionId, title, option = {}) {
   if (!sessionId) {
     return;
   }
@@ -809,6 +1020,19 @@ async function openHistorySession(sessionId, title) {
   if (existingSlot) {
     switchChatSlot(existingSlot.frontendId);
     return;
+  }
+  const targetWorkspace = option?.workspace || null;
+  const targetPath = String(targetWorkspace?.path || "").trim();
+  const currentPath = String(state.workspacePath || "").trim();
+  const targetName = String(targetWorkspace?.name || "").trim();
+  const currentName = String(state.workspaceName || "").trim();
+  if ((targetPath && targetPath !== currentPath) || (!targetPath && targetName && targetName !== currentName)) {
+    await restartSessionForWorkspace(targetWorkspace, {
+      clearHistory: false,
+      startBackend: true,
+      shutdownPrevious: true,
+      statusLabel: "프로젝트 전환 중",
+    });
   }
   let activeSlot = state.chatSlots.get(state.activeFrontendId);
   const activeSlotHasMessages = Boolean(activeSlot?.container?.querySelector(".message"));
@@ -818,6 +1042,10 @@ async function openHistorySession(sessionId, title) {
     activeSlot.suppressNewChatHistory = false;
     activeSlot.title = "새 채팅";
     activeSlot = await startBackendSlot({ makeActive: true });
+  }
+  if (!state.sessionId || !state.ready) {
+    await ensureBackendSession();
+    activeSlot = state.chatSlots.get(state.activeFrontendId) || activeSlot;
   }
   if (activeSlot) {
     activeSlot.showInHistory = false;
@@ -834,7 +1062,35 @@ async function openHistorySession(sessionId, title) {
   setChatTitle(title || "저장된 대화");
   markActiveHistory();
   setBusy(true, STATUS_LABELS.restoring);
-  await sendBackendRequest({ type: "apply_select_command", command: "resume", value: sessionId });
+  if (state.restoreTimeoutId) {
+    window.clearTimeout(state.restoreTimeoutId);
+  }
+  state.restoreTimeoutId = window.setTimeout(() => {
+    if (!state.restoringHistory || state.activeHistoryId !== sessionId) {
+      return;
+    }
+    state.restoringHistory = false;
+    state.batchingHistoryRestore = false;
+    state.ignoreScrollSave = false;
+    state.restoreTimeoutId = 0;
+    setBusy(false, STATUS_LABELS.error);
+    markActiveHistory();
+    appendMessage("system", "히스토리 복원이 응답하지 않아 중단했습니다. 다시 시도해 주세요.");
+  }, 15000);
+  try {
+    await sendBackendRequest({ type: "apply_select_command", command: "resume", value: sessionId });
+  } catch (error) {
+    if (state.restoreTimeoutId) {
+      window.clearTimeout(state.restoreTimeoutId);
+      state.restoreTimeoutId = 0;
+    }
+    state.restoringHistory = false;
+    state.batchingHistoryRestore = false;
+    state.ignoreScrollSave = false;
+    setBusy(false, STATUS_LABELS.error);
+    markActiveHistory();
+    throw error;
+  }
 }
 
 async function clearChat() {
@@ -877,6 +1133,10 @@ async function clearChat() {
   state.assistantNode = null;
   state.activeHistoryId = null;
   state.pendingScrollRestoreId = null;
+  if (state.restoreTimeoutId) {
+    window.clearTimeout(state.restoreTimeoutId);
+    state.restoreTimeoutId = 0;
+  }
   state.restoringHistory = false;
   state.batchingHistoryRestore = false;
   state.ignoreScrollSave = false;
@@ -904,27 +1164,29 @@ async function clearChat() {
 }
 
 async function requestHistory() {
-  if (els.historyList.querySelector(".empty")) {
-    els.historyList.querySelector(".empty").textContent = "대화 내역을 불러오는 중...";
+  state.historyLoading = true;
+  if (els.historyRefresh) {
+    els.historyRefresh.disabled = true;
+    els.historyRefresh.classList.add("loading");
   }
-  const workspacePath = state.workspacePath || "";
-  const workspaceName = state.workspaceName || "";
-  const params = new URLSearchParams();
-  if (workspacePath) {
-    params.set("workspacePath", workspacePath);
-  } else if (workspaceName) {
-    params.set("workspaceName", workspaceName);
+  try {
+    if (els.historyList.querySelector(".empty")) {
+      els.historyList.querySelector(".empty").textContent = "대화 내역을 불러오는 중...";
+    }
+    const data = await getJson("/api/history");
+    const options = Array.isArray(data.options) ? data.options : [];
+    cacheHistoryForWorkspace(options, data.workspace || null);
+    ctx.renderHistory?.(cachedHistoryForWorkspace());
+  } finally {
+    state.historyLoading = false;
+    if (els.historyRefresh) {
+      els.historyRefresh.disabled = false;
+      els.historyRefresh.classList.remove("loading");
+    }
   }
-  const data = await getJson(`/api/history?${params.toString()}`);
-  const currentPath = String(state.workspacePath || "").trim();
-  const responsePath = String(data.workspace?.path || "").trim();
-  if (currentPath && responsePath && currentPath !== responsePath) {
-    return;
-  }
-  ctx.renderHistory?.(Array.isArray(data.options) ? data.options : []);
 }
 
-async function deleteHistorySession(sessionId, item) {
+async function deleteHistorySession(sessionId, item, option = {}) {
   if (!sessionId) {
     return;
   }
@@ -940,10 +1202,11 @@ async function deleteHistorySession(sessionId, item) {
   if (!els.historyList.querySelector(".history-item")) {
     ctx.renderHistory?.([]);
   }
+  const workspace = option?.workspace || null;
   deleteJson("/api/history", {
     sessionId,
-    workspacePath: state.workspacePath,
-    workspaceName: state.workspaceName,
+    workspacePath: workspace?.path || state.workspacePath,
+    workspaceName: workspace?.name || state.workspaceName,
   }).then(() => {
     requestHistory().catch(() => {});
   }).catch((error) => {
@@ -990,6 +1253,8 @@ async function deleteLiveChatSlot(frontendId) {
     restartSessionForWorkspace,
     createWorkspace,
     deleteWorkspace,
+    readWorkspaceScopeSettings,
+    changeWorkspaceScope,
     switchChatSlot,
     activeRunningSlotCount,
     setActiveWorkspace,
@@ -999,6 +1264,7 @@ async function deleteLiveChatSlot(frontendId) {
     setSystemPrompt,
     requestSelectCommand,
     refreshSkills,
+    cachedHistoryForWorkspace,
     openHistorySession,
     clearChat,
     requestHistory,

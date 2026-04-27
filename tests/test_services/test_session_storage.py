@@ -8,10 +8,13 @@ from pathlib import Path
 from openharness.api.usage import UsageSnapshot
 from openharness.engine.messages import ConversationMessage, TextBlock
 from openharness.services.session_storage import (
+    display_summary_for_first_user,
     export_session_markdown,
+    fallback_session_title_from_user_text,
     get_project_session_dir,
     load_session_snapshot,
     save_session_snapshot,
+    title_echoes_first_user,
 )
 
 
@@ -91,3 +94,31 @@ def test_load_session_snapshot_sanitizes_legacy_empty_assistant_messages(tmp_pat
     assert snapshot["message_count"] == 2
     assert [message["role"] for message in snapshot["messages"]] == ["user", "assistant"]
     assert snapshot["messages"][1]["content"][0]["text"] == "world"
+
+
+def test_korean_report_prompt_fallback_title_is_not_prompt_echo():
+    prompt = (
+        "삼성전자 메모리 경쟁사를 정의하고, 그 회사들의 최근 1주일 내 근황을 정리하여 "
+        "md 보고서 만들고, 그걸로 html 보고서 만들어줘, 그리고 마지막으로 pptx 만들어줘"
+    )
+
+    assert fallback_session_title_from_user_text(prompt) == "삼성전자 메모리 경쟁사 보고서"
+
+
+def test_display_summary_replaces_prompt_echo_title():
+    prompt = (
+        "삼성전자 메모리 경쟁사를 정의하고, 그 회사들의 최근 1주일 내 근황을 정리하여 "
+        "md 보고서 만들고, 그걸로 html 보고서 만들어줘"
+    )
+    echoed = prompt[:80]
+
+    assert title_echoes_first_user(echoed, prompt) is True
+    assert display_summary_for_first_user(echoed, prompt) == "삼성전자 메모리 경쟁사 보고서"
+
+
+def test_korean_first_clause_title_counts_as_prompt_echo():
+    prompt = "삼성전자 메모리 경쟁사를 정의하고, 그 회사들의 최근 1주일 내 근황을 정리해줘"
+    echoed_clause = "삼성전자 메모리 경쟁사를 정의하고"
+
+    assert title_echoes_first_user(echoed_clause, prompt) is True
+    assert display_summary_for_first_user(echoed_clause, prompt) == "삼성전자 메모리 경쟁사"

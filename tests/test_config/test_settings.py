@@ -595,72 +595,41 @@ class TestMiniMaxProvider:
         assert materialized.api_format == "openai"
 
 
-class TestPoscoGptProvider:
-    """Tests for P-GPT provider profile and auth integration."""
+class TestPgptOpenAICompatibleProvider:
+    """Tests for the P-GPT OpenAI-compatible provider profile."""
 
-    def test_posco_gpt_in_default_provider_profiles(self):
+    def test_pgpt_in_default_provider_profiles(self):
         from openharness.config.settings import default_provider_profiles
 
         profiles = default_provider_profiles()
-        assert "p-gpt" in profiles
         profile = profiles["p-gpt"]
         assert profile.label == "P-GPT"
-        assert profile.provider == "posco_gpt"
-        assert profile.api_format == "posco_gpt"
-        assert profile.auth_source == "posco_gpt_api_key"
-        assert profile.default_model == "gpt-5.4-mini"
-        assert profile.base_url == "http://pgpt.posco.com/s0la01-gpt/gptApi/personalApi"
+        assert profile.provider == "openai"
+        assert profile.api_format == "openai"
+        assert profile.auth_source == "pgpt_api_key"
+        assert profile.default_model == "gpt-5.4"
+        assert profile.allowed_models == ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"]
+        assert profile.base_url == "http://pgpt.posco.com/s0la01-gpt/v1"
 
-    def test_auth_source_provider_name_posco_gpt(self):
+    def test_default_profile_is_pgpt(self):
+        materialized = Settings().materialize_active_profile()
+
+        assert materialized.active_profile == "p-gpt"
+        assert materialized.provider == "openai"
+        assert materialized.api_format == "openai"
+        assert materialized.model == "gpt-5.4"
+
+    def test_auth_source_provider_name_pgpt(self):
         from openharness.config.settings import auth_source_provider_name
 
-        assert auth_source_provider_name("posco_gpt_api_key") == "posco_gpt"
+        assert auth_source_provider_name("pgpt_api_key") == "pgpt"
 
-    def test_default_auth_source_for_posco_gpt_provider(self):
-        from openharness.config.settings import default_auth_source_for_provider
-
-        assert default_auth_source_for_provider("posco_gpt") == "posco_gpt_api_key"
-
-    def test_resolve_auth_reads_posco_api_key_env(self, monkeypatch):
-        monkeypatch.setenv("POSCO_API_KEY", "posco-test-key")
+    def test_resolve_auth_reads_pgpt_api_key_env(self, monkeypatch):
+        monkeypatch.setenv("PGPT_API_KEY", "pgpt-test-key")
         settings = Settings(active_profile="p-gpt")
 
         resolved = settings.resolve_auth()
 
-        assert resolved.provider == "posco_gpt"
-        assert resolved.value == "posco-test-key"
-        assert "POSCO_API_KEY" in resolved.source
-
-    def test_resolve_auth_prefers_stored_posco_key_over_flat_api_key(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
-        monkeypatch.delenv("POSCO_API_KEY", raising=False)
-        from openharness.auth.storage import store_credential
-
-        store_credential("posco_gpt", "api_key", "posco-stored-key", use_keyring=False)
-        settings = Settings(active_profile="p-gpt", api_key="wrong-flat-key")
-
-        resolved = settings.resolve_auth()
-
-        assert resolved.provider == "posco_gpt"
-        assert resolved.value == "posco-stored-key"
-        assert resolved.source == "file:posco_gpt"
-
-    def test_posco_gpt_profile_materializes_default_model(self):
-        settings = Settings(active_profile="p-gpt")
-
-        materialized = settings.materialize_active_profile()
-
-        assert materialized.model == "gpt-5.4-mini"
-        assert materialized.provider == "posco_gpt"
-        assert materialized.api_format == "posco_gpt"
-
-    def test_load_settings_preserves_active_profile_without_saved_profiles(self, tmp_path: Path):
-        config_path = tmp_path / "settings.json"
-        config_path.write_text('{"active_profile": "p-gpt"}\n', encoding="utf-8")
-
-        loaded = load_settings(config_path)
-
-        assert loaded.active_profile == "p-gpt"
-        assert loaded.provider == "posco_gpt"
-        assert loaded.api_format == "posco_gpt"
-        assert loaded.model == "gpt-5.4-mini"
+        assert resolved.provider == "openai"
+        assert resolved.value == "pgpt-test-key"
+        assert "PGPT_API_KEY" in resolved.source

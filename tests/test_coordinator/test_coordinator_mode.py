@@ -14,6 +14,7 @@ from openharness.coordinator.coordinator_mode import (
     match_session_mode,
     parse_task_notification,
 )
+from openharness.platforms import get_platform
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +160,8 @@ def test_coordinator_user_context_includes_tools(monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_SIMPLE", raising=False)
     ctx = get_coordinator_user_context()
     assert "workerToolsContext" in ctx
-    assert "bash" in ctx["workerToolsContext"]
+    command_tool = "cmd" if get_platform() == "windows" else "bash"
+    assert command_tool in ctx["workerToolsContext"]
 
 
 def test_coordinator_user_context_with_mcp_clients(monkeypatch):

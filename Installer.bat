@@ -68,9 +68,10 @@ if not exist "%OPENHARNESS_DATA_DIR%\tasks" mkdir "%OPENHARNESS_DATA_DIR%\tasks"
 if not exist "%OPENHARNESS_LOGS_DIR%" mkdir "%OPENHARNESS_LOGS_DIR%"
 if not exist "Playground" mkdir "Playground"
 if not exist "Playground\Default" mkdir "Playground\Default"
+if not exist "Playground\shared\Default" mkdir "Playground\shared\Default"
 
 if not exist "%OPENHARNESS_SETTINGS%" (
-  echo [INFO] Creating default P-GPT settings...
+  echo [INFO] Creating default settings...
   > "%OPENHARNESS_SETTINGS%" echo {
   >> "%OPENHARNESS_SETTINGS%" echo   "active_profile": "p-gpt"
   >> "%OPENHARNESS_SETTINGS%" echo }
@@ -81,10 +82,10 @@ if not exist "%OPENHARNESS_SETTINGS%" (
 if not exist ".openharness\credentials.example.json" (
   echo [INFO] Creating credentials example...
   > ".openharness\credentials.example.json" echo {
-  >> ".openharness\credentials.example.json" echo   "posco_gpt": {
-  >> ".openharness\credentials.example.json" echo     "api_key": "YOUR_POSCO_API_KEY",
-  >> ".openharness\credentials.example.json" echo     "emp_no": "YOUR_EMP_NO",
-  >> ".openharness\credentials.example.json" echo     "comp_no": "30"
+  >> ".openharness\credentials.example.json" echo   "pgpt": {
+  >> ".openharness\credentials.example.json" echo     "api_key": "YOUR_PGPT_API_KEY",
+  >> ".openharness\credentials.example.json" echo     "employee_no": "YOUR_EMPLOYEE_NO",
+  >> ".openharness\credentials.example.json" echo     "company_code": "30"
   >> ".openharness\credentials.example.json" echo   }
   >> ".openharness\credentials.example.json" echo }
 )
@@ -121,8 +122,17 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo [INFO] Installing document generation dependencies...
+call "%OPENHARNESS_VENV%\Scripts\python.exe" -m pip install python-pptx
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Document generation dependency installation failed.
+  pause
+  exit /b 1
+)
+
 echo [INFO] Verifying Python runtime...
-call "%OPENHARNESS_VENV%\Scripts\python.exe" -c "import importlib.util, sys; required=['openharness','anthropic','openai','rich','prompt_toolkit','textual','typer','pydantic','httpx','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi']; missing=[name for name in required if importlib.util.find_spec(name) is None]; print('Missing: ' + ', '.join(missing)) if missing else None; sys.exit(1 if missing else 0)"
+call "%OPENHARNESS_VENV%\Scripts\python.exe" -c "import importlib.util, sys; required=['openharness','anthropic','openai','rich','prompt_toolkit','textual','typer','pydantic','httpx','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi','pptx']; missing=[name for name in required if importlib.util.find_spec(name) is None]; print('Missing: ' + ', '.join(missing)) if missing else None; sys.exit(1 if missing else 0)"
 if errorlevel 1 (
   echo.
   echo [ERROR] Python dependency verification failed.
@@ -187,7 +197,7 @@ echo.
 echo Next:
 echo   1. Run run_openharness_web.bat
 echo   2. Open http://localhost:4173
-echo   3. Save P-GPT API Key and Emp No in the app settings
+echo   3. Save P-GPT API Key and employee number in the app settings
 echo.
 pause
 exit /b 0

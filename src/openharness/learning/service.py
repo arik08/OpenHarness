@@ -7,7 +7,6 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from openharness.skills.loader import get_program_skills_dirs
 

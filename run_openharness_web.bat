@@ -25,10 +25,16 @@ echo.
 echo   URL: %OPENHARNESS_URL%
 if not "%OPENHARNESS_LAN_URL%"=="" echo   LAN: %OPENHARNESS_LAN_URL%
 echo   Config: %OPENHARNESS_CONFIG_DIR%
+if "%OPENHARNESS_WORKSPACE_SCOPE%"=="" (
+  echo   Workspace scope: app setting
+) else (
+  echo   Workspace scope: %OPENHARNESS_WORKSPACE_SCOPE%
+)
 echo.
 echo   This window is running the web server and backend launcher.
 echo   Keep it open while using OpenHarness in the browser.
 echo   Press Ctrl+C in this window to stop the server.
+echo   Press R in this window to restart the server.
 echo.
 
 where node >nul 2>nul
@@ -64,11 +70,14 @@ if not exist "%OPENHARNESS_DATA_DIR%" mkdir "%OPENHARNESS_DATA_DIR%"
 if not exist "%OPENHARNESS_LOGS_DIR%" mkdir "%OPENHARNESS_LOGS_DIR%"
 if not exist "Playground" mkdir "Playground"
 if not exist "Playground\Default" mkdir "Playground\Default"
+if not exist "Playground\shared\Default" mkdir "Playground\shared\Default"
 if not exist "%OPENHARNESS_SETTINGS%" (
   > "%OPENHARNESS_SETTINGS%" echo {
   >> "%OPENHARNESS_SETTINGS%" echo   "active_profile": "p-gpt"
   >> "%OPENHARNESS_SETTINGS%" echo }
 )
+
+call :ensure_pgpt_env
 
 echo [INFO] Checking Python package dependencies...
 set "PYTHONPATH=%CD%\src;%PYTHONPATH%"
@@ -159,10 +168,11 @@ if not "%OPENHARNESS_PORT_PID%"=="" (
 echo [INFO] Starting server...
 echo [INFO] Server bind host: %HOST%
 echo [INFO] If another PC cannot connect, allow Node.js through Windows Firewall.
+echo [INFO] Press R in this window to restart the server.
 echo.
 
 pushd "frontend\web"
-call npm start
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run_openharness_web_server.ps1"
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 
@@ -170,3 +180,50 @@ echo.
 echo [INFO] Server stopped with exit code %EXIT_CODE%.
 pause
 exit /b %EXIT_CODE%
+
+:ensure_pgpt_env
+set "PGPT_ENV_MISSING="
+if "%PGPT_API_KEY%"=="" set "PGPT_ENV_MISSING=1"
+if "%PGPT_EMPLOYEE_NO%"=="" set "PGPT_ENV_MISSING=1"
+if "%PGPT_ENV_MISSING%"=="" exit /b 0
+
+echo.
+echo [INFO] P-GPT environment variables are not fully configured.
+echo        Required for P-GPT: PGPT_API_KEY, PGPT_EMPLOYEE_NO
+echo        Company code is fixed to 30 by the app and will not be saved as an environment variable.
+echo        You may skip this if you use another provider.
+echo.
+set "PGPT_SETUP_CHOICE="
+set /p "PGPT_SETUP_CHOICE=Set and permanently save P-GPT environment variables now? [y/N]: "
+if /i not "%PGPT_SETUP_CHOICE%"=="Y" (
+  echo [INFO] Skipping P-GPT environment setup.
+  echo        You can still use another provider, or configure P-GPT later in app settings.
+  exit /b 0
+)
+
+echo.
+echo [INFO] Values entered here will be saved permanently to your Windows user environment with setx.
+echo        setx applies to future terminals; this launcher will also use them for the current run.
+echo        To change them later, run setx again or edit Windows Environment Variables.
+echo.
+
+if not "%PGPT_API_KEY%"=="" goto pgpt_employee_no
+set "PGPT_API_KEY_INPUT="
+set /p "PGPT_API_KEY_INPUT=PGPT_API_KEY: "
+if "%PGPT_API_KEY_INPUT%"=="" goto pgpt_employee_no
+set "PGPT_API_KEY=%PGPT_API_KEY_INPUT%"
+setx PGPT_API_KEY "%PGPT_API_KEY_INPUT%" >nul
+if errorlevel 1 echo [WARN] Failed to permanently save PGPT_API_KEY with setx.
+
+:pgpt_employee_no
+if not "%PGPT_EMPLOYEE_NO%"=="" goto pgpt_env_done
+set "PGPT_EMPLOYEE_NO_INPUT="
+set /p "PGPT_EMPLOYEE_NO_INPUT=PGPT_EMPLOYEE_NO: "
+if "%PGPT_EMPLOYEE_NO_INPUT%"=="" goto pgpt_env_done
+set "PGPT_EMPLOYEE_NO=%PGPT_EMPLOYEE_NO_INPUT%"
+setx PGPT_EMPLOYEE_NO "%PGPT_EMPLOYEE_NO_INPUT%" >nul
+if errorlevel 1 echo [WARN] Failed to permanently save PGPT_EMPLOYEE_NO with setx.
+
+:pgpt_env_done
+echo [INFO] P-GPT environment setup finished.
+exit /b 0

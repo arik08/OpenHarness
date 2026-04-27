@@ -67,14 +67,14 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         is_local=False,
         is_oauth=True,
     ),
-    # === POSCO private GPT endpoint (JSON-schema tool adapter) =============
+    # === P-GPT OpenAI-compatible endpoint ===================================
     ProviderSpec(
-        name="posco_gpt",
-        keywords=("posco", "p-gpt", "pgpt"),
-        env_key="POSCO_API_KEY",
+        name="pgpt",
+        keywords=("p-gpt", "pgpt"),
+        env_key="PGPT_API_KEY",
         display_name="P-GPT",
-        backend_type="posco_gpt",
-        default_base_url="http://pgpt.posco.com/s0la01-gpt/gptApi/personalApi",
+        backend_type="openai_compat",
+        default_base_url="http://pgpt.posco.com/s0la01-gpt/v1",
         detect_by_key_prefix="",
         detect_by_base_keyword="pgpt.posco.com",
         is_gateway=False,

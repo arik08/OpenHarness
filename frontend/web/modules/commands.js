@@ -2,7 +2,6 @@ export function createCommands(ctx) {
   const { state, els, commandDescription } = ctx;
   function autoSizeInput(...args) { return ctx.autoSizeInput(...args); }
   function updateSendState(...args) { return ctx.updateSendState(...args); }
-  function setComposerTokenFromSelection(...args) { return ctx.setComposerTokenFromSelection(...args); }
   function getJson(...args) { return ctx.getJson(...args); }
 
 const hiddenProjectFilePrefixes = [
@@ -18,28 +17,20 @@ function isVisibleProjectFile(file) {
 function getSlashQuery() {
   const value = els.input.value;
   const beforeCursor = value.slice(0, els.input.selectionStart || 0);
-  const trigger = beforeCursor[0] || "";
-  if (trigger === "!") {
+  const shellMatch = beforeCursor.match(/^![^\r\n]*$/);
+  if (shellMatch) {
     return {
-      trigger,
+      trigger: "!",
       value: beforeCursor.slice(1),
       start: 0,
       end: beforeCursor.length,
     };
   }
-  if (["/", "$"].includes(trigger) && !beforeCursor.includes(" ")) {
+  const tokenMatch = beforeCursor.match(/(?:^|\s)([\/@$][^\s]*)$/);
+  if (tokenMatch) {
+    const token = tokenMatch[1] || "";
     return {
-      trigger,
-      value: beforeCursor.slice(1).toLowerCase(),
-      start: 0,
-      end: beforeCursor.length,
-    };
-  }
-  const fileMatch = beforeCursor.match(/(?:^|\s)(@[^\s]*)$/);
-  if (fileMatch) {
-    const token = fileMatch[1] || "";
-    return {
-      trigger: "@",
+      trigger: token[0],
       value: token.slice(1).toLowerCase(),
       start: beforeCursor.length - token.length,
       end: beforeCursor.length,
@@ -193,12 +184,16 @@ function selectSlashCommand(item) {
   const selected = ["skill", "mcp", "plugin"].includes(item.kind)
     ? { ...item, name: `$${formatForcedSkillName(item.name.slice(1))}` }
     : item;
-  if (setComposerTokenFromSelection(selected)) {
-    closeSlashMenu();
-    return;
-  }
-  els.input.value = `${selected.name} `;
-  els.input.setSelectionRange(els.input.value.length, els.input.value.length);
+  const value = els.input.value;
+  const before = query ? value.slice(0, query.start) : "";
+  const after = query ? value.slice(els.input.selectionStart || query.end) : "";
+  const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+  const inserted = `${needsLeadingSpace ? " " : ""}${selected.name} `;
+  els.input.value = query
+    ? `${before}${inserted}${after.replace(/^\s*/, "")}`
+    : inserted;
+  const nextCursor = before.length + inserted.length;
+  els.input.setSelectionRange(nextCursor, nextCursor);
   autoSizeInput();
   updateSendState();
   closeSlashMenu();

@@ -25,6 +25,7 @@ from openharness.engine.stream_events import (
     ToolExecutionStarted,
 )
 from openharness.permissions import PermissionChecker, PermissionMode
+from openharness.platforms import get_platform
 from openharness.tasks import get_task_manager
 from openharness.tools import create_default_tool_registry
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolRegistry, ToolResult
@@ -36,6 +37,10 @@ from openharness.hooks import HookExecutionContext, HookExecutor, HookEvent
 from openharness.hooks.loader import HookRegistry
 from openharness.hooks.schemas import PromptHookDefinition
 from openharness.engine.query import QueryContext, _execute_tool_call
+
+
+def _command_tool_name() -> str:
+    return "cmd" if get_platform() == "windows" else "bash"
 
 
 @dataclass
@@ -819,6 +824,7 @@ async def test_notification_hook_fires_on_permission_prompt(tmp_path: Path, monk
         notif = [c for c in recorder.calls if c[0] == HookEvent.NOTIFICATION]
         assert notif, "notification hook must fire before permission prompt"
         return False  # deny — keeps the turn short
+    command_tool = _command_tool_name()
 
     engine = QueryEngine(
         api_client=FakeApiClient(
@@ -829,7 +835,7 @@ async def test_notification_hook_fires_on_permission_prompt(tmp_path: Path, monk
                         content=[
                             ToolUseBlock(
                                 id="toolu_bash_1",
-                                name="bash",
+                                name=command_tool,
                                 input={"command": "echo hi"},
                             )
                         ],
@@ -861,7 +867,7 @@ async def test_notification_hook_fires_on_permission_prompt(tmp_path: Path, monk
     payload = notification_calls[0][1]
     assert payload["event"] == "notification"
     assert payload["notification_type"] == "permission_prompt"
-    assert payload["tool_name"] == "bash"
+    assert payload["tool_name"] == command_tool
     # The permission prompt callback was invoked (confirms the hook fired on the
     # correct branch, not on the silently-denied branch).
     assert prompt_tool_calls
@@ -1015,7 +1021,7 @@ async def test_execute_tool_call_returns_actionable_reason_when_user_denies_conf
             max_turns=1,
             permission_prompt=_deny,
         ),
-        "bash",
+        _command_tool_name(),
         "toolu_bash",
         {"command": "mkdir -p scratch-dir"},
     )

@@ -5,7 +5,6 @@ from openharness.api.codex_client import CodexApiClient
 from openharness.api.copilot_client import CopilotClient
 from openharness.api.errors import OpenHarnessApiError
 from openharness.api.openai_client import OpenAICompatibleClient
-from openharness.api.posco_client import PoscoGptClient
 from openharness.api.provider import ProviderInfo, auth_status, detect_provider
 from openharness.api.usage import UsageSnapshot
 
@@ -15,7 +14,6 @@ __all__ = [
     "CopilotClient",
     "OpenAICompatibleClient",
     "OpenHarnessApiError",
-    "PoscoGptClient",
     "ProviderInfo",
     "UsageSnapshot",
     "auth_status",

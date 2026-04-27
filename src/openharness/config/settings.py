@@ -189,11 +189,12 @@ def default_provider_profiles() -> dict[str, ProviderProfile]:
     return {
         "p-gpt": ProviderProfile(
             label="P-GPT",
-            provider="posco_gpt",
-            api_format="posco_gpt",
-            auth_source="posco_gpt_api_key",
-            default_model="gpt-5.4-mini",
-            base_url="http://pgpt.posco.com/s0la01-gpt/gptApi/personalApi",
+            provider="openai",
+            api_format="openai",
+            auth_source="pgpt_api_key",
+            default_model="gpt-5.4",
+            base_url="http://pgpt.posco.com/s0la01-gpt/v1",
+            allowed_models=["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
         ),
         "codex": ProviderProfile(
             label="Codex Subscription",
@@ -342,7 +343,7 @@ def auth_source_provider_name(auth_source: str) -> str:
         "moonshot_api_key": "moonshot",
         "gemini_api_key": "gemini",
         "minimax_api_key": "minimax",
-        "posco_gpt_api_key": "posco_gpt",
+        "pgpt_api_key": "pgpt",
     }
     return mapping.get(auth_source, auth_source)
 
@@ -384,8 +385,6 @@ def default_auth_source_for_provider(provider: str, api_format: str | None = Non
         return "gemini_api_key"
     if provider == "minimax":
         return "minimax_api_key"
-    if provider == "posco_gpt":
-        return "posco_gpt_api_key"
     if provider == "openai" or api_format == "openai":
         return "openai_api_key"
     return "anthropic_api_key"
@@ -467,7 +466,7 @@ class Settings(BaseModel):
     auto_compact_threshold_tokens: int | None = None
     api_format: str = "anthropic"  # "anthropic", "openai", "copilot", or provider-specific adapters
     provider: str = ""
-    active_profile: str = "claude-api"
+    active_profile: str = "p-gpt"
     profiles: dict[str, ProviderProfile] = Field(default_factory=default_provider_profiles)
     max_turns: int = 200
 
@@ -511,7 +510,7 @@ class Settings(BaseModel):
     def resolve_profile(self, name: str | None = None) -> tuple[str, ProviderProfile]:
         """Return the active provider profile."""
         profiles = self.merged_profiles()
-        profile_name = (name or self.active_profile or "").strip() or "claude-api"
+        profile_name = (name or self.active_profile or "").strip() or "p-gpt"
         if profile_name not in profiles:
             fallback_name, fallback = _profile_from_flat_settings(self)
             profiles[fallback_name] = fallback
@@ -710,7 +709,7 @@ class Settings(BaseModel):
             "dashscope_api_key": "DASHSCOPE_API_KEY",
             "moonshot_api_key": "MOONSHOT_API_KEY",
             "minimax_api_key": "MINIMAX_API_KEY",
-            "posco_gpt_api_key": "POSCO_API_KEY",
+            "pgpt_api_key": "PGPT_API_KEY",
         }.get(auth_source)
         if env_var:
             env_value = os.environ.get(env_var, "")
@@ -844,11 +843,11 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         "codex_subscription",
         "claude_subscription",
         "copilot_oauth",
-        "posco_gpt_api_key",
         "dashscope_api_key",
         "moonshot_api_key",
         "gemini_api_key",
         "minimax_api_key",
+        "pgpt_api_key",
     }:
         api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if api_key:
@@ -906,6 +905,11 @@ def load_settings(config_path: Path | None = None) -> Settings:
 
     if config_path.exists():
         raw = json.loads(config_path.read_text(encoding="utf-8"))
+        local_override_path = config_path.with_name("settings.local.json")
+        if local_override_path.exists():
+            local_raw = json.loads(local_override_path.read_text(encoding="utf-8"))
+            if isinstance(local_raw, dict):
+                raw = {**raw, **local_raw}
         settings = Settings.model_validate(raw)
         if "active_profile" not in raw:
             profile_name, profile = _profile_from_flat_settings(settings)

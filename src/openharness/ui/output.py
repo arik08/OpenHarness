@@ -183,10 +183,10 @@ class OutputRenderer:
 
     def _render_tool_output(self, tool_name: str, tool_input: dict | None, output: str) -> None:
         lower = tool_name.lower()
-        # Bash: show in a panel
-        if lower == "bash":
+        # Shell commands: show in a panel.
+        if lower in {"bash", "cmd"}:
             cmd = (tool_input or {}).get("command", "")
-            title = f"$ {cmd[:80]}" if cmd else "Bash"
+            title = f"> {cmd[:80]}" if cmd else "Command"
             self.console.print(Panel(output[:2000], title=title, border_style="dim", padding=(0, 1)))
             return
         # Read/FileRead: syntax highlight by file extension
@@ -227,7 +227,7 @@ def _summarize_tool_input(tool_name: str, tool_input: dict | None) -> str:
     if not tool_input:
         return ""
     lower = tool_name.lower()
-    if lower == "bash" and "command" in tool_input:
+    if lower in {"bash", "cmd"} and "command" in tool_input:
         return str(tool_input["command"])[:120]
     if lower in ("read", "fileread", "file_read") and "file_path" in tool_input:
         return str(tool_input["file_path"])

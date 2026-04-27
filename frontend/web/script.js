@@ -58,7 +58,6 @@ const {
   closeSlashMenu,
   dismissModal,
   filteredSlashCommands,
-  isNearMessageBottom,
   initializeWorkspace,
   renderSlashMenu,
   requestHistory,
@@ -76,6 +75,10 @@ const {
   showWorkspaceModal,
   startSession,
   startTitleEdit,
+  markMessagesUserScrollIntent,
+  stopMessagesAutoFollow,
+  toggleRuntimePicker,
+  updateAutoFollowFromScroll,
   updateComposerTokenFromInput,
   updateSendState,
   updateSlashMenu,
@@ -83,6 +86,7 @@ const {
 
 const maxImageBytes = 10 * 1024 * 1024;
 const longPastedTextLineThreshold = 5;
+const nativeTooltipBackupAttr = "data-native-title";
 const themeOptions = [
   { id: "light", label: "Claude" },
   { id: "posco", label: "POSCO" },
@@ -91,6 +95,47 @@ const themeOptions = [
   { id: "mono-orange", label: "MonoChrome-Orange" },
 ];
 let workspaceDropdownOpen = false;
+
+function removeNativeTitleTooltip(root = document) {
+  const nodes = [];
+  if (root instanceof Element && root.hasAttribute("title")) {
+    nodes.push(root);
+  }
+  if (root.querySelectorAll) {
+    nodes.push(...root.querySelectorAll("[title]"));
+  }
+  for (const node of nodes) {
+    const title = node.getAttribute("title");
+    if (title && !node.hasAttribute(nativeTooltipBackupAttr)) {
+      node.setAttribute(nativeTooltipBackupAttr, title);
+    }
+    node.removeAttribute("title");
+  }
+}
+
+function installNativeTooltipGuard() {
+  removeNativeTitleTooltip();
+  document.addEventListener("mouseover", (event) => removeNativeTitleTooltip(event.target), true);
+  document.addEventListener("focusin", (event) => removeNativeTitleTooltip(event.target), true);
+  new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      if (mutation.type === "attributes") {
+        removeNativeTitleTooltip(mutation.target);
+        continue;
+      }
+      for (const node of mutation.addedNodes) {
+        removeNativeTitleTooltip(node);
+      }
+    }
+  }).observe(document.documentElement, {
+    attributeFilter: ["title"],
+    attributes: true,
+    childList: true,
+    subtree: true,
+  });
+}
+
+installNativeTooltipGuard();
 
 function applyTheme(themeId) {
   const theme = themeOptions.find((item) => item.id === themeId) || themeOptions[0];
@@ -426,15 +471,19 @@ els.composer.addEventListener("paste", (event) => {
 });
 
 els.messages.addEventListener("scroll", () => {
-  if (!state.restoringHistory && !state.ignoreScrollSave) {
-    if (Date.now() < state.autoScrollUntil) {
-      state.autoFollowMessages = true;
-    } else {
-      state.autoFollowMessages = isNearMessageBottom();
-    }
-  }
+  updateAutoFollowFromScroll();
   scheduleScrollPositionSave();
 });
+
+els.messages.addEventListener("wheel", (event) => {
+  markMessagesUserScrollIntent();
+  if (event.deltaY < 0) {
+    stopMessagesAutoFollow();
+  }
+}, { passive: true });
+
+els.messages.addEventListener("pointerdown", markMessagesUserScrollIntent);
+els.messages.addEventListener("touchstart", markMessagesUserScrollIntent, { passive: true });
 
 els.chatTitleButton?.addEventListener("click", startTitleEdit);
 
@@ -483,7 +532,7 @@ document.querySelectorAll("[data-action='open-settings']").forEach((button) => {
 });
 
 document.querySelectorAll("[data-action='open-model-settings']").forEach((button) => {
-  button.addEventListener("click", showModelSettingsModal);
+  button.addEventListener("click", toggleRuntimePicker);
 });
 
 document.querySelectorAll("[data-action='open-workspace']").forEach((button) => {
@@ -510,6 +559,23 @@ document.querySelectorAll("[data-action='new-chat']").forEach((button) => {
   button.addEventListener("click", () => {
     clearChat().catch((error) => appendMessage("system", `채팅을 초기화하지 못했습니다: ${error.message}`));
   });
+});
+
+els.historyRefresh?.addEventListener("click", async () => {
+  const workspace = {
+    name: state.workspaceName || "Default",
+    path: state.workspacePath || "",
+  };
+  try {
+    await ctx.restartSessionForWorkspace(workspace, {
+      clearHistory: false,
+      startBackend: true,
+      statusLabel: STATUS_LABELS.startingBackend,
+    });
+    window.location.reload();
+  } catch (error) {
+    appendMessage("system", `백엔드 재시작 실패: ${error.message}`);
+  }
 });
 
 document.querySelectorAll("[data-action='toggle-sidebar']").forEach((button) => {

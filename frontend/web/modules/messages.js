@@ -5,11 +5,8 @@ export function createMessages(ctx) {
   let workflowWaitingTimer = 0;
   let workflowWaitingIndex = 0;
   let workflowIntent = "default";
-  let workflowPreviewNode = null;
-  let workflowPreviewBody = null;
-  let workflowPreviewTimer = 0;
-  let workflowPreviewText = "";
-  let workflowPreviewOffset = 0;
+  let workflowPreviewList = null;
+  const workflowPreviews = new Map();
   const workflowToolArgBuffers = new Map();
   const workflowMutationWaitingTimers = new Map();
   const WORKFLOW_EVENT_STAGGER_MS = 90;
@@ -25,6 +22,152 @@ export function createMessages(ctx) {
   function setBusy(...args) { return ctx.setBusy(...args); }
   function sendBackendRequest(...args) { return ctx.sendBackendRequest?.(...args); }
   function copyTextToClipboard(...args) { return ctx.copyTextToClipboard(...args); }
+  function showImagePreview(...args) { return ctx.showImagePreview?.(...args); }
+
+function countTextCharacters(text) {
+  return Array.from(String(text || "")).length;
+}
+
+function ensureWorkflowPreviewTitleParts(previewNode) {
+  const title = previewNode?.querySelector(".workflow-output-title");
+  if (!title) {
+    return null;
+  }
+  let label = title.querySelector(".workflow-output-label");
+  let count = title.querySelector(".workflow-output-line-count");
+  if (!label || !count) {
+    const current = title.textContent || "작성 중인 결과물";
+    title.textContent = "";
+    label = document.createElement("span");
+    label.className = "workflow-output-label";
+    label.textContent = current;
+    count = document.createElement("span");
+    count.className = "workflow-output-line-count";
+    title.append(label, count);
+  }
+  return { label, count };
+}
+
+function updateWorkflowPreviewTitle(preview, path = "") {
+  const parts = ensureWorkflowPreviewTitleParts(preview?.node);
+  if (!parts) {
+    return;
+  }
+  preview.path = path || preview.path || "";
+  parts.label.textContent = path ? `작성 중인 결과물 - ${path}` : "작성 중인 결과물";
+}
+
+function updateWorkflowPreviewLineCount(preview, text = preview?.body?.textContent || "") {
+  const parts = ensureWorkflowPreviewTitleParts(preview?.node);
+  if (!parts) {
+    return;
+  }
+  const characters = countTextCharacters(text);
+  parts.count.textContent = characters > 0 ? `${characters.toLocaleString()}글자 작성 중` : "0글자";
+}
+
+function scrollWorkflowPreviewToBottom(preview) {
+  const body = preview?.body;
+  if (!body) {
+    return;
+  }
+  body.scrollTop = body.scrollHeight;
+  window.requestAnimationFrame(() => {
+    if (body) {
+      body.scrollTop = body.scrollHeight;
+    }
+  });
+}
+
+function workflowPreviewKey(toolName, input = {}, fallbackKey = "") {
+  const path = String(input?.file_path || input?.path || "").trim();
+  if (path) {
+    return `path:${path}`;
+  }
+  return fallbackKey || `tool:${String(toolName || "tool").toLowerCase()}`;
+}
+
+function createWorkflowPreviewNode(path = "") {
+  const node = document.createElement("div");
+  node.className = "workflow-output-preview";
+  const title = document.createElement("div");
+  title.className = "workflow-output-title";
+  const label = document.createElement("span");
+  label.className = "workflow-output-label";
+  label.textContent = path ? `작성 중인 결과물 - ${path}` : "작성 중인 결과물";
+  const count = document.createElement("span");
+  count.className = "workflow-output-line-count";
+  count.textContent = "생성 대기 중";
+  title.append(label, count);
+  const body = document.createElement("pre");
+  body.className = "workflow-output-body";
+  node.append(title, body);
+  return { node, body };
+}
+
+function outputExtension(path = "") {
+  const match = String(path || "").toLowerCase().match(/(\.[a-z0-9]{1,8})(?:$|[?#])/);
+  return match?.[1] || "";
+}
+
+function ensureWorkflowPreview(key, path = "") {
+  ensureWorkflowPanel();
+  if (!workflowPreviewList) {
+    return null;
+  }
+  const cleanKey = String(key || path || `preview:${workflowPreviews.size + 1}`);
+  let preview = workflowPreviews.get(cleanKey);
+  if (!preview && path) {
+    const expectedKey = `expected:${outputExtension(path)}`;
+    const expected = workflowPreviews.get(expectedKey);
+    if (expected) {
+      workflowPreviews.delete(expectedKey);
+      expected.key = cleanKey;
+      workflowPreviews.set(cleanKey, expected);
+      preview = expected;
+    }
+  }
+  if (!preview) {
+    const elements = createWorkflowPreviewNode(path);
+    preview = {
+      key: cleanKey,
+      node: elements.node,
+      body: elements.body,
+      timer: 0,
+      text: "",
+      offset: 0,
+      path,
+    };
+    workflowPreviews.set(cleanKey, preview);
+    workflowPreviewList.append(elements.node);
+  } else if (path) {
+    updateWorkflowPreviewTitle(preview, path);
+  }
+  return preview;
+}
+
+function expectedWorkflowOutputs(promptText = "") {
+  const text = String(promptText || "").toLowerCase();
+  const outputs = [];
+  const add = (ext, label) => {
+    if (!outputs.some((item) => item.ext === ext)) {
+      outputs.push({ ext, label });
+    }
+  };
+  if (/\bmd\b|markdown|마크다운/.test(text)) add(".md", "Markdown 산출물");
+  if (/\bhtml?\b|웹\s*보고서|html\s*보고서/.test(text)) add(".html", "HTML 산출물");
+  if (/\bpptx?\b|powerpoint|파워포인트|슬라이드/.test(text)) add(".pptx", "PPTX 산출물");
+  if (/\bxlsx?\b|excel|엑셀/.test(text)) add(".xlsx", "Excel 산출물");
+  if (/\bcsv\b/.test(text)) add(".csv", "CSV 산출물");
+  if (/\bpdf\b/.test(text)) add(".pdf", "PDF 산출물");
+  return outputs;
+}
+
+function seedWorkflowExpectedPreviews(promptText = "") {
+  for (const output of expectedWorkflowOutputs(promptText)) {
+    ensureWorkflowPreview(`expected:${output.ext}`, output.label);
+  }
+}
 
 function isCommandCatalog(text) {
   const source = String(text || "");
@@ -442,11 +585,23 @@ function createAttachmentPreview(attachments = []) {
   const wrap = document.createElement("div");
   wrap.className = "message-attachments";
   for (const attachment of attachments) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "message-attachment-preview";
+    button.setAttribute("aria-label", `${attachment.name || "첨부 이미지"} 크게 보기`);
     const image = document.createElement("img");
     image.src = `data:${attachment.media_type || attachment.mediaType};base64,${attachment.data}`;
     image.alt = attachment.name || "첨부 이미지";
     image.title = attachment.name || "첨부 이미지";
-    wrap.append(image);
+    button.addEventListener("click", () => {
+      showImagePreview({
+        src: image.src,
+        name: attachment.name || "이미지",
+        alt: image.alt,
+      });
+    });
+    button.append(image);
+    wrap.append(button);
   }
   return wrap;
 }
@@ -455,6 +610,10 @@ function prettifyPromptToken(rawToken) {
   const token = String(rawToken || "").trim();
   if (token.startsWith("/")) {
     return token.slice(1);
+  }
+  if (token.startsWith("@")) {
+    const name = token.slice(1).split(/[\\/]/).filter(Boolean).pop() || token.slice(1);
+    return name || token;
   }
   if (!token.startsWith("$")) {
     return token;
@@ -471,27 +630,62 @@ function prettifyPromptToken(rawToken) {
     : token;
 }
 
-function createPromptTokenContent(text) {
-  const value = String(text || "");
-  const match = value.match(/^(\$"[^"]+"|\$'[^']+'|\$[^\s]+|\/[a-z][a-z0-9-]*)(\s+([\s\S]*))?$/i);
-  if (!match) {
-    return null;
+function appendTextWithLineBreaks(parent, text) {
+  const parts = String(text || "").split("\n");
+  parts.forEach((part, index) => {
+    if (index > 0) {
+      parent.append(document.createElement("br"));
+    }
+    if (part) {
+      parent.append(document.createTextNode(part));
+    }
+  });
+}
+
+function promptTokenKind(rawToken) {
+  if (rawToken.startsWith("/")) {
+    return "command";
   }
-  const rawToken = match[1];
-  const rest = match[3] || "";
-  const wrap = document.createElement("div");
-  wrap.className = "prompt-line";
+  if (rawToken.startsWith("@")) {
+    return "file";
+  }
+  const lower = rawToken.toLowerCase();
+  if (lower.startsWith("$mcp:")) {
+    return "mcp";
+  }
+  if (lower.startsWith("$plugin:")) {
+    return "plugin";
+  }
+  return "skill";
+}
+
+function createPromptToken(rawToken) {
   const chip = document.createElement("span");
-  chip.className = `prompt-token ${rawToken.startsWith("$") ? "skill" : "command"}`;
+  chip.className = `prompt-token ${promptTokenKind(rawToken)}`;
   chip.textContent = prettifyPromptToken(rawToken);
   chip.title = rawToken;
-  wrap.append(chip);
-  if (rest) {
-    const copy = document.createElement("span");
-    copy.className = "prompt-rest";
-    copy.textContent = rest;
-    wrap.append(copy);
+  return chip;
+}
+
+function createPromptTokenContent(text) {
+  const value = String(text || "");
+  const tokenPattern = /(^|\s)(\$"[^"]+"|\$'[^']+'|\$[^\s]+|@[^\s]+|\/[a-z][a-z0-9-]*)/gi;
+  const matches = [...value.matchAll(tokenPattern)];
+  if (!matches.length) {
+    return null;
   }
+  const wrap = document.createElement("div");
+  wrap.className = "prompt-line";
+  let cursor = 0;
+  for (const match of matches) {
+    const leading = match[1] || "";
+    const rawToken = match[2] || "";
+    const tokenStart = match.index + leading.length;
+    appendTextWithLineBreaks(wrap, value.slice(cursor, tokenStart));
+    wrap.append(createPromptToken(rawToken));
+    cursor = tokenStart + rawToken.length;
+  }
+  appendTextWithLineBreaks(wrap, value.slice(cursor));
   return wrap;
 }
 
@@ -517,7 +711,12 @@ function renderCollapsedUserMessage(content, text, expanded = false) {
   toggle.addEventListener("click", () => renderCollapsedUserMessage(content, value, !expanded));
 
   if (expanded) {
-    setMarkdown(content, value);
+    const promptContent = createPromptTokenContent(value);
+    if (promptContent) {
+      content.append(promptContent);
+    } else {
+      setMarkdown(content, value);
+    }
     content.classList.add("user-expanded-message");
     content.classList.remove("user-collapsed-message");
     content.append(toggle);
@@ -526,7 +725,13 @@ function renderCollapsedUserMessage(content, text, expanded = false) {
 
   const preview = document.createElement("span");
   preview.className = "user-message-preview";
-  preview.textContent = value.replace(/\s+/g, " ").trim();
+  const previewText = value.replace(/\s+/g, " ").trim();
+  const promptContent = createPromptTokenContent(previewText);
+  if (promptContent) {
+    preview.append(...promptContent.childNodes);
+  } else {
+    preview.textContent = previewText;
+  }
   content.append(preview, toggle);
 }
 
@@ -680,7 +885,7 @@ function appendMessage(role, text, attachments = []) {
       content.dataset.restoreEscapedInlineMarkdown = "true";
     }
     const promptContent = role === "user" ? createPromptTokenContent(text) : null;
-    if (promptContent) {
+    if (promptContent && !shouldCollapseUserMessage(text)) {
       content.append(promptContent);
     } else if (role === "user" && shouldCollapseUserMessage(text)) {
       renderCollapsedUserMessage(content, text, false);
@@ -707,16 +912,15 @@ function resetWorkflowPanel() {
   workflowEventQueue = [];
   window.clearTimeout(workflowEventQueueTimer);
   window.clearTimeout(workflowWaitingTimer);
-  window.clearTimeout(workflowPreviewTimer);
+  for (const preview of workflowPreviews.values()) {
+    window.clearTimeout(preview.timer);
+  }
   workflowEventQueueTimer = 0;
   workflowWaitingTimer = 0;
   workflowWaitingIndex = 0;
   workflowIntent = "default";
-  workflowPreviewNode = null;
-  workflowPreviewBody = null;
-  workflowPreviewTimer = 0;
-  workflowPreviewText = "";
-  workflowPreviewOffset = 0;
+  workflowPreviewList = null;
+  workflowPreviews.clear();
   workflowToolArgBuffers.clear();
   for (const timer of workflowMutationWaitingTimers.values()) {
     window.clearTimeout(timer);
@@ -760,6 +964,8 @@ function finalizeWorkflowSummary() {
       detail.textContent = "완료되었습니다.";
     }
   });
+  markWorkflowExecutionStepDone();
+  markWorkflowFinalAnswerDone("done", "응답을 마무리했습니다.");
   updateWorkflowSummary();
   flushWorkflowOutputPreview();
   stopWorkflowTimer();
@@ -786,6 +992,8 @@ function failWorkflowPanel(message = "") {
   }
 
   markPlanningStepDone();
+  markWorkflowExecutionStepDone("error", message || "작업이 실패했습니다.");
+  markWorkflowFinalAnswerDone("error", message || "응답을 마무리하지 못했습니다.");
   state.workflowList?.querySelectorAll(".workflow-step.running").forEach((row) => {
     row.classList.remove("running");
     row.classList.add("error");
@@ -836,19 +1044,14 @@ function ensureWorkflowPanel(promptText = "") {
 
   const list = document.createElement("div");
   list.className = "workflow-list";
+  list.setAttribute("role", "list");
 
-  const preview = document.createElement("div");
-  preview.className = "workflow-output-preview hidden";
-  const previewTitle = document.createElement("div");
-  previewTitle.className = "workflow-output-title";
-  previewTitle.textContent = "작성 중인 결과물";
-  const previewBody = document.createElement("pre");
-  previewBody.className = "workflow-output-body";
-  preview.append(previewTitle, previewBody);
+  const previewList = document.createElement("div");
+  previewList.className = "workflow-output-list";
 
   const body = document.createElement("div");
   body.className = "workflow-body";
-  body.append(list, preview);
+  body.append(list, previewList);
   details.append(summary, body);
   setupWorkflowToggle(details);
   article.append(details);
@@ -866,11 +1069,11 @@ function ensureWorkflowPanel(promptText = "") {
   state.workflowNode = details;
   state.workflowList = list;
   state.workflowSummary = count;
-  workflowPreviewNode = preview;
-  workflowPreviewBody = previewBody;
+  workflowPreviewList = previewList;
   state.workflowSteps = [];
   state.workflowStartedAt = performance.now();
   startWorkflowTimer();
+  seedWorkflowExpectedPreviews(promptText);
   appendWorkflowStep("요청 이해", "사용자 요청을 확인했습니다.", "done");
   appendWorkflowStep(
     "작업 계획",
@@ -985,31 +1188,36 @@ function stopWorkflowWaitingTimer() {
 }
 
 function flushWorkflowOutputPreview() {
-  if (!workflowPreviewBody || !workflowPreviewText) {
-    return;
+  for (const preview of workflowPreviews.values()) {
+    if (!preview.text) {
+      continue;
+    }
+    window.clearTimeout(preview.timer);
+    preview.timer = 0;
+    preview.body.textContent = preview.text;
+    preview.offset = preview.text.length;
+    updateWorkflowPreviewLineCount(preview, preview.text);
+    scrollWorkflowPreviewToBottom(preview);
   }
-  window.clearTimeout(workflowPreviewTimer);
-  workflowPreviewTimer = 0;
-  workflowPreviewBody.textContent = workflowPreviewText;
-  workflowPreviewOffset = workflowPreviewText.length;
 }
 
-function revealWorkflowOutputPreview() {
-  workflowPreviewTimer = 0;
-  if (!workflowPreviewBody || !workflowPreviewText) {
+function revealWorkflowOutputPreview(preview) {
+  if (!preview?.body || !preview.text) {
     return;
   }
-  workflowPreviewOffset = Math.min(
-    workflowPreviewText.length,
-    workflowPreviewOffset + WORKFLOW_PREVIEW_CHARS_PER_TICK,
+  preview.timer = 0;
+  preview.offset = Math.min(
+    preview.text.length,
+    preview.offset + WORKFLOW_PREVIEW_CHARS_PER_TICK,
   );
-  workflowPreviewBody.textContent = workflowPreviewText.slice(0, workflowPreviewOffset);
+  preview.body.textContent = preview.text.slice(0, preview.offset);
+  updateWorkflowPreviewLineCount(preview, preview.body.textContent);
+  scrollWorkflowPreviewToBottom(preview);
   if (!state.restoringHistory && state.autoFollowMessages) {
-    workflowPreviewBody.scrollTop = workflowPreviewBody.scrollHeight;
     scrollMessagesToBottom({ smooth: true, duration: 900 });
   }
-  if (workflowPreviewOffset < workflowPreviewText.length) {
-    workflowPreviewTimer = window.setTimeout(revealWorkflowOutputPreview, WORKFLOW_PREVIEW_TICK_MS);
+  if (preview.offset < preview.text.length) {
+    preview.timer = window.setTimeout(() => revealWorkflowOutputPreview(preview), WORKFLOW_PREVIEW_TICK_MS);
   }
 }
 
@@ -1020,34 +1228,37 @@ function startWorkflowOutputPreview(toolName, input = {}) {
     return;
   }
   ensureWorkflowPanel();
-  if (!workflowPreviewNode || !workflowPreviewBody) {
-    return;
-  }
   const path = String(input?.file_path || input?.path || "").trim();
-  workflowPreviewNode.classList.remove("hidden");
-  const title = workflowPreviewNode.querySelector(".workflow-output-title");
-  if (title) {
-    title.textContent = path ? `작성 중인 결과물 - ${path}` : "작성 중인 결과물";
-  }
-  if (workflowPreviewText && content.startsWith(workflowPreviewText.replace(/\n\n\.\.\.$/, ""))) {
-    window.clearTimeout(workflowPreviewTimer);
-    workflowPreviewTimer = 0;
-    workflowPreviewText = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
-    workflowPreviewOffset = workflowPreviewText.length;
-    workflowPreviewBody.textContent = workflowPreviewText;
+  const preview = ensureWorkflowPreview(workflowPreviewKey(toolName, input), path);
+  if (!preview) {
     return;
   }
-  window.clearTimeout(workflowPreviewTimer);
-  workflowPreviewTimer = 0;
-  workflowPreviewText = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
+  updateWorkflowPreviewTitle(preview, path);
+  if (preview.text && content.startsWith(preview.text.replace(/\n\n\.\.\.$/, ""))) {
+    window.clearTimeout(preview.timer);
+    preview.timer = 0;
+    preview.text = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
+    preview.offset = preview.text.length;
+    preview.body.textContent = preview.text;
+    updateWorkflowPreviewLineCount(preview, content);
+    scrollWorkflowPreviewToBottom(preview);
+    return;
+  }
+  window.clearTimeout(preview.timer);
+  preview.timer = 0;
+  preview.text = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
   if (state.restoringHistory) {
-    workflowPreviewOffset = workflowPreviewText.length;
-    workflowPreviewBody.textContent = workflowPreviewText;
+    preview.offset = preview.text.length;
+    preview.body.textContent = preview.text;
+    updateWorkflowPreviewLineCount(preview, content);
+    scrollWorkflowPreviewToBottom(preview);
     return;
   }
-  workflowPreviewOffset = 0;
-  workflowPreviewBody.textContent = "";
-  revealWorkflowOutputPreview();
+  preview.offset = 0;
+  preview.body.textContent = "";
+  updateWorkflowPreviewLineCount(preview, "");
+  scrollWorkflowPreviewToBottom(preview);
+  revealWorkflowOutputPreview(preview);
 }
 
 function decodeJsonStringFragment(value) {
@@ -1119,29 +1330,44 @@ function appendWorkflowInputDelta(event) {
     return;
   }
   ensureWorkflowPanel();
-  const key = Number.isFinite(event.tool_call_index) ? event.tool_call_index : 0;
-  const current = workflowToolArgBuffers.get(key) || "";
+  const key = workflowToolBufferKey(event);
+  let current = workflowToolArgBuffers.get(key) || "";
+  if (current && /^\s*\{/.test(delta) && /\}\s*$/.test(current)) {
+    current = "";
+  }
   const next = current + delta;
   workflowToolArgBuffers.set(key, next);
   const content = extractPartialJsonStringValue(next, "content") || extractPartialJsonStringValue(next, "new_string");
   if (!content) {
     return;
   }
-  if (!workflowPreviewNode || !workflowPreviewBody) {
+  const path = extractPartialJsonStringValue(next, "file_path") || extractPartialJsonStringValue(next, "path");
+  const fallbackKey = `delta:${key}`;
+  const previewKey = workflowPreviewKey(event.tool_name, { file_path: path }, fallbackKey);
+  let preview = workflowPreviews.get(previewKey);
+  if (!preview && path) {
+    preview = workflowPreviews.get(fallbackKey);
+    if (preview) {
+      workflowPreviews.delete(fallbackKey);
+      preview.key = previewKey;
+      workflowPreviews.set(previewKey, preview);
+    }
+  }
+  if (!preview) {
+    preview = ensureWorkflowPreview(previewKey, path);
+  }
+  if (!preview) {
     return;
   }
-  workflowPreviewNode.classList.remove("hidden");
-  const title = workflowPreviewNode.querySelector(".workflow-output-title");
-  if (title) {
-    title.textContent = "작성 중인 결과물";
-  }
-  window.clearTimeout(workflowPreviewTimer);
-  workflowPreviewTimer = 0;
-  workflowPreviewText = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
-  workflowPreviewOffset = workflowPreviewText.length;
-  workflowPreviewBody.textContent = workflowPreviewText;
+  updateWorkflowPreviewTitle(preview, path);
+  window.clearTimeout(preview.timer);
+  preview.timer = 0;
+  preview.text = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
+  preview.offset = preview.text.length;
+  preview.body.textContent = preview.text;
+  updateWorkflowPreviewLineCount(preview, content);
+  scrollWorkflowPreviewToBottom(preview);
   if (!state.restoringHistory && state.autoFollowMessages) {
-    workflowPreviewBody.scrollTop = workflowPreviewBody.scrollHeight;
     scrollMessagesToBottom({ smooth: true, duration: 900 });
   }
 }
@@ -1173,15 +1399,22 @@ function appendWorkflowWaitingStep() {
     row.classList.contains("running") && row.querySelector("strong")?.textContent === title
   );
   if (!hasSameRunning) {
-    appendWorkflowStep(title, detail, "running");
+    appendWorkflowStep(title, detail, "running", "", { role: "waiting" });
   }
   workflowWaitingIndex += 1;
   workflowWaitingTimer = window.setTimeout(appendWorkflowWaitingStep, WORKFLOW_WAITING_NEXT_MS);
 }
 
-function appendWorkflowStep(titleText, detailText, status = "done", toolName = "") {
+function appendWorkflowStep(titleText, detailText, status = "done", toolName = "", options = {}) {
+  const level = options.level || (toolName ? "child" : "parent");
   const row = document.createElement("div");
-  row.className = `workflow-step ${status}${state.restoringHistory ? "" : " entering"}`;
+  row.className = `workflow-step ${level} ${status}${state.restoringHistory ? "" : " entering"}`;
+  row.setAttribute("role", "listitem");
+  row.setAttribute("aria-level", level === "child" ? "2" : "1");
+  row.dataset.workflowLevel = level;
+  if (options.role) {
+    row.dataset.workflowRole = options.role;
+  }
   if (toolName) {
     row.dataset.toolName = toolName;
   }
@@ -1238,23 +1471,27 @@ function appendWorkflowEventNow(event) {
   ensureWorkflowPanel();
   stopWorkflowWaitingTimer();
   markPlanningStepDone();
+  ensureWorkflowExecutionStep();
   const isStart = event.type === "tool_started";
   const toolName = event.tool_name || "도구";
   if (isStart) {
     startWorkflowOutputPreview(toolName, event.tool_input || {});
+    clearWorkflowToolArgBuffers(toolName);
     scheduleMutationWaitingStep(toolName);
   }
   if (!isStart) {
+    clearWorkflowToolArgBuffers(toolName);
     clearMutationWaitingStep(toolName);
     const matchingRunningStep = [...state.workflowList.querySelectorAll(".workflow-step.running")]
       .find((item) => item.dataset.toolName === toolName);
     if (matchingRunningStep) {
       const item = matchingRunningStep;
-      item.classList.remove("running");
-      item.classList.add(event.is_error ? "error" : "done");
+      item.classList.remove("running", "done", "warning", "error");
+      item.classList.add(workflowEventStatus(event));
       item.querySelector("strong").textContent = workflowTitle(event);
-      if (event.is_error) {
-        item.querySelector("small").textContent = workflowDetail(event);
+      const detail = item.querySelector("small");
+      if (detail) {
+        detail.textContent = workflowDetail(event);
       }
       updateWorkflowSummary();
       if (!state.restoringHistory && state.autoFollowMessages) {
@@ -1263,8 +1500,46 @@ function appendWorkflowEventNow(event) {
       return;
     }
   }
-  const status = isStart ? "running" : event.is_error ? "error" : "done";
+  const status = workflowEventStatus(event);
   const row = appendWorkflowStep(workflowTitle(event), workflowDetail(event), status, toolName);
+  updateWorkflowSummary();
+  if (!state.restoringHistory && state.autoFollowMessages) {
+    scrollMessagesToBottom();
+  }
+}
+
+function workflowToolBufferKey(event) {
+  const index = Number.isFinite(event.tool_call_index) ? event.tool_call_index : 0;
+  return `${event.tool_name || "tool"}:${index}`;
+}
+
+function clearWorkflowToolArgBuffers(toolName) {
+  const prefix = `${toolName || "tool"}:`;
+  for (const key of workflowToolArgBuffers.keys()) {
+    if (key.startsWith(prefix)) {
+      workflowToolArgBuffers.delete(key);
+    }
+  }
+}
+
+function appendWorkflowProgress(event) {
+  ensureWorkflowPanel();
+  stopWorkflowWaitingTimer();
+  markPlanningStepDone();
+  ensureWorkflowExecutionStep();
+  const toolName = event.tool_name || "도구";
+  const displayName = displayToolName(toolName);
+  const message = String(event.message || "").trim() || `${displayName} 실행 중입니다.`;
+  const matchingRunningStep = [...state.workflowList.querySelectorAll(".workflow-step.running")]
+    .find((item) => item.dataset.toolName === toolName);
+  if (matchingRunningStep) {
+    const detail = matchingRunningStep.querySelector("small");
+    if (detail) {
+      detail.textContent = message;
+    }
+  } else {
+    appendWorkflowStep(`${displayName} 실행 중`, message, "running", toolName);
+  }
   updateWorkflowSummary();
   if (!state.restoringHistory && state.autoFollowMessages) {
     scrollMessagesToBottom();
@@ -1275,6 +1550,7 @@ function isMutationTool(toolName) {
   const lower = String(toolName || "").toLowerCase();
   return (
     lower.includes("bash")
+    || lower.includes("cmd")
     || lower.includes("shell")
     || lower.includes("write")
     || lower.includes("edit")
@@ -1295,7 +1571,14 @@ function scheduleMutationWaitingStep(toolName) {
     const stillRunning = [...state.workflowList.querySelectorAll(".workflow-step.running")]
       .some((item) => item.dataset.toolName === toolName);
     if (stillRunning) {
-      appendWorkflowStep("파일 변경 대기 중", "다른 작업의 파일 변경이 끝나면 자동으로 이어서 실행합니다.", "running", "mutation_lock");
+      ensureWorkflowExecutionStep();
+      const lower = String(toolName || "").toLowerCase();
+      const isCommand = lower.includes("bash") || lower.includes("cmd") || lower.includes("shell");
+      const title = isCommand ? "명령 실행 중" : "파일 변경 진행 중";
+      const detail = isCommand
+        ? "출력이 없어도 작업은 계속 진행 중입니다."
+        : "파일 변경이 끝날 때까지 기다리고 있습니다.";
+      appendWorkflowStep(title, detail, "running", "mutation_lock");
     }
   }, 1400);
   workflowMutationWaitingTimers.set(toolName, timer);
@@ -1327,20 +1610,240 @@ function markPlanningStepDone() {
   }
 }
 
+function markWorkflowWaitingStepsDone(message = "다음 단계로 넘어갔습니다.") {
+  state.workflowSteps
+    .filter((row) => row.dataset.workflowRole === "waiting" && row.classList.contains("running"))
+    .forEach((row) => {
+      row.classList.remove("running", "warning", "error");
+      row.classList.add("done");
+      const detail = row.querySelector("small");
+      if (detail) {
+        detail.textContent = message;
+      }
+    });
+}
+
+function ensureWorkflowExecutionStep() {
+  const existing = state.workflowSteps.find((row) => row.dataset.workflowRole === "execution");
+  if (existing) {
+    return existing;
+  }
+  return appendWorkflowStep(
+    "도구 실행",
+    "도구 실행 결과를 순서대로 기록합니다.",
+    "running",
+    "",
+    { role: "execution", level: "child" },
+  );
+}
+
+function markWorkflowExecutionStepDone(status = "done", message = "") {
+  const execution = state.workflowSteps.find((row) => row.dataset.workflowRole === "execution");
+  if (!execution) {
+    return;
+  }
+  execution.classList.remove("running", "done", "warning", "error");
+  const hasToolIssue = state.workflowSteps.some((row) =>
+    row.dataset.workflowLevel === "child"
+    && (row.classList.contains("error") || row.classList.contains("warning"))
+  );
+  const nextStatus = status === "error" ? "error" : hasToolIssue ? "warning" : "done";
+  execution.classList.add(nextStatus);
+  const detail = execution.querySelector("small");
+  if (detail) {
+    detail.textContent = message || (nextStatus === "error"
+      ? "도구 실행 중 문제가 발생했습니다."
+      : nextStatus === "warning"
+        ? "일부 도구는 결과가 없거나 사용할 수 없어 다른 경로로 진행했습니다."
+      : "도구 실행이 완료되었습니다.");
+  }
+}
+
+function ensureWorkflowFinalAnswerStep() {
+  const existing = state.workflowSteps.find((row) => row.dataset.workflowRole === "final_answer");
+  if (existing) {
+    return existing;
+  }
+  return appendWorkflowStep(
+    "최종 답변",
+    "작업 결과를 정리하는 중입니다.",
+    "running",
+    "",
+    { role: "final_answer" },
+  );
+}
+
+function startWorkflowFinalAnswer() {
+  if (!state.workflowNode || !state.workflowList) {
+    ensureWorkflowPanel();
+  }
+  markPlanningStepDone();
+  markWorkflowWaitingStepsDone("응답 생성 단계로 넘어갔습니다.");
+  markWorkflowExecutionStepDone("done");
+  const finalAnswer = ensureWorkflowFinalAnswerStep();
+  finalAnswer.classList.remove("done", "warning", "error");
+  finalAnswer.classList.add("running");
+  const detail = finalAnswer.querySelector("small");
+  if (detail) {
+    detail.textContent = "최종 답변 생성 중...";
+  }
+  updateWorkflowSummary();
+}
+
+function clearWorkflowFinalAnswerStep() {
+  const finalAnswer = state.workflowSteps.find((row) => row.dataset.workflowRole === "final_answer");
+  if (!finalAnswer) {
+    return;
+  }
+  finalAnswer.remove();
+  state.workflowSteps = state.workflowSteps.filter((row) => row !== finalAnswer);
+  updateWorkflowSummary();
+}
+
+function markWorkflowFinalAnswerDone(status = "done", message = "") {
+  if (!state.workflowNode || !state.workflowList) {
+    return;
+  }
+  markPlanningStepDone();
+  markWorkflowExecutionStepDone(status === "error" ? "error" : "done");
+  const finalAnswer = ensureWorkflowFinalAnswerStep();
+  finalAnswer.classList.remove("running", "done", "warning", "error");
+  const nextStatus = status === "error" ? "error" : "done";
+  finalAnswer.classList.add(nextStatus);
+  const detail = finalAnswer.querySelector("small");
+  if (detail) {
+    detail.textContent = message || (nextStatus === "error"
+      ? "최종 답변을 완료하지 못했습니다."
+      : "최종 답변을 작성했습니다.");
+  }
+  updateWorkflowSummary();
+}
+
 function workflowTitle(event) {
-  const name = event.tool_name || "도구";
+  const name = displayToolName(event.tool_name || "도구");
   if (event.type === "tool_started") {
     return `${name} 실행 중`;
   }
+  const warningInfo = workflowWarningInfo(event);
+  if (warningInfo) {
+    return `${name} ${warningInfo.title}`;
+  }
   return event.is_error ? `${name} 실패` : `${name} 완료`;
+}
+
+function displayToolName(toolName) {
+  const raw = String(toolName || "").trim();
+  const lower = raw.toLowerCase();
+  if (lower === "bash" || lower === "cmd" || lower.includes("shell")) {
+    return "명령";
+  }
+  return raw || "도구";
 }
 
 function workflowDetail(event) {
   if (event.type === "tool_started") {
     return summarizeToolInput(event.tool_name, event.tool_input);
   }
+  const warningInfo = workflowWarningInfo(event);
+  if (warningInfo) {
+    return warningInfo.detail;
+  }
   const output = String(event.output || "").trim();
-  return output ? truncateText(output.replace(/\s+/g, " "), 140) : "완료되었습니다.";
+  const friendlyError = friendlyToolErrorDetail(event);
+  return friendlyError || (output ? truncateText(output.replace(/\s+/g, " "), 140) : "완료되었습니다.");
+}
+
+function workflowEventStatus(event) {
+  if (event.type === "tool_started") {
+    return "running";
+  }
+  if (!event.is_error) {
+    return "done";
+  }
+  if (workflowWarningInfo(event)) {
+    return "warning";
+  }
+  return "error";
+}
+
+function workflowWarningInfo(event) {
+  if (!event.is_error) {
+    return null;
+  }
+  const toolName = String(event.tool_name || "").toLowerCase();
+  const output = String(event.output || "");
+  const lower = output.toLowerCase();
+  if (lower.includes("no search results found")) {
+    return {
+      title: "결과 없음",
+      detail: "검색 결과가 없어 다른 검색어 또는 출처로 진행합니다.",
+    };
+  }
+  if (toolName.includes("web_fetch") || lower.includes("web_fetch failed")) {
+    return webFetchWarningInfo(output);
+  }
+  return null;
+}
+
+function webFetchWarningInfo(output) {
+  const lower = String(output || "").toLowerCase();
+  const statusMatch = lower.match(/\b(401|403|404|408|410|429|500|502|503|504)\b/);
+  const status = statusMatch?.[1] || "";
+  if (status === "401" || status === "403") {
+    return {
+      title: "접근 제한",
+      detail: `${status} 응답입니다. 사이트가 자동 접근을 거부했거나 권한이 필요해 다른 출처로 진행합니다.`,
+    };
+  }
+  if (status === "404" || status === "410") {
+    return {
+      title: "페이지 없음",
+      detail: `${status} 응답입니다. 페이지가 없거나 이동되어 다른 출처로 진행합니다.`,
+    };
+  }
+  if (status === "429") {
+    return {
+      title: "요청 제한",
+      detail: "사이트의 요청 제한에 걸렸습니다. 잠시 뒤 다시 시도하거나 다른 출처로 진행합니다.",
+    };
+  }
+  if (["500", "502", "503", "504"].includes(status)) {
+    return {
+      title: "서버 오류",
+      detail: `${status} 응답입니다. 사이트 쪽 오류라 다른 출처로 진행합니다.`,
+    };
+  }
+  if (lower.includes("timeout") || lower.includes("timed out")) {
+    return {
+      title: "시간 초과",
+      detail: "사이트 응답이 늦어 가져오지 못했습니다. 다른 출처로 진행합니다.",
+    };
+  }
+  if (lower.includes("connection") || lower.includes("dns") || lower.includes("name resolution")) {
+    return {
+      title: "연결 실패",
+      detail: "사이트에 연결하지 못했습니다. 주소나 네트워크 상태를 확인하고 다른 출처로 진행합니다.",
+    };
+  }
+  return {
+    title: "가져오기 제한",
+    detail: "웹 페이지를 가져오지 못했습니다. 원문 사이트 제한일 수 있어 다른 출처로 진행합니다.",
+  };
+}
+
+function friendlyToolErrorDetail(event) {
+  if (!event.is_error) {
+    return "";
+  }
+  const output = String(event.output || "");
+  const lower = output.toLowerCase();
+  if (lower.includes("client error") || lower.includes("server error") || lower.includes("http")) {
+    const statusMatch = output.match(/\b([1-5]\d{2})\b/);
+    return statusMatch
+      ? `${statusMatch[1]} HTTP 오류가 발생했습니다. 원문 메시지는 세부 로그에 남아 있습니다.`
+      : "HTTP 오류가 발생했습니다. 원문 메시지는 세부 로그에 남아 있습니다.";
+  }
+  return "";
 }
 
 function summarizeToolInput(toolName, input = {}) {
@@ -1356,7 +1859,7 @@ function summarizeToolInput(toolName, input = {}) {
   };
   if (lower.includes("web_fetch")) return valueFor("url") || "웹 페이지를 가져오는 중";
   if (lower.includes("web_search")) return valueFor("query") || "웹 검색 중";
-  if (lower.includes("bash") || lower.includes("shell")) return valueFor("command") || "명령 실행 중";
+  if (lower.includes("bash") || lower.includes("cmd") || lower.includes("shell")) return valueFor("command") || "명령 실행 중";
   if (lower.includes("grep")) return valueFor("pattern") || "텍스트 검색 중";
   if (lower.includes("glob")) return valueFor("pattern") || "파일 목록 검색 중";
   if (lower.includes("read")) return valueFor("file_path", "path") || "파일 읽는 중";
@@ -1371,9 +1874,14 @@ function updateWorkflowSummary() {
     return;
   }
   const total = state.workflowSteps.length;
+  const childCount = state.workflowSteps.filter((row) => row.dataset.workflowLevel === "child").length;
+  const parentCount = Math.max(0, total - childCount);
   const elapsedMs = state.workflowRestoredElapsedMs || (state.workflowStartedAt ? performance.now() - state.workflowStartedAt : 0);
   const elapsed = elapsedMs ? `(${formatDuration(elapsedMs)})` : "";
-  state.workflowSummary.textContent = elapsed ? `${elapsed} ${total} 단계` : `${total} 단계`;
+  const countText = childCount
+    ? `${parentCount} 단계 · 하위 작업 ${childCount}개`
+    : `${parentCount} 단계`;
+  state.workflowSummary.textContent = elapsed ? `${elapsed} ${countText}` : countText;
 }
 
 function formatDuration(milliseconds) {
@@ -1394,7 +1902,7 @@ function appendToolEvent(event) {
   card.className = "event-card";
 
   const title = document.createElement("strong");
-  title.textContent = event.tool_name || "도구";
+  title.textContent = displayToolName(event.tool_name || "도구");
   const phase = document.createElement("small");
   phase.textContent = event.type === "tool_started" ? "실행 시작" : "실행 완료";
   const detail = document.createElement("small");
@@ -1442,10 +1950,14 @@ function updateTasks(tasks) {
     collapseWorkflowPanel,
     finalizeWorkflowSummary,
     failWorkflowPanel,
+    startWorkflowFinalAnswer,
+    clearWorkflowFinalAnswerStep,
+    markWorkflowFinalAnswerDone,
     startWorkflowTimer,
     stopWorkflowTimer,
     ensureWorkflowPanel,
     appendWorkflowEvent,
+    appendWorkflowProgress,
     appendWorkflowInputDelta,
     markPlanningStepDone,
     truncateText,
