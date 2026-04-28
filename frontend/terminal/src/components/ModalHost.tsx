@@ -9,6 +9,34 @@ const WAIT_FRAMES = [
 	'Agent is waiting for your input...',
 ];
 
+type QuestionChoice = {
+	value: string;
+	label: string;
+	description?: string;
+};
+
+function normalizeQuestionChoices(modal: Record<string, unknown>): QuestionChoice[] {
+	const raw = Array.isArray(modal.choices) ? modal.choices : [];
+	return raw
+		.map((item) => {
+			if (!item || typeof item !== 'object') {
+				return null;
+			}
+			const source = item as Record<string, unknown>;
+			const value = String(source.value ?? '').trim();
+			if (!value) {
+				return null;
+			}
+			return {
+				value,
+				label: String(source.label ?? value).trim() || value,
+				description: String(source.description ?? '').trim() || undefined,
+			};
+		})
+		.filter((item): item is QuestionChoice => item !== null)
+		.slice(0, 6);
+}
+
 function WaitingAnimation(): React.JSX.Element {
 	const [frame, setFrame] = useState(0);
 	useEffect(() => {
@@ -35,13 +63,6 @@ function QuestionModal({
 }): React.JSX.Element {
 	const [extraLines, setExtraLines] = useState<string[]>([]);
 
-	useInput((_chunk, key) => {
-		if (key.shift && key.return) {
-			setExtraLines((lines) => [...lines, modalInput]);
-			setModalInput('');
-		}
-	});
-
 	const handleSubmit = (value: string): void => {
 		const allLines = [...extraLines, value];
 		setExtraLines([]);
@@ -51,6 +72,21 @@ function QuestionModal({
 	const toolName = modal.tool_name ? String(modal.tool_name) : null;
 	const reason = modal.reason ? String(modal.reason) : null;
 	const question = String(modal.question ?? 'Question');
+	const choices = normalizeQuestionChoices(modal);
+
+	useInput((chunk, key) => {
+		if (key.shift && key.return) {
+			setExtraLines((lines) => [...lines, modalInput]);
+			setModalInput('');
+			return;
+		}
+		const choiceIndex = Number.parseInt(chunk, 10) - 1;
+		const choice = choices[choiceIndex];
+		if (choice) {
+			setExtraLines([]);
+			onSubmit(choice.value);
+		}
+	});
 
 	return (
 		<Box flexDirection="column" marginTop={1} borderStyle="double" borderColor="magenta" paddingX={1}>
@@ -76,11 +112,24 @@ function QuestionModal({
 					))}
 				</Box>
 			)}
+			{choices.length > 0 ? (
+				<Box flexDirection="column" marginTop={1}>
+					{choices.map((choice, index) => (
+						<Box key={`${choice.value}-${index}`} flexDirection="column">
+							<Text>
+								<Text color="cyan">{index + 1}. </Text>
+								{choice.label}
+							</Text>
+							{choice.description ? <Text dimColor>{'   '}{choice.description}</Text> : null}
+						</Box>
+					))}
+				</Box>
+			) : null}
 			<Box marginTop={1}>
 				<Text color="cyan">{'> '}</Text>
 				<TextInput value={modalInput} onChange={setModalInput} onSubmit={handleSubmit} />
 			</Box>
-			<Text dimColor>{'  '}shift+enter: newline | enter: submit</Text>
+			<Text dimColor>{'  '}number: choose | shift+enter: newline | enter: submit</Text>
 		</Box>
 	);
 }

@@ -1,5 +1,6 @@
 export function createMarkdown(ctx) {
   const { marked, katex } = ctx;
+  const htmlPreviewUrlCache = new Map();
 
 function splitTableRow(line) {
   return line
@@ -124,7 +125,154 @@ async function copyTextToClipboard(text) {
   }
 }
 
-function enhanceCodeBlocks(element) {
+function codeBlockLanguage(code) {
+  const className = String(code?.className || "").toLowerCase();
+  const match = className.match(/(?:^|\s)language-([a-z0-9_-]+)/);
+  return match?.[1] || "";
+}
+
+function isHtmlPreviewCodeBlock(code) {
+  return ["html", "htm"].includes(codeBlockLanguage(code));
+}
+
+function normalizeHtmlPreviewSource(value) {
+  return String(value || "").replace(/\r\n/g, "\n").trimEnd();
+}
+
+function rememberHtmlPreviewUrl(source, url) {
+  const key = normalizeHtmlPreviewSource(source);
+  if (!key || !url) {
+    return;
+  }
+  if (htmlPreviewUrlCache.size >= 24 && !htmlPreviewUrlCache.has(key)) {
+    htmlPreviewUrlCache.delete(htmlPreviewUrlCache.keys().next().value);
+  }
+  htmlPreviewUrlCache.set(key, url);
+}
+
+function completeHtmlFenceSources(markdown) {
+  const sources = new Set();
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  let fence = null;
+  let content = [];
+
+  for (const line of lines) {
+    if (!fence) {
+      const open = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+      if (!open) {
+        continue;
+      }
+      const info = String(open[2] || "").trim().toLowerCase().split(/\s+/)[0] || "";
+      fence = {
+        marker: open[1][0],
+        length: open[1].length,
+        html: ["html", "htm"].includes(info),
+      };
+      content = [];
+      continue;
+    }
+
+    const close = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
+    if (close && close[1][0] === fence.marker && close[1].length >= fence.length) {
+      if (fence.html) {
+        sources.add(normalizeHtmlPreviewSource(content.join("\n")));
+      }
+      fence = null;
+      content = [];
+      continue;
+    }
+
+    content.push(line);
+  }
+
+  return sources;
+}
+
+function htmlPreviewHeight(value) {
+  const minHeight = 220;
+  const maxHeight = Math.min(720, Math.max(420, Math.round(window.innerHeight * 0.72)));
+  const height = Number(value);
+  if (!Number.isFinite(height) || height <= 0) {
+    return minHeight;
+  }
+  return Math.min(maxHeight, Math.max(minHeight, height + 12));
+}
+
+function htmlPreviewToken() {
+  return globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function loadHtmlPreview(frame, errorNode, source) {
+  try {
+    const cacheKey = normalizeHtmlPreviewSource(source);
+    let previewUrl = htmlPreviewUrlCache.get(cacheKey);
+    if (!previewUrl) {
+      const response = await fetch("/api/html-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: source }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.url) {
+        throw new Error(payload.error || "Could not create HTML preview");
+      }
+      previewUrl = payload.url;
+      rememberHtmlPreviewUrl(source, previewUrl);
+    }
+    if (frame.isConnected) {
+      const token = htmlPreviewToken();
+      frame.name = token;
+      const onMessage = (event) => {
+        if (!frame.isConnected) {
+          window.removeEventListener("message", onMessage);
+          return;
+        }
+        if (event.data?.type !== "openharness-html-preview-size" || event.data?.token !== token) {
+          return;
+        }
+        frame.style.height = `${htmlPreviewHeight(event.data.height)}px`;
+      };
+      window.addEventListener("message", onMessage);
+      frame.src = `${previewUrl}?ohPreviewToken=${encodeURIComponent(token)}`;
+    }
+  } catch {
+    if (!frame.isConnected) {
+      return;
+    }
+    frame.remove();
+    errorNode.hidden = false;
+  }
+}
+
+function createHtmlPreview(code) {
+  const source = String(code.textContent || "");
+  if (!source.trim()) {
+    return null;
+  }
+  const preview = document.createElement("div");
+  preview.className = "html-render-preview";
+  const frame = document.createElement("iframe");
+  frame.className = "html-render-frame";
+  frame.title = "HTML preview";
+  frame.loading = "lazy";
+  frame.referrerPolicy = "no-referrer";
+  frame.setAttribute("sandbox", "allow-scripts");
+  const error = document.createElement("div");
+  error.className = "html-render-error";
+  error.hidden = true;
+  error.textContent = "HTML 미리보기를 불러오지 못했습니다.";
+  preview.append(frame, error);
+  loadHtmlPreview(frame, error, source);
+  return preview;
+}
+
+function enhanceCodeBlocks(element, options = {}) {
+  const isStreaming = element.classList.contains("streaming-text");
+  const completeStreamingHtmlSources = isStreaming
+    ? completeHtmlFenceSources(options.rawMarkdown || element.dataset.displayText || element.dataset.rawText)
+    : null;
   element.querySelectorAll("pre").forEach((pre) => {
     if (pre.querySelector(".code-copy")) {
       return;
@@ -132,6 +280,16 @@ function enhanceCodeBlocks(element) {
     const code = pre.querySelector("code");
     if (!code) {
       return;
+    }
+    if (
+      isHtmlPreviewCodeBlock(code)
+      && (!isStreaming || completeStreamingHtmlSources.has(normalizeHtmlPreviewSource(code.textContent)))
+    ) {
+      const preview = createHtmlPreview(code);
+      if (preview) {
+        pre.replaceWith(preview);
+        return;
+      }
     }
     pre.classList.toggle("single-line-code", !code.textContent?.trimEnd().includes("\n"));
     if (!code.dataset.highlighted && window.hljs) {
@@ -182,13 +340,13 @@ function enhanceTables(element) {
   });
 }
 
-function setMarkdown(element, text) {
+function setMarkdown(element, text, options = {}) {
   element.dataset.rawText = text;
   element.innerHTML = renderMarkdown(text, {
     restoreEscapedInlineMarkdown: element.dataset.restoreEscapedInlineMarkdown === "true",
   });
   enhanceTables(element);
-  enhanceCodeBlocks(element);
+  enhanceCodeBlocks(element, { rawMarkdown: options.rawMarkdown || text });
 }
 
   return {

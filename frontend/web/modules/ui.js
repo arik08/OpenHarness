@@ -2,9 +2,11 @@ const scrollStorageKey = "openharness:scrollPositions";
 let scrollRestoreTimer = 0;
 let scrollSaveTimer = 0;
 let scrollAnimationFrame = 0;
+let tailFollowAnimationActive = false;
 let userScrollIntentUntil = 0;
 let busyVisualTimer = 0;
 let pendingBusyLabel = "";
+let composerMetricsObserver = null;
 const BUSY_VISUAL_DELAY_MS = 280;
 const NEAR_BOTTOM_PX = 96;
 
@@ -12,6 +14,31 @@ export function createUI(ctx) {
   const { state, els, STATUS_LABELS } = ctx;
   function markActiveHistory(...args) { return ctx.markActiveHistory(...args); }
   function showImagePreview(...args) { return ctx.showImagePreview?.(...args); }
+  function appendMessage(...args) { return ctx.appendMessage?.(...args); }
+
+function updateComposerMetrics() {
+  const composerRect = els.composer?.getBoundingClientRect();
+  const inputStackRect = els.composerBox?.getBoundingClientRect() || els.input?.getBoundingClientRect();
+  const checklistRect = els.todoChecklistDock?.classList.contains("hidden")
+    ? null
+    : els.todoChecklistDock?.getBoundingClientRect();
+  const checklistSoftReserve = checklistRect
+    ? Math.min(160, Math.max(0, checklistRect.height * 0.7))
+    : 0;
+  const reserveTop = (inputStackRect?.top ?? composerRect?.top) - checklistSoftReserve;
+  const height = composerRect && Number.isFinite(reserveTop)
+    ? Math.ceil(Math.max(0, composerRect.bottom - reserveTop))
+    : Math.ceil(els.composer?.getBoundingClientRect().height || 0);
+  if (height > 0) {
+    document.documentElement.style.setProperty("--composer-stack-height", `${height}px`);
+  }
+  const chatPanel = els.composer?.closest(".chat-panel") || document.querySelector(".chat-panel");
+  const rect = chatPanel?.getBoundingClientRect();
+  if (rect) {
+    document.documentElement.style.setProperty("--chat-panel-left", `${Math.round(rect.left)}px`);
+    document.documentElement.style.setProperty("--chat-panel-width", `${Math.round(rect.width)}px`);
+  }
+}
 
 function readScrollPositions() {
   try {
@@ -61,12 +88,16 @@ function isNearMessageBottom(container = els.messages) {
   return remaining <= NEAR_BOTTOM_PX;
 }
 
-function stopMessagesAutoFollow() {
+function stopMessagesAutoFollow(container = els.messages) {
   window.cancelAnimationFrame(scrollAnimationFrame);
   scrollAnimationFrame = 0;
+  tailFollowAnimationActive = false;
   state.autoFollowMessages = false;
   state.autoScrollUntil = 0;
-  els.messages.classList.remove("streaming-follow");
+  container?.classList.remove("streaming-follow");
+  if (container !== els.messages) {
+    els.messages?.classList.remove("streaming-follow");
+  }
 }
 
 function markMessagesUserScrollIntent() {
@@ -80,16 +111,39 @@ function updateAutoFollowFromScroll(container = els.messages) {
   const currentTop = container.scrollTop;
   const previousTop = Number(container.dataset.lastScrollTop);
   const movedUp = Number.isFinite(previousTop) && currentTop < previousTop - 2;
-  if (movedUp) {
-    if (Date.now() <= userScrollIntentUntil || Date.now() >= state.autoScrollUntil) {
-      stopMessagesAutoFollow();
+  const userScrolling = Date.now() <= userScrollIntentUntil;
+  const nearBottom = isNearMessageBottom(container);
+  if (userScrolling && !nearBottom) {
+    stopMessagesAutoFollow(container);
+  } else if (movedUp) {
+    if (userScrolling || Date.now() >= state.autoScrollUntil) {
+      stopMessagesAutoFollow(container);
     }
   } else if (Date.now() < state.autoScrollUntil) {
     state.autoFollowMessages = true;
   } else {
-    state.autoFollowMessages = isNearMessageBottom(container);
+    state.autoFollowMessages = nearBottom;
   }
   container.dataset.lastScrollTop = String(currentTop);
+}
+
+function attachMessageAutoFollow(container = els.messages) {
+  if (!container || container.dataset.slotScrollAttached === "true") {
+    return;
+  }
+  container.dataset.slotScrollAttached = "true";
+  container.addEventListener("scroll", () => {
+    updateAutoFollowFromScroll(container);
+    scheduleScrollPositionSave();
+  });
+  container.addEventListener("wheel", (event) => {
+    markMessagesUserScrollIntent();
+    if (event.deltaY < 0) {
+      stopMessagesAutoFollow(container);
+    }
+  }, { passive: true });
+  container.addEventListener("pointerdown", markMessagesUserScrollIntent);
+  container.addEventListener("touchstart", markMessagesUserScrollIntent, { passive: true });
 }
 
 function scrollMessagesToBottom(options = {}) {
@@ -100,6 +154,8 @@ function scrollMessagesToBottom(options = {}) {
   const canUseNativeAlignment = tail && (block || inline);
   if (canUseNativeAlignment) {
     window.cancelAnimationFrame(scrollAnimationFrame);
+    scrollAnimationFrame = 0;
+    tailFollowAnimationActive = false;
     const containerRect = els.messages.getBoundingClientRect();
     const tailRect = tail.getBoundingClientRect();
     const tailTop = tailRect.top - containerRect.top + els.messages.scrollTop;
@@ -148,6 +204,7 @@ function scrollMessagesToBottom(options = {}) {
         if (progress < 1 && state.autoFollowMessages) {
           scrollAnimationFrame = window.requestAnimationFrame(step);
         } else {
+          scrollAnimationFrame = 0;
           els.messages.dataset.lastScrollTop = String(els.messages.scrollTop);
         }
       };
@@ -157,23 +214,58 @@ function scrollMessagesToBottom(options = {}) {
     state.autoScrollUntil = Date.now() + 120;
     els.messages.scrollTop = targetTop;
     els.messages.scrollLeft = targetLeft;
+    els.messages.dataset.lastScrollTop = String(els.messages.scrollTop);
     return;
   }
   if (options.smooth && !reduceMotion) {
-    window.cancelAnimationFrame(scrollAnimationFrame);
-    const start = els.messages.scrollTop;
+    const continuousFollow = Boolean(options.followTail && options.continuous);
     const duration = Number(options.duration || 760);
+    if (continuousFollow && tailFollowAnimationActive && scrollAnimationFrame) {
+      state.autoScrollUntil = Date.now() + duration + 260;
+      return;
+    }
+    window.cancelAnimationFrame(scrollAnimationFrame);
+    tailFollowAnimationActive = continuousFollow;
+    const start = els.messages.scrollTop;
     const startedAt = performance.now();
+    let previousFrameAt = startedAt;
+    let dampedTarget = start;
     state.autoScrollUntil = Date.now() + duration + 260;
 
     const step = (now) => {
+      const target = Math.max(0, els.messages.scrollHeight - els.messages.clientHeight);
+      if (continuousFollow) {
+        const elapsed = Math.min(64, Math.max(0, now - previousFrameAt));
+        previousFrameAt = now;
+        const dampingMs = Math.max(420, Math.min(1200, duration * 0.5));
+        const targetBlend = elapsed > 0 ? 1 - Math.exp(-elapsed / dampingMs) : 0;
+        dampedTarget += (target - dampedTarget) * targetBlend;
+
+        const distance = dampedTarget - els.messages.scrollTop;
+        const maxSpeed = Math.max(260, Math.min(900, els.messages.clientHeight * 0.9));
+        const maxStep = maxSpeed * (elapsed / 1000);
+        const stepDistance = Math.max(-maxStep, Math.min(maxStep, distance));
+        els.messages.scrollTop = Math.abs(target - els.messages.scrollTop) < 0.75
+          ? target
+          : els.messages.scrollTop + stepDistance;
+        els.messages.dataset.lastScrollTop = String(els.messages.scrollTop);
+        if (state.autoFollowMessages && tailFollowAnimationActive) {
+          scrollAnimationFrame = window.requestAnimationFrame(step);
+        } else {
+          tailFollowAnimationActive = false;
+          scrollAnimationFrame = 0;
+        }
+        return;
+      }
+
       const progress = Math.min(1, (now - startedAt) / duration);
       const eased = 1 - Math.pow(1 - progress, 3);
-      const target = Math.max(0, els.messages.scrollHeight - els.messages.clientHeight);
       els.messages.scrollTop = start + (target - start) * eased;
       if (progress < 1 && state.autoFollowMessages) {
         scrollAnimationFrame = window.requestAnimationFrame(step);
       } else {
+        tailFollowAnimationActive = false;
+        scrollAnimationFrame = 0;
         els.messages.dataset.lastScrollTop = String(els.messages.scrollTop);
       }
     };
@@ -181,8 +273,11 @@ function scrollMessagesToBottom(options = {}) {
     return;
   }
   window.cancelAnimationFrame(scrollAnimationFrame);
+  scrollAnimationFrame = 0;
+  tailFollowAnimationActive = false;
   state.autoScrollUntil = Date.now() + 120;
   els.messages.scrollTop = els.messages.scrollHeight;
+  els.messages.dataset.lastScrollTop = String(els.messages.scrollTop);
 }
 
 function finishScrollRestore() {
@@ -231,7 +326,47 @@ function setChatTitle(value) {
   }
 }
 
+function activeSavedSessionId() {
+  const activeSlot = state.chatSlots.get(state.activeFrontendId);
+  return String(state.activeHistoryId || activeSlot?.savedSessionId || "").trim();
+}
+
+async function persistChatTitle(title, previousTitle) {
+  const activeSlot = state.chatSlots.get(state.activeFrontendId);
+  if (activeSlot) {
+    activeSlot.title = title;
+  }
+  const savedSessionId = activeSavedSessionId();
+  const updateBackend = state.sessionId && ctx.sendBackendRequest
+    ? ctx.sendBackendRequest({ type: "update_session_title", value: title })
+    : Promise.resolve();
+  const updateHistoryFile = savedSessionId && ctx.postJson
+    ? ctx.postJson("/api/history/title", {
+      sessionId: savedSessionId,
+      title,
+      workspacePath: state.workspacePath,
+      workspaceName: state.workspaceName,
+    })
+    : Promise.resolve();
+
+  try {
+    await updateHistoryFile;
+    await updateBackend;
+    await ctx.requestHistory?.();
+  } catch (error) {
+    if (activeSlot) {
+      activeSlot.title = previousTitle;
+    }
+    setChatTitle(previousTitle);
+    appendMessage("system", `채팅 제목 저장 실패: ${error.message}`);
+  }
+}
+
 function finishTitleEdit(input, commit) {
+  if (!state.editingTitle) {
+    return;
+  }
+  const previousTitle = state.chatTitle;
   const nextTitle = input.value.trim();
   input.remove();
   els.chatTitleButton.classList.remove("editing");
@@ -240,7 +375,12 @@ function finishTitleEdit(input, commit) {
   els.chatTitleButton.textContent = "";
   els.chatTitleButton.append(label);
   els.chatTitle = label;
-  setChatTitle(commit && nextTitle ? nextTitle : state.chatTitle);
+  if (!commit || !nextTitle) {
+    setChatTitle(previousTitle);
+    return;
+  }
+  setChatTitle(nextTitle);
+  persistChatTitle(nextTitle, previousTitle);
 }
 
 function startTitleEdit() {
@@ -339,15 +479,17 @@ function updateSendState() {
   const composerText = buildComposerLine().trim();
   const hasText = composerText.length > 0;
   const shellCommand = /^!(?!\s*$)/.test(composerText);
-  const showStop = Boolean(state.busy && state.busyVisual);
+  const canSteer = Boolean(state.busy && hasText && !shellCommand);
+  const showStop = Boolean(state.busy && state.busyVisual && !canSteer);
   els.input.disabled = Boolean(state.switchingWorkspace);
   els.send.disabled =
     state.switchingWorkspace
-    || (state.busy && !showStop)
+    || (state.busy && !showStop && !canSteer)
     || (!shellCommand && state.sessionId && !state.ready)
     || (!state.busy && !hasText && state.attachments.length === 0);
   els.send.classList.toggle("is-stop", showStop);
-  els.send.setAttribute("aria-label", showStop ? "작업 중단" : "메시지 보내기");
+  els.send.classList.toggle("is-steer", canSteer);
+  els.send.setAttribute("aria-label", showStop ? "작업 중단" : canSteer ? "스티어링 보내기" : "메시지 보내기");
   els.send.innerHTML = showStop
     ? '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"></circle><path d="M15.5 8.5 8.5 15.5"></path><path d="m8.5 8.5 7 7"></path></svg>'
     : '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"></path><path d="M22 2 11 13"></path></svg>';
@@ -394,6 +536,7 @@ function autoSizeInput() {
   els.input.style.height = `${nextHeight}px`;
   els.input.style.overflowY = els.input.scrollHeight > maxHeight + 1 ? "auto" : "hidden";
   els.composerBox?.classList.toggle("multiline", nextHeight > minHeight + 12);
+  updateComposerMetrics();
 }
 
 function prettifyComposerToken(rawToken) {
@@ -565,6 +708,7 @@ function renderPastedTexts() {
     chip.append(label, remove);
     els.pastedTextTray.append(chip);
   });
+  updateComposerMetrics();
 }
 
 function addPastedText(text) {
@@ -655,6 +799,7 @@ function renderAttachments() {
     item.append(image, label, remove);
     els.attachmentTray.append(item);
   }
+  updateComposerMetrics();
 }
 
 function clearAttachments() {
@@ -668,6 +813,17 @@ els.composerToken?.addEventListener("click", () => {
   els.input.focus();
 });
 
+if (els.composer && "ResizeObserver" in window) {
+  composerMetricsObserver = new ResizeObserver(updateComposerMetrics);
+  composerMetricsObserver.observe(els.composer);
+  const chatPanel = els.composer.closest(".chat-panel");
+  if (chatPanel) {
+    composerMetricsObserver.observe(chatPanel);
+  }
+}
+window.addEventListener("resize", updateComposerMetrics);
+window.requestAnimationFrame(updateComposerMetrics);
+
   return {
     saveScrollPosition,
     scheduleScrollPositionSave,
@@ -677,6 +833,7 @@ els.composerToken?.addEventListener("click", () => {
     markMessagesUserScrollIntent,
     stopMessagesAutoFollow,
     updateAutoFollowFromScroll,
+    attachMessageAutoFollow,
     scrollMessagesToBottom,
     finishScrollRestore,
     scheduleScrollRestore,

@@ -74,7 +74,8 @@ class TestSettings:
         contain an Anthropic key from settings.json."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-correct")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        s = Settings(api_key="sk-ant-wrong-provider", api_format="openai")
+        monkeypatch.delenv("PGPT_API_KEY", raising=False)
+        s = Settings(api_key="sk-ant-wrong-provider", api_format="openai", active_profile="openai-compatible")
         s = s.sync_active_profile_from_flat_fields()
         auth = s.resolve_auth()
         assert auth.value == "sk-openai-correct"
@@ -85,7 +86,8 @@ class TestSettings:
         still fall back to the flat api_key field."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        s = Settings(api_key="sk-fallback-key")
+        monkeypatch.delenv("PGPT_API_KEY", raising=False)
+        s = Settings(api_key="sk-fallback-key", active_profile="claude-api")
         s = s.sync_active_profile_from_flat_fields()
         auth = s.resolve_auth()
         assert auth.value == "sk-fallback-key"
@@ -162,7 +164,8 @@ class TestLoadSaveSettings:
         original = Settings(api_key="sk-roundtrip", model="claude-opus-4-20250514", verbose=True)
         save_settings(original, path)
         loaded = load_settings(path)
-        assert loaded.api_key == original.api_key
+        assert loaded.api_key == ""
+        assert "api_key" not in json.loads(path.read_text(encoding="utf-8"))
         assert loaded.model == original.model
         assert loaded.verbose == original.verbose
 
@@ -462,7 +465,8 @@ def test_normalize_anthropic_model_name_matches_hermes_behavior():
         assert s.base_url == "https://env.example/anthropic"
         assert s.timeout == 42.5
         assert s.max_turns == 42
-        assert s.api_key == "sk-env-override"
+        assert s.api_key == ""
+        assert s.resolve_auth().value == "sk-env-override"
         assert s.sandbox.enabled is True
         assert s.sandbox.fail_if_unavailable is True
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -54,6 +55,8 @@ from openharness.services import (
 )
 from openharness.services.session_backend import DEFAULT_SESSION_BACKEND, SessionBackend
 from openharness.skills import load_skill_registry
+from openharness.skills.display import display_skill_description
+from openharness.skills.loader import is_learned_skill
 from openharness.skills.state import set_skill_enabled, toggle_skill_enabled
 from openharness.tasks import get_task_manager
 from openharness.plugins.types import PluginCommandDefinition
@@ -70,6 +73,12 @@ def _custom_skills(skills):
     return [skill for skill in skills if skill.source not in _BUILT_IN_SKILL_SOURCES]
 
 
+def _visible_custom_skills(skills, settings: Settings):
+    if settings.learning.effective_mode != "hide":
+        return _custom_skills(skills)
+    return [skill for skill in _custom_skills(skills) if not is_learned_skill(skill)]
+
+
 def _format_skills_management_text(skills) -> str:
     if not skills:
         return "사용 가능한 스킬:\n(사용자 스킬이 없습니다)"
@@ -77,7 +86,7 @@ def _format_skills_management_text(skills) -> str:
     for skill in skills:
         status = "활성" if skill.enabled else "비활성"
         source = f" [{skill.source}]"
-        lines.append(f"- {skill.name}{source} [{status}]: {skill.description}")
+        lines.append(f"- {skill.name}{source} [{status}]: {display_skill_description(skill)}")
     return "\n".join(lines)
 
 
@@ -161,6 +170,23 @@ def _parse_pgpt_login_args(args: str) -> dict[str, str]:
     }
 
 
+_AUTH_ENV_BY_SOURCE = {
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
+    "openai_api_key": "OPENAI_API_KEY",
+    "dashscope_api_key": "DASHSCOPE_API_KEY",
+    "moonshot_api_key": "MOONSHOT_API_KEY",
+    "gemini_api_key": "GEMINI_API_KEY",
+    "minimax_api_key": "MINIMAX_API_KEY",
+    "pgpt_api_key": "PGPT_API_KEY",
+}
+
+
+def _set_process_env(values: dict[str, str]) -> None:
+    for key, value in values.items():
+        if value:
+            os.environ[key] = value
+
+
 @dataclass
 class SlashCommand:
     """Definition of a slash command."""
@@ -209,6 +235,9 @@ class CommandRegistry:
             "- @: 현재 프로젝트의 파일을 선택해 프롬프트에 첨부하거나 참조합니다.",
             "- $: 사용할 스킬, MCP, 플러그인을 선택해 프롬프트에 넣습니다.",
             "- /: 슬래시 명령어를 선택하거나 실행합니다.",
+            "- Enter: 답변 중에는 스티어링 지시를 보내고, 대기 중에는 메시지를 전송합니다.",
+            "- Ctrl+Enter: 답변 중에는 다음 질문으로 대기열에 추가하고, 대기 중에는 메시지를 전송합니다.",
+            "- Shift+Enter: 입력란에서 줄바꿈합니다.",
             "- Ctrl+Shift+O: 새 채팅을 엽니다.",
             "- Shift+Tab: 계획모드를 켜거나 끕니다.",
             "",
@@ -344,7 +373,7 @@ def create_default_command_registry(
             settings=settings,
             include_disabled=True,
         )
-        skills = _custom_skills(skill_registry.list_skills())
+        skills = _visible_custom_skills(skill_registry.list_skills(), settings)
         return CommandResult(
             message=f"{registry.help_text()}\n\n{_format_capability_management_text(settings, plugins, skills, context.cwd)}"
         )
@@ -820,7 +849,7 @@ def create_default_command_registry(
             settings=settings,
             include_disabled=True,
         )
-        skills = _custom_skills(skill_registry.list_skills())
+        skills = _visible_custom_skills(skill_registry.list_skills(), settings)
         lines = [
             f"Reloaded plugin and skill registry: {len(plugins)} plugin(s), {len(skills)} custom skill(s)."
         ]
@@ -880,21 +909,41 @@ def create_default_command_registry(
         settings = load_settings()
         tokens = args.split()
         action = tokens[0].lower() if tokens else "show"
-        if action in {"on", "off"}:
-            enabled = action == "on"
-            settings.learning.enabled = enabled
+        mode_aliases = {
+            "on": "use",
+            "use": "use",
+            "show": "show",
+            "list": "list",
+            "visible": "use",
+            "hide": "hide",
+            "hidden": "hide",
+            "off": "off",
+            "disable": "off",
+            "disabled": "off",
+        }
+        normalized_action = mode_aliases.get(action, action)
+        if normalized_action in {"use", "hide", "off"}:
+            settings.learning.mode = normalized_action
+            settings.learning.enabled = normalized_action != "off"
             save_settings(settings)
+            label = {
+                "use": "enabled and visible",
+                "hide": "enabled but hidden from $ and /help",
+                "off": "disabled",
+            }[normalized_action]
             return CommandResult(
-                message=f"Automatic learned skills {'enabled' if enabled else 'disabled'}.",
+                message=f"Automatic learned skills {label}.",
                 refresh_runtime=True,
             )
-        if action not in {"show", "list"}:
-            return CommandResult(message="Usage: /learned-skills [show|on|off]")
+        if normalized_action not in {"show", "list"}:
+            return CommandResult(message="Usage: /learned-skills [show|use|hide|off]")
 
         root = get_default_learning_skills_dir()
         learned = context.engine.tool_metadata.get("recent_learned_skills")
+        effective_mode = settings.learning.effective_mode
+        enabled_label = "disabled" if effective_mode == "off" else "enabled"
         lines = [
-            f"Automatic learned skills: {'enabled' if settings.learning.enabled else 'disabled'}",
+            f"Automatic learned skills: {enabled_label} ({effective_mode})",
             f"Program skills directory: {root}",
         ]
         if isinstance(learned, list) and learned:
@@ -949,16 +998,15 @@ def create_default_command_registry(
     async def _login_handler(args: str, context: CommandContext) -> CommandResult:
         del context
         settings = load_settings()
-        manager = AuthManager(settings)
         profile_name, profile = settings.resolve_profile()
         provider = detect_provider(settings)
         api_key = args.strip()
         if not api_key:
-            masked = (
-                f"{settings.api_key[:6]}...{settings.api_key[-4:]}"
-                if settings.api_key
-                else "(not configured)"
-            )
+            try:
+                auth = settings.resolve_auth()
+                auth_line = f"configured via {auth.source}"
+            except Exception:
+                auth_line = "not configured"
             return CommandResult(
                 message=(
                     f"Auth status:\n"
@@ -968,7 +1016,7 @@ def create_default_command_registry(
                     f"- auth_status: {auth_status(settings)}\n"
                     f"- base_url: {settings.base_url or '(default)'}\n"
                     f"- model: {settings.model}\n"
-                    f"- api_key: {masked}\n"
+                    f"- credential_source: {auth_line}\n"
                     f"Usage: {'/login API_KEY EMPLOYEE_NO [COMPANY_CODE]' if profile.auth_source == 'pgpt_api_key' else '/login API_KEY'}"
                 )
             )
@@ -976,19 +1024,37 @@ def create_default_command_registry(
             values = _parse_pgpt_login_args(api_key)
             if not values.get("api_key") or not values.get("employee_no"):
                 return CommandResult(message="Usage: /login API_KEY EMPLOYEE_NO [COMPANY_CODE]")
-            manager.store_profile_credential(profile_name, "api_key", values["api_key"])
-            manager.store_profile_credential(profile_name, "employee_no", values["employee_no"])
-            manager.store_profile_credential(profile_name, "company_code", values.get("company_code") or "30")
-            return CommandResult(message="Stored P-GPT credentials in ~/.openharness/credentials.json")
-        manager.store_profile_credential(profile_name, "api_key", api_key)
-        return CommandResult(message="Stored API key in ~/.openharness/settings.json")
+            env_values = {
+                "PGPT_API_KEY": values["api_key"],
+                "PGPT_EMPLOYEE_NO": values["employee_no"],
+            }
+            if values.get("company_code") and values["company_code"] != "30":
+                env_values["PGPT_COMPANY_CODE"] = values["company_code"]
+            _set_process_env(env_values)
+            return CommandResult(
+                message=(
+                    "Loaded P-GPT credentials into this process environment. "
+                    "For permanent Windows user environment registration, run run_openharness_web.bat and choose setup when prompted."
+                )
+            )
+        env_var = _AUTH_ENV_BY_SOURCE.get(profile.auth_source)
+        if env_var is None:
+            return CommandResult(message=f"/login does not support auth source: {profile.auth_source}")
+        _set_process_env({env_var: api_key})
+        return CommandResult(message=f"Loaded API key into this process environment as {env_var}.")
 
     async def _logout_handler(_: str, context: CommandContext) -> CommandResult:
         del context
         settings = load_settings()
-        profile_name = settings.resolve_profile()[0]
+        profile_name, profile = settings.resolve_profile()
         AuthManager(settings).clear_profile_credential(profile_name)
-        return CommandResult(message="Cleared stored API key.")
+        env_var = _AUTH_ENV_BY_SOURCE.get(profile.auth_source)
+        if env_var:
+            os.environ.pop(env_var, None)
+        if profile.auth_source == "pgpt_api_key":
+            os.environ.pop("PGPT_EMPLOYEE_NO", None)
+            os.environ.pop("PGPT_COMPANY_CODE", None)
+        return CommandResult(message="Cleared stored API key and current process auth environment.")
 
     async def _feedback_handler(args: str, context: CommandContext) -> CommandResult:
         del context
@@ -1009,7 +1075,7 @@ def create_default_command_registry(
                 "2. Use /help to inspect commands.\n"
                 "3. Use /doctor to inspect runtime state.\n"
                 "4. Use /tasks for background work and /memory for project memory.\n"
-                "5. Use /login to store an API key if needed."
+                "5. Set provider environment variables before starting the app if needed."
             )
         )
 
@@ -2086,8 +2152,8 @@ def create_default_command_registry(
     registry.register(SlashCommand("files", "현재 작업공간의 파일을 나열합니다", _files_handler))
     registry.register(SlashCommand("init", "프로젝트 OpenHarness 파일을 초기화합니다", _init_handler))
     registry.register(SlashCommand("bridge", "브리지 헬퍼와 브리지 세션을 확인합니다", _bridge_handler))
-    registry.register(SlashCommand("login", "인증 상태를 보거나 API 키를 저장합니다", _login_handler))
-    registry.register(SlashCommand("logout", "저장된 API 키를 지웁니다", _logout_handler))
+    registry.register(SlashCommand("login", "인증 상태를 보거나 현재 세션 환경변수에 API 키를 싣습니다", _login_handler))
+    registry.register(SlashCommand("logout", "저장된 API 키와 현재 세션 인증 환경변수를 지웁니다", _logout_handler))
     registry.register(SlashCommand("feedback", "CLI 피드백을 로컬 로그에 저장합니다", _feedback_handler))
     registry.register(SlashCommand("onboarding", "빠른 시작 안내를 보여줍니다", _onboarding_handler))
     registry.register(SlashCommand("skills", "사용 가능한 스킬을 보거나 자세히 확인합니다", _skills_handler))

@@ -14,7 +14,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -71,6 +71,14 @@ class LearningSettings(BaseModel):
     """Automatic skill learning configuration."""
 
     enabled: bool = True
+    mode: Literal["use", "hide", "off"] = "hide"
+
+    @property
+    def effective_mode(self) -> Literal["use", "hide", "off"]:
+        """Return the effective learned-skill mode, honoring legacy enabled=false."""
+        if not self.enabled:
+            return "off"
+        return self.mode
 
 
 class SandboxNetworkSettings(BaseModel):
@@ -489,6 +497,7 @@ class Settings(BaseModel):
     voice_mode: bool = False
     fast_mode: bool = False
     effort: str = "medium"
+    shell: str = "auto"
     passes: int = 1
     verbose: bool = False
 
@@ -630,9 +639,7 @@ class Settings(BaseModel):
             return openai_key
 
         raise ValueError(
-            "No API key found. Set ANTHROPIC_API_KEY (or OPENAI_API_KEY for openai-format "
-            "providers) environment variable, or configure api_key in "
-            "~/.openharness/settings.json"
+            "No API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment."
         )
 
     def resolve_auth(self) -> ResolvedAuth:
@@ -721,6 +728,11 @@ class Settings(BaseModel):
                     source=f"env:{env_var}",
                     state="configured",
                 )
+
+        if auth_source == "pgpt_api_key":
+            raise ValueError(
+                "No credentials found for P-GPT. Set PGPT_API_KEY and PGPT_EMPLOYEE_NO environment variables first."
+            )
 
         stored = load_credential(storage_provider, "api_key")
         if stored:
@@ -834,25 +846,6 @@ def _apply_env_overrides(settings: Settings) -> Settings:
     if auto_compact_threshold_tokens:
         updates["auto_compact_threshold_tokens"] = int(auto_compact_threshold_tokens)
 
-    api_key = ""
-    if active_profile.auth_source == "anthropic_api_key":
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    elif active_profile.auth_source == "openai_api_key":
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-    elif active_profile.auth_source not in {
-        "codex_subscription",
-        "claude_subscription",
-        "copilot_oauth",
-        "dashscope_api_key",
-        "moonshot_api_key",
-        "gemini_api_key",
-        "minimax_api_key",
-        "pgpt_api_key",
-    }:
-        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if api_key:
-        updates["api_key"] = api_key
-
     api_format = os.environ.get("OPENHARNESS_API_FORMAT")
     if api_format:
         updates["api_format"] = api_format
@@ -860,6 +853,10 @@ def _apply_env_overrides(settings: Settings) -> Settings:
     provider = os.environ.get("OPENHARNESS_PROVIDER")
     if provider:
         updates["provider"] = provider
+
+    shell = os.environ.get("OPENHARNESS_SHELL")
+    if shell:
+        updates["shell"] = shell
 
     sandbox_enabled = os.environ.get("OPENHARNESS_SANDBOX_ENABLED")
     sandbox_fail = os.environ.get("OPENHARNESS_SANDBOX_FAIL_IF_UNAVAILABLE")
@@ -939,9 +936,10 @@ def save_settings(settings: Settings, config_path: Path | None = None) -> None:
         config_path = get_config_file_path()
 
     settings = settings.sync_active_profile_from_flat_fields().materialize_active_profile()
+    settings = settings.model_copy(update={"api_key": ""})
     lock_path = config_path.with_suffix(config_path.suffix + ".lock")
     with exclusive_file_lock(lock_path):
         atomic_write_text(
             config_path,
-            settings.model_dump_json(indent=2) + "\n",
+            settings.model_dump_json(indent=2, exclude={"api_key"}) + "\n",
         )

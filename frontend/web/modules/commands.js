@@ -155,9 +155,71 @@ function closeSlashMenu() {
   state.slashMenuOpen = false;
   state.slashMenuIndex = 0;
   state.slashMenuMode = "command";
+  hideSlashTooltip();
   els.slashMenu.classList.add("hidden");
   els.slashMenu.classList.remove("cli-hint");
   els.slashMenu.textContent = "";
+}
+
+let slashTooltip = null;
+
+function ensureSlashTooltip() {
+  if (slashTooltip?.isConnected) {
+    return slashTooltip;
+  }
+  slashTooltip = document.createElement("div");
+  slashTooltip.id = "slashMenuTooltip";
+  slashTooltip.className = "slash-menu-tooltip hidden";
+  slashTooltip.setAttribute("role", "tooltip");
+  document.body.append(slashTooltip);
+  return slashTooltip;
+}
+
+function placeSlashTooltip(anchor) {
+  const tooltip = ensureSlashTooltip();
+  const margin = 10;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  tooltip.style.maxWidth = `${Math.max(220, Math.min(560, viewportWidth - margin * 2))}px`;
+  const anchorRect = anchor.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const descriptionOffset = anchor.classList.contains("no-badge") ? 156 : 204;
+  const preferredOffset = Math.min(descriptionOffset, Math.max(16, anchorRect.width - tooltipRect.width));
+  const left = Math.min(
+    Math.max(anchorRect.left + preferredOffset, margin),
+    Math.max(margin, viewportWidth - tooltipRect.width - margin),
+  );
+  let top = anchorRect.top - tooltipRect.height - 8;
+  if (top < margin) {
+    top = anchorRect.bottom + 8;
+  }
+  if (top + tooltipRect.height > viewportHeight - margin) {
+    top = Math.max(margin, viewportHeight - tooltipRect.height - margin);
+  }
+  tooltip.style.left = `${Math.round(left)}px`;
+  tooltip.style.top = `${Math.round(top)}px`;
+}
+
+function showSlashTooltip(text, anchor) {
+  const tooltipText = String(text || "").trim();
+  if (!tooltipText) {
+    return;
+  }
+  const tooltip = ensureSlashTooltip();
+  tooltip.textContent = tooltipText;
+  tooltip.style.visibility = "hidden";
+  tooltip.classList.remove("hidden");
+  tooltip.classList.add("visible");
+  placeSlashTooltip(anchor);
+  tooltip.style.visibility = "";
+}
+
+function hideSlashTooltip() {
+  if (!slashTooltip) {
+    return;
+  }
+  slashTooltip.classList.remove("visible");
+  slashTooltip.classList.add("hidden");
 }
 
 function formatForcedSkillName(name) {
@@ -221,12 +283,19 @@ function renderSlashMenu() {
     const badge = document.createElement("small");
     badge.textContent = command.kind === "mcp" ? "MCP" : command.kind === "plugin" ? "Plugin" : command.kind === "skill" ? "Skill" : command.kind === "cli" ? "CLI" : "";
     const description = document.createElement("span");
-    description.textContent =
+    const rawDescription =
       ["skill", "mcp", "plugin"].includes(command.kind)
         ? command.description
         : command.kind === "file"
           ? command.description
-        : commandDescription(command.name, command.description);
+          : commandDescription(command.name, command.description);
+    const descriptionText = String(rawDescription || "");
+    description.textContent = descriptionText;
+    item.dataset.tooltip = descriptionText;
+    item.setAttribute(
+      "aria-label",
+      [command.name, badge.textContent, descriptionText].filter(Boolean).join(" "),
+    );
     if (badge.textContent) {
       item.append(name, badge, description);
     } else {
@@ -241,6 +310,13 @@ function renderSlashMenu() {
       }
       selectSlashCommand(command);
     });
+    item.addEventListener("pointerenter", () => showSlashTooltip(descriptionText, item));
+    item.addEventListener("pointermove", () => showSlashTooltip(descriptionText, item));
+    item.addEventListener("pointerleave", hideSlashTooltip);
+    item.addEventListener("mouseover", () => showSlashTooltip(descriptionText, item));
+    item.addEventListener("mouseleave", hideSlashTooltip);
+    item.addEventListener("focus", () => showSlashTooltip(descriptionText, item));
+    item.addEventListener("blur", hideSlashTooltip);
     els.slashMenu.append(item);
   }
   els.slashMenu.classList.remove("hidden");

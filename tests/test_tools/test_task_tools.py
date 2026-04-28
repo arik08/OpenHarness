@@ -197,6 +197,17 @@ async def test_send_message_swarm_path_uses_subprocess_backend(
     assert agent_id_arg == "worker@default"
 
 
+def test_send_message_input_accepts_to_alias():
+    from openharness.tools.send_message_tool import SendMessageToolInput
+
+    args = SendMessageToolInput.model_validate(
+        {"to": "worker@default", "message": "ping"}
+    )
+
+    assert args.task_id == "worker@default"
+    assert args.message == "ping"
+
+
 @pytest.mark.asyncio
 async def test_agent_tool_creates_missing_team_when_team_argument_is_provided(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))

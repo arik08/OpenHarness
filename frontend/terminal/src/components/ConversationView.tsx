@@ -101,6 +101,8 @@ function MessageRow({
 	outputStyle: string;
 }): React.JSX.Element {
 	const isCodexStyle = outputStyle === 'codex';
+	const userKindLabel = messageKindLabel(item.kind);
+	const userKindColor = item.kind === 'queued' ? theme.colors.info : theme.colors.warning;
 
 	switch (item.role) {
 		case 'user':
@@ -109,6 +111,7 @@ function MessageRow({
 					<Box marginTop={0}>
 						<Text>
 							<Text dimColor>{'> '}</Text>
+							{userKindLabel ? <Text color={userKindColor} bold>{`[${userKindLabel}] `}</Text> : null}
 							<Text>{item.text}</Text>
 						</Text>
 					</Box>
@@ -118,6 +121,7 @@ function MessageRow({
 				<Box marginTop={1} marginBottom={0}>
 					<Text>
 						<Text color={theme.colors.secondary} bold>{theme.icons.user}</Text>
+						{userKindLabel ? <Text color={userKindColor} bold>{` ${userKindLabel} `}</Text> : null}
 						<Text>{item.text}</Text>
 					</Text>
 				</Box>
@@ -187,4 +191,14 @@ function MessageRow({
 				</Box>
 			);
 	}
+}
+
+function messageKindLabel(kind: TranscriptItem['kind']): string {
+	if (kind === 'steering') {
+		return '스티어링';
+	}
+	if (kind === 'queued') {
+		return '대기열';
+	}
+	return '';
 }

@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -23,14 +22,12 @@ def resolve_shell_command(
     *,
     platform_name: PlatformName | None = None,
     prefer_pty: bool = False,
+    shell: str | None = None,
 ) -> list[str]:
     """Return argv for the best available shell on the current platform."""
     resolved_platform = platform_name or get_platform()
     if resolved_platform == "windows":
-        cmd = shutil.which("cmd.exe")
-        if cmd:
-            return [cmd, "/d", "/s", "/c", _wrap_cmd_utf8(command)]
-        return ["cmd.exe", "/d", "/s", "/c", _wrap_cmd_utf8(command)]
+        return _resolve_windows_shell_command(command, shell=shell)
 
     bash = shutil.which("bash")
     if bash:
@@ -70,7 +67,7 @@ async def create_shell_subprocess(
 
         session = get_docker_sandbox()
         if session is not None and session.is_running:
-            argv = resolve_shell_command(command)
+            argv = resolve_shell_command(command, shell=resolved_settings.shell)
             return await session.exec_command(
                 argv,
                 cwd=cwd,
@@ -90,7 +87,11 @@ async def create_shell_subprocess(
         if resolved_platform == "windows"
         else None
     )
-    argv = direct_argv or resolve_shell_command(command, prefer_pty=prefer_pty)
+    argv = direct_argv or resolve_shell_command(
+        command,
+        prefer_pty=prefer_pty,
+        shell=resolved_settings.shell,
+    )
     argv, cleanup_path = wrap_command_for_sandbox(argv, settings=resolved_settings)
     subprocess_env = _subprocess_env(env, platform_name=resolved_platform)
 
@@ -122,9 +123,12 @@ def _resolve_windows_direct_command(command: str) -> list[str] | None:
     printf_argv = _translate_simple_printf_redirection(command)
     if printf_argv is not None:
         return printf_argv
+    printf_argv = _translate_simple_printf(command)
+    if printf_argv is not None:
+        return printf_argv
 
     try:
-        parts = [_strip_outer_quotes(part) for part in shlex.split(command, posix=False)]
+        parts = _split_windows_command(command)
     except ValueError:
         return None
     if parts and parts[0] == "&":
@@ -133,14 +137,105 @@ def _resolve_windows_direct_command(command: str) -> list[str] | None:
         return None
 
     executable = Path(parts[0].strip("\"'")).name.lower()
-    if executable not in {"python", "python.exe", "python3", "python3.exe"}:
+    if executable not in {"python", "python.exe", "python3", "python3.exe", "py", "py.exe"}:
         return None
 
-    return [*_resolve_windows_python_launcher(parts[0]), *parts[1:]]
+    launcher = _resolve_windows_python_launcher(parts[0])
+    remaining = parts[1:]
+    if executable in {"py", "py.exe"} and launcher == [sys.executable] and remaining[:1] == ["-3"]:
+        remaining = remaining[1:]
+    return [*launcher, *remaining]
 
 
 def _wrap_cmd_utf8(command: str) -> str:
     return f"chcp 65001>nul & {command}"
+
+
+def _normalize_shell_preference(value: str | None) -> str:
+    normalized = str(value or "auto").strip().lower().replace("_", "-")
+    if normalized in {"pwsh", "powershell", "powershell.exe", "power-shell"}:
+        return "powershell"
+    if normalized in {"gitbash", "git-bash", "bash"}:
+        return "git-bash"
+    if normalized in {"cmd", "cmd.exe", "command-prompt"}:
+        return "cmd"
+    return "auto"
+
+
+def _resolve_windows_shell_command(command: str, *, shell: str | None = None) -> list[str]:
+    preference = _normalize_shell_preference(shell)
+    if preference in {"auto", "powershell"}:
+        powershell = _resolve_windows_powershell()
+        if powershell:
+            return [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                _wrap_powershell_utf8(command),
+            ]
+        if preference == "powershell":
+            return [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                _wrap_powershell_utf8(command),
+            ]
+
+    if preference in {"auto", "git-bash"}:
+        git_bash = _resolve_git_bash()
+        if git_bash:
+            return [git_bash, "-lc", command]
+        if preference == "git-bash":
+            return ["bash.exe", "-lc", command]
+
+    cmd = shutil.which("cmd.exe") or "cmd.exe"
+    return [cmd, "/d", "/s", "/c", _wrap_cmd_utf8(command)]
+
+
+def _resolve_windows_powershell() -> str | None:
+    detected = shutil.which("pwsh.exe") or shutil.which("pwsh") or shutil.which("powershell.exe")
+    if detected:
+        return detected
+    system_root = os.environ.get("SystemRoot")
+    if not system_root:
+        return None
+    candidate = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    return str(candidate) if candidate.exists() else None
+
+
+def _resolve_git_bash() -> str | None:
+    candidates = [
+        shutil.which("git-bash.exe"),
+        shutil.which("bash.exe"),
+        os.environ.get("OPENHARNESS_GIT_BASH"),
+    ]
+    for root_env in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData"):
+        root = os.environ.get(root_env)
+        if root:
+            candidates.append(str(Path(root) / "Git" / "bin" / "bash.exe"))
+            candidates.append(str(Path(root) / "Programs" / "Git" / "bin" / "bash.exe"))
+    for candidate in candidates:
+        if candidate and _looks_like_git_bash(candidate):
+            return candidate
+    return None
+
+
+def _looks_like_git_bash(path: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    return normalized.endswith("/bash.exe") and "/git/" in normalized and Path(path).exists()
+
+
+def _wrap_powershell_utf8(command: str) -> str:
+    return (
+        "[Console]::InputEncoding = [Console]::OutputEncoding = "
+        "New-Object System.Text.UTF8Encoding $false; "
+        "$OutputEncoding = [Console]::OutputEncoding; "
+        f"{command}"
+    )
 
 
 def _subprocess_env(env: Mapping[str, str] | None, *, platform_name: PlatformName) -> dict[str, str] | None:
@@ -154,10 +249,54 @@ def _subprocess_env(env: Mapping[str, str] | None, *, platform_name: PlatformNam
     return merged
 
 
-def _strip_outer_quotes(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", "\""}:
-        return value[1:-1]
-    return value
+def _split_windows_command(command: str) -> list[str]:
+    """Split simple Windows command lines without corrupting Python arguments."""
+    parts: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    started = False
+    index = 0
+
+    while index < len(command):
+        char = command[index]
+        if char.isspace() and quote is None:
+            if started:
+                parts.append("".join(current))
+                current = []
+                started = False
+            index += 1
+            continue
+
+        started = True
+        if char == "\\" and quote != "'":
+            slash_start = index
+            while index < len(command) and command[index] == "\\":
+                index += 1
+            slash_count = index - slash_start
+            if index < len(command) and command[index] == '"':
+                current.extend("\\" * (slash_count // 2))
+                if slash_count % 2:
+                    current.append('"')
+                else:
+                    quote = None if quote == '"' else '"'
+                index += 1
+                continue
+            current.extend("\\" * slash_count)
+            continue
+
+        if char in {"'", '"'} and (quote is None or quote == char):
+            quote = None if quote == char else char
+            index += 1
+            continue
+
+        current.append(char)
+        index += 1
+
+    if quote is not None:
+        raise ValueError("No closing quotation")
+    if started:
+        parts.append("".join(current))
+    return parts
 
 
 def _translate_simple_printf_redirection(command: str) -> list[str] | None:
@@ -176,6 +315,18 @@ def _translate_simple_printf_redirection(command: str) -> list[str] | None:
         "Path(__import__('sys').argv[1]).write_text(__import__('sys').argv[2], encoding='utf-8')"
     )
     return [sys.executable, "-c", script, target, match.group("text")]
+
+
+def _translate_simple_printf(command: str) -> list[str] | None:
+    match = re.fullmatch(
+        r"""\s*printf\s+(?P<quote>['"])(?P<text>.*?)(?P=quote)\s*""",
+        command,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        return None
+    script = "import sys; sys.stdout.write(sys.argv[1])"
+    return [sys.executable, "-c", script, match.group("text")]
 
 
 def _translate_python_stdin_heredoc(command: str) -> list[str] | None:

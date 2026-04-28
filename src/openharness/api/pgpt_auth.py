@@ -6,8 +6,6 @@ import base64
 import json
 import os
 
-from openharness.auth.storage import load_credential
-
 
 def resolve_pgpt_employee_no() -> str | None:
     """Resolve the employee/system code used in P-GPT bearer tokens."""
@@ -15,8 +13,6 @@ def resolve_pgpt_employee_no() -> str | None:
         os.environ.get("PGPT_EMPLOYEE_NO")
         or os.environ.get("PGPT_SYSTEM_CODE")
         or os.environ.get("POSCO_EMP_NO")
-        or load_credential("pgpt", "employee_no")
-        or load_credential("pgpt", "system_code")
     )
 
 
@@ -25,7 +21,6 @@ def resolve_pgpt_company_code() -> str:
     return (
         os.environ.get("PGPT_COMPANY_CODE")
         or os.environ.get("POSCO_COMP_NO")
-        or load_credential("pgpt", "company_code")
         or "30"
     )
 

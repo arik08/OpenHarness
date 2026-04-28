@@ -26,12 +26,13 @@
   --inverse-ink: #fffaf1;
   --panel-glass: rgba(255, 254, 250, 0.86);
   --panel-raised: #fffdf8;
+  --chat-bg: #fff;
   --new-chat: #ebe6dc;
   --new-chat-hover: #dfd7ca;
   --composer-bg: rgba(255, 255, 252, 0.9);
   --composer-border: rgba(213, 207, 197, 0.92);
   --composer-shadow: 0 16px 42px rgba(53, 45, 35, 0.14), 0 3px 10px rgba(53, 45, 35, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  --composer-fade: rgba(255, 254, 250, 1);
+  --composer-fade: rgba(255, 255, 255, 1);
   --danger: #c24b35;
   --danger-soft: #f8dddd;
   --link: #9f5438;
@@ -56,6 +57,10 @@
   --stop-button-bg: var(--danger-soft);
   --stop-button-ink: var(--danger);
   --stop-button-border: rgba(194, 75, 53, 0.28);
+  --composer-stack-height: 64px;
+  --chat-panel-left: 0px;
+  --chat-panel-width: 100vw;
+  --action-items-floating-reserve: min(34dvh, 300px);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -87,12 +92,13 @@
   --inverse-ink: #f6fbff;
   --panel-glass: rgba(251, 253, 255, 0.88);
   --panel-raised: #ffffff;
+  --chat-bg: #fff;
   --new-chat: #dfeaf7;
   --new-chat-hover: #cbdced;
   --composer-bg: rgba(251, 253, 255, 0.92);
   --composer-border: rgba(177, 199, 220, 0.9);
   --composer-shadow: 0 18px 46px rgba(24, 60, 100, 0.14), 0 3px 10px rgba(24, 60, 100, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  --composer-fade: rgba(251, 253, 255, 1);
+  --composer-fade: rgba(255, 255, 255, 1);
   --danger: #b94747;
   --danger-soft: #f7dede;
   --link: #0065a8;
@@ -147,6 +153,7 @@
   --inverse-ink: #07111d;
   --panel-glass: rgba(10, 22, 36, 0.9);
   --panel-raised: #0f1d2d;
+  --chat-bg: #0a1624;
   --new-chat: #12263b;
   --new-chat-hover: #1a3652;
   --composer-bg: rgba(13, 28, 43, 0.94);
@@ -207,6 +214,7 @@
   --inverse-ink: #000500;
   --panel-glass: rgba(0, 5, 0, 0.94);
   --panel-raised: #010a01;
+  --chat-bg: #000500;
   --new-chat: #041904;
   --new-chat-hover: #082b08;
   --composer-bg: rgba(1, 9, 1, 0.98);
@@ -267,6 +275,7 @@
   --inverse-ink: #070100;
   --panel-glass: rgba(7, 1, 0, 0.95);
   --panel-raised: #0d0200;
+  --chat-bg: #070100;
   --new-chat: #210700;
   --new-chat-hover: #3a0f00;
   --composer-bg: rgba(12, 2, 0, 0.98);
@@ -662,15 +671,15 @@ a:focus-visible {
 }
 
 .sidebar-toggle::after {
-  top: 50%;
-  right: auto;
-  left: calc(100% + 8px);
-  transform: translate(-3px, -50%);
+  top: calc(100% + 8px);
+  right: 0;
+  left: auto;
+  transform: translateY(-3px);
 }
 
 .sidebar-toggle:hover::after,
 .sidebar-toggle:focus-visible::after {
-  transform: translate(0, -50%);
+  transform: translateY(0);
 }
 
 .app-shell.sidebar-collapsed .sidebar {
@@ -717,6 +726,18 @@ a:focus-visible {
 .app-shell.sidebar-collapsed .sidebar-toggle svg {
   width: 12px;
   height: 12px;
+}
+
+.app-shell.sidebar-collapsed .sidebar-toggle::after {
+  top: 50%;
+  right: auto;
+  left: calc(100% + 8px);
+  transform: translate(-3px, -50%);
+}
+
+.app-shell.sidebar-collapsed .sidebar-toggle:hover::after,
+.app-shell.sidebar-collapsed .sidebar-toggle:focus-visible::after {
+  transform: translate(0, -50%);
 }
 
 .command-key {
@@ -1297,24 +1318,27 @@ a:focus-visible {
 }
 
 .runtime-picker-layer.align-bottom {
-  align-items: flex-end;
+  align-items: flex-start;
 }
 
 .runtime-picker-panel {
   width: 214px;
-  max-height: min(360px, calc(100vh - 118px));
+  max-height: var(--runtime-picker-panel-max-height, min(360px, calc(100vh - 118px)));
   overflow: hidden;
   background: var(--panel-raised);
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   box-shadow: var(--shadow);
-  animation: runtimePickerRise 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .runtime-picker-model-panel {
   width: min(236px, calc(100vw - 250px));
   min-width: 196px;
-  animation: runtimePickerSlideRight 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.runtime-picker-effort-panel {
+  width: clamp(156px, calc((100vw - 48px) / 3), 182px);
+  min-width: 156px;
 }
 
 .runtime-picker-header {
@@ -1348,10 +1372,15 @@ a:focus-visible {
 .runtime-picker-list {
   display: grid;
   gap: 2px;
-  max-height: min(312px, calc(100vh - 168px));
+  max-height: calc(var(--runtime-picker-panel-max-height, 360px) - 48px);
   overflow-y: auto;
   overflow-x: hidden;
   padding: 4px;
+}
+
+.runtime-picker-provider-panel .runtime-picker-list {
+  max-height: none;
+  overflow-y: visible;
 }
 
 .runtime-picker-empty {
@@ -1463,7 +1492,7 @@ a:focus-visible {
   grid-template-rows: 58px minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
-  background: var(--panel);
+  background: var(--chat-bg, var(--panel));
 }
 
 .artifact-panel {
@@ -1843,7 +1872,7 @@ a:focus-visible {
   gap: 16px;
   min-width: 0;
   padding: 4px clamp(18px, 2.5vw, 34px) 0;
-  background: var(--panel-glass);
+  background: var(--chat-bg, var(--panel));
   backdrop-filter: blur(14px);
   z-index: 2;
 }
@@ -2022,13 +2051,13 @@ a:focus-visible {
   gap: 26px;
   min-height: 0;
   overflow-y: auto;
-  padding: 34px 0 96px;
+  padding: 34px 0 calc(var(--composer-stack-height, 64px) + 48px);
   scroll-behavior: auto;
   scrollbar-gutter: stable;
 }
 
 .messages.streaming-follow {
-  padding-bottom: calc(96px + var(--stream-follow-lead, 60px));
+  padding-bottom: calc(var(--composer-stack-height, 64px) + 48px + var(--stream-follow-lead, 60px));
 }
 
 .welcome {
@@ -2065,6 +2094,13 @@ a:focus-visible {
 .message.user {
   display: flex;
   justify-content: flex-end;
+}
+
+.message.user.message-kind-steering,
+.message.user.message-kind-queued {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
 }
 
 .bubble {
@@ -2235,6 +2271,25 @@ a:focus-visible {
   border-radius: 22px;
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.message-kind-label {
+  margin-right: 10px;
+  width: max-content;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--accent) 78%, var(--ink));
+  font-size: 11px;
+  font-weight: 780;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.message-kind-queued .message-kind-label {
+  border-color: color-mix(in srgb, var(--success) 32%, transparent);
+  color: color-mix(in srgb, var(--success) 76%, var(--ink));
 }
 
 .message.user .bubble:has(.message-attachments) {
@@ -2670,6 +2725,215 @@ a:focus-visible {
   margin-bottom: 2px;
 }
 
+.todo-message {
+  margin-top: 6px;
+  margin-bottom: 2px;
+}
+
+.todo-card {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.todo-checklist-dock {
+  display: flex;
+  justify-content: center;
+  width: min(804px, 100%);
+  margin: 0 auto 7px;
+  pointer-events: auto;
+}
+
+.todo-checklist-dock.hidden {
+  display: none;
+}
+
+.composer-todo-card {
+  width: fit-content;
+  min-width: min(260px, 100%);
+  max-width: 100%;
+  max-height: min(28dvh, 230px);
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 9px 13px 10px;
+  background: var(--panel-glass);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px) saturate(1.02);
+}
+
+.workflow-todo-slot {
+  margin: 7px 0 4px 2px;
+}
+
+.workflow-todo-card {
+  width: min(520px, 100%);
+  min-width: 0;
+  max-height: min(24dvh, 190px);
+  padding: 7px 10px 8px;
+  background: color-mix(in srgb, var(--panel-raised) 76%, transparent);
+  border-color: var(--line);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.todo-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.todo-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.todo-card-header strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.todo-card-count {
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.todo-collapse-toggle,
+.todo-dismiss-button {
+  display: inline-grid;
+  place-items: center;
+  position: relative;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.todo-dismiss-button::before,
+.todo-dismiss-button::after {
+  content: "";
+  position: absolute;
+  width: 8px;
+  height: 1.6px;
+  background: currentColor;
+  border-radius: 999px;
+}
+
+.todo-dismiss-button::before {
+  transform: rotate(45deg);
+}
+
+.todo-dismiss-button::after {
+  transform: rotate(-45deg);
+}
+
+.todo-collapse-toggle::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1.7px solid currentColor;
+  border-bottom: 1.7px solid currentColor;
+  transform: translateY(-1px) rotate(45deg);
+  transition: transform 0.16s ease;
+}
+
+.todo-collapse-toggle:hover,
+.todo-collapse-toggle:focus-visible,
+.todo-dismiss-button:hover,
+.todo-dismiss-button:focus-visible {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--panel-strong) 68%, transparent);
+  border-color: var(--line);
+  outline: none;
+}
+
+.composer-todo-card.collapsed .todo-collapse-toggle::before {
+  transform: translateY(1px) rotate(-135deg);
+}
+
+.todo-card-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.todo-card-list[hidden] {
+  display: none;
+}
+
+.todo-card-list li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.todo-card-list input {
+  grid-column: 1;
+  grid-row: 1;
+  width: 14px;
+  height: 14px;
+  margin: 2px 0 0;
+  accent-color: var(--success);
+}
+
+.todo-card-list .todo-label {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  color: var(--ink);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.todo-card-list li.done .todo-label {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.todo-spinner {
+  display: none;
+  grid-column: 1;
+  grid-row: 1;
+  width: 12px;
+  height: 12px;
+  margin-top: 3px;
+  border: 2px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: todoSpinner 0.82s linear infinite;
+}
+
+.todo-card-list li.running .todo-spinner {
+  display: inline-block;
+}
+
+.todo-card-list li.running input {
+  opacity: 0;
+}
+
+.todo-card-list li.running .todo-label {
+  color: var(--ink);
+  font-weight: 680;
+  text-decoration: none;
+}
+
 .workflow-card {
   width: 100%;
   color: var(--muted);
@@ -2744,6 +3008,10 @@ a:focus-visible {
   gap: 8px;
 }
 
+.workflow-step[data-workflow-role="purpose"] {
+  margin-top: 2px;
+}
+
 .workflow-step.child::before {
   content: "";
   position: absolute;
@@ -2796,6 +3064,11 @@ a:focus-visible {
   opacity: 0.9;
 }
 
+.workflow-step[data-workflow-role="purpose"] .workflow-dot {
+  width: 6px;
+  height: 6px;
+}
+
 .workflow-copy {
   display: flex;
   align-items: baseline;
@@ -2815,6 +3088,10 @@ a:focus-visible {
   color: color-mix(in srgb, var(--ink) 82%, var(--muted) 18%);
   font-size: 12px;
   font-weight: 660;
+}
+
+.workflow-step[data-workflow-role="purpose"] .workflow-copy strong {
+  font-weight: 700;
 }
 
 .workflow-copy small {
@@ -2891,6 +3168,36 @@ a:focus-visible {
   font-size: 12px;
   line-height: 1.48;
   white-space: pre-wrap;
+}
+
+.workflow-output-body.diff {
+  display: grid;
+  gap: 2px;
+  white-space: normal;
+}
+
+.workflow-diff-line {
+  display: block;
+  min-width: max-content;
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--muted) 84%, var(--ink));
+  white-space: pre-wrap;
+}
+
+.workflow-diff-line.added {
+  background: color-mix(in srgb, var(--success-soft) 64%, transparent);
+  color: color-mix(in srgb, var(--success) 82%, var(--ink));
+}
+
+.workflow-diff-line.removed {
+  background: color-mix(in srgb, var(--danger-soft) 66%, transparent);
+  color: color-mix(in srgb, var(--danger) 86%, var(--ink));
+}
+
+.workflow-diff-line.hunk {
+  color: color-mix(in srgb, var(--accent) 70%, var(--muted));
+  font-weight: 700;
 }
 
 .command-card {
@@ -3154,6 +3461,32 @@ a:focus-visible {
   padding: 0;
 }
 
+.markdown-body .html-render-preview {
+  overflow: hidden;
+  margin: -4px 0 13px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.html-render-frame {
+  display: block;
+  width: 100%;
+  height: 320px;
+  min-height: 220px;
+  background: #fff;
+  border: 0;
+  color: #111;
+  color-scheme: light;
+}
+
+.html-render-error {
+  padding: 12px 13px;
+  color: #6d685f;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .code-copy {
   position: absolute;
   top: 10px;
@@ -3303,7 +3636,8 @@ a:focus-visible {
 
 .inline-question-header {
   display: flex;
-  align-items: baseline;
+  flex-wrap: wrap;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
@@ -3322,12 +3656,14 @@ a:focus-visible {
 .inline-question-label-copy {
   display: block;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: pre-wrap;
 }
 
 .inline-question-header small {
+  flex: 0 0 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
@@ -3359,7 +3695,7 @@ a:focus-visible {
 .inline-question-choice,
 .inline-question-submit {
   min-height: 31px;
-  padding: 0 9px;
+  padding: 7px 9px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--panel);
@@ -3374,7 +3710,7 @@ a:focus-visible {
   position: relative;
   grid-template-columns: 24px minmax(0, 1fr);
   column-gap: 0;
-  align-items: center;
+  align-items: start;
   width: 100%;
   text-align: left;
 }
@@ -3387,9 +3723,23 @@ a:focus-visible {
 
 .inline-question-choice-copy {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.inline-question-choice-description {
+  display: block;
+  grid-column: 2;
+  min-width: 0;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 560;
+  line-height: 1.35;
 }
 
 .inline-question-header strong[data-full-text]::after,
@@ -3961,6 +4311,37 @@ a:focus-visible {
   line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.slash-menu-tooltip {
+  position: fixed;
+  z-index: 80;
+  padding: 9px 11px;
+  background: var(--tooltip-bg);
+  border: 1px solid color-mix(in srgb, var(--tooltip-ink) 12%, transparent);
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(25, 22, 18, 0.18);
+  color: var(--tooltip-ink);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+  opacity: 0;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  white-space: normal;
+  transition:
+    opacity 0.1s ease,
+    transform 0.1s ease;
+  transform: translateY(3px);
+}
+
+.slash-menu-tooltip.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.slash-menu-tooltip.hidden {
+  display: none;
 }
 
 .composer .slash-menu-item:hover,
@@ -4616,6 +4997,18 @@ body:has(.app-shell.sidebar-collapsed) .modal-backdrop[data-modal-kind="image-pr
   margin-top: 22px;
 }
 
+.scope-segmented-control.learned-skill-mode-list {
+  grid-template-columns: 1fr;
+}
+
+.scope-segmented-control.workspace-scope-mode-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.scope-segmented-control.shell-mode-list {
+  grid-template-columns: 1fr;
+}
+
 .scope-mode-option {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
@@ -4636,6 +5029,55 @@ body:has(.app-shell.sidebar-collapsed) .modal-backdrop[data-modal-kind="image-pr
     background 0.14s ease,
     box-shadow 0.14s ease,
     transform 0.14s ease;
+}
+
+.learned-skill-mode-list .scope-mode-option {
+  min-height: 54px;
+  padding: 11px 14px;
+  gap: 10px;
+}
+
+.workspace-scope-mode-list .scope-mode-option {
+  min-height: 54px;
+  padding: 11px 14px;
+  gap: 10px;
+}
+
+.shell-mode-list .scope-mode-option {
+  min-height: 56px;
+  padding: 12px 14px;
+  gap: 10px;
+}
+
+.workspace-scope-mode-list .scope-mode-copy,
+.learned-skill-mode-list .scope-mode-copy,
+.shell-mode-list .scope-mode-copy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 7px;
+  align-items: baseline;
+}
+
+.workspace-scope-mode-list .scope-mode-option strong,
+.learned-skill-mode-list .scope-mode-option strong,
+.shell-mode-list .scope-mode-option strong {
+  flex: 0 0 auto;
+  font-size: 13px;
+}
+
+.workspace-scope-mode-list .scope-mode-option small,
+.learned-skill-mode-list .scope-mode-option small,
+.shell-mode-list .scope-mode-option small {
+  flex: 1 1 260px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.workspace-scope-mode-list .scope-mode-marker,
+.learned-skill-mode-list .scope-mode-marker,
+.shell-mode-list .scope-mode-marker {
+  width: 12px;
+  height: 12px;
 }
 
 .scope-mode-option:hover {
@@ -4687,6 +5129,10 @@ body:has(.app-shell.sidebar-collapsed) .modal-backdrop[data-modal-kind="image-pr
 }
 
 @media (max-width: 640px) {
+  .modal-card .modal-close {
+    right: 0;
+  }
+
   .scope-segmented-control {
     grid-template-columns: 1fr;
   }
@@ -4866,6 +5312,12 @@ body:has(.app-shell.sidebar-collapsed) .modal-backdrop[data-modal-kind="image-pr
   }
 }
 
+@keyframes todoSpinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @keyframes historyBusySpin {
   to {
     transform: rotate(360deg);
@@ -4926,6 +5378,10 @@ body:has(.app-shell.sidebar-collapsed) .modal-backdrop[data-modal-kind="image-pr
   .welcome,
   .composer-box {
     width: min(100% - 24px, 760px);
+  }
+
+  .todo-checklist-dock {
+    width: min(760px, calc(100% - 24px));
   }
 
   .message.user .bubble {

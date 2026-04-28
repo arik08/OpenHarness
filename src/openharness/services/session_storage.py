@@ -30,6 +30,7 @@ _PERSISTED_TOOL_METADATA_KEYS = (
     "compact_checkpoints",
     "compact_last",
     "session_title",
+    "session_title_user_edited",
     "workflow_duration_seconds",
 )
 
@@ -286,7 +287,12 @@ def save_session_snapshot(
         if msg.role == "user":
             first_user_summary = _message_summary(msg)
             break
-    summary = display_summary_for_first_user(metadata_title, first_user_summary) if metadata_title else ""
+    user_edited_title = bool(
+        isinstance(tool_metadata, dict) and tool_metadata.get("session_title_user_edited")
+    )
+    summary = metadata_title if user_edited_title else (
+        display_summary_for_first_user(metadata_title, first_user_summary) if metadata_title else ""
+    )
     if not summary and first_user_summary:
         summary = first_user_summary[:80]
 

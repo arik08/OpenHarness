@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -107,6 +108,30 @@ async def test_learned_skills_command_toggles_setting(tmp_path: Path, monkeypatc
     assert load_settings().learning.enabled is False
 
 
+def test_learned_skills_default_mode_is_hide(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+
+    settings = load_settings()
+
+    assert settings.learning.enabled is True
+    assert settings.learning.mode == "hide"
+
+
+@pytest.mark.asyncio
+async def test_learned_skills_command_sets_hide_mode(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    registry = create_default_command_registry()
+    command, args = registry.lookup("/learned-skills hide")
+    assert command is not None
+
+    result = await command.handler(args, CommandContext(engine=_make_engine(tmp_path), cwd=str(tmp_path)))
+
+    assert "hidden from $ and /help" in result.message
+    settings = load_settings()
+    assert settings.learning.enabled is True
+    assert settings.learning.mode == "hide"
+
+
 @pytest.mark.asyncio
 async def test_learned_skills_command_shows_recent_metadata(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
@@ -127,6 +152,44 @@ async def test_learned_skills_command_shows_recent_metadata(tmp_path: Path, monk
 
     assert "Automatic learned skills: enabled" in result.message
     assert "learned-python-pytest" in result.message
+
+
+@pytest.mark.asyncio
+async def test_help_hides_learned_skills_in_hide_mode(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    save_settings(Settings(learning={"enabled": True, "mode": "hide"}))
+    skills_root = tmp_path / "skills"
+    learned_dir = skills_root / "learned-demo"
+    learned_dir.mkdir(parents=True)
+    (learned_dir / "SKILL.md").write_text(
+        "---\nname: learned-demo\n"
+        "description: Automatically learned test skill\n---\n\n"
+        "# Learned Demo\nUse the verified fix.\n",
+        encoding="utf-8",
+    )
+    normal_dir = skills_root / "normal-demo"
+    normal_dir.mkdir(parents=True)
+    (normal_dir / "SKILL.md").write_text(
+        "---\nname: normal-demo\n"
+        "description: Normal test skill\n---\n\n"
+        "# Normal Demo\nUse this normally.\n",
+        encoding="utf-8",
+    )
+    registry = create_default_command_registry()
+    command, args = registry.lookup("/help")
+    assert command is not None
+
+    result = await command.handler(
+        args,
+        CommandContext(
+            engine=_make_engine(tmp_path),
+            cwd=str(tmp_path),
+            extra_skill_dirs=[skills_root],
+        ),
+    )
+
+    assert "normal-demo" in result.message
+    assert "learned-demo" not in result.message
 
 
 @pytest.mark.asyncio
@@ -680,13 +743,17 @@ async def test_version_context_and_share_commands(tmp_path: Path, monkeypatch):
 async def test_auth_feedback_and_project_context_commands(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    save_settings(Settings(active_profile="claude-api"))
     registry = create_default_command_registry()
     context = _make_context(tmp_path)
 
     login_command, login_args = registry.lookup("/login sk-test-123456")
     login_result = await login_command.handler(login_args, context)
-    assert "Stored API key" in login_result.message
-    assert load_settings().api_key == "sk-test-123456"
+    assert "Loaded API key into this process environment" in login_result.message
+    assert load_settings().api_key == ""
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-test-123456"
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     issue_command, issue_args = registry.lookup("/issue set Fix CI :: The CI flakes on task retry")
     issue_result = await issue_command.handler(issue_args, context)
@@ -710,9 +777,11 @@ async def test_auth_feedback_and_project_context_commands(tmp_path: Path, monkey
 
 
 @pytest.mark.asyncio
-async def test_login_stores_pgpt_openai_compatible_identity(tmp_path: Path, monkeypatch):
+async def test_login_loads_pgpt_openai_compatible_identity_into_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("PGPT_API_KEY", raising=False)
+    monkeypatch.delenv("PGPT_EMPLOYEE_NO", raising=False)
     from openharness.auth.storage import load_credential
     from openharness.config import save_settings
     from openharness.config.settings import Settings
@@ -724,10 +793,14 @@ async def test_login_stores_pgpt_openai_compatible_identity(tmp_path: Path, monk
     login_command, login_args = registry.lookup("/login pgpt-key E12345 30")
     login_result = await login_command.handler(login_args, context)
 
-    assert "Stored P-GPT credentials" in login_result.message
-    assert load_credential("pgpt", "api_key") == "pgpt-key"
-    assert load_credential("pgpt", "employee_no") == "E12345"
-    assert load_credential("pgpt", "company_code") == "30"
+    assert "Loaded P-GPT credentials into this process environment" in login_result.message
+    assert os.environ["PGPT_API_KEY"] == "pgpt-key"
+    assert os.environ["PGPT_EMPLOYEE_NO"] == "E12345"
+    monkeypatch.delenv("PGPT_API_KEY", raising=False)
+    monkeypatch.delenv("PGPT_EMPLOYEE_NO", raising=False)
+    assert load_credential("pgpt", "api_key") is None
+    assert load_credential("pgpt", "employee_no") is None
+    assert load_credential("pgpt", "company_code") is None
 
 
 @pytest.mark.asyncio
@@ -1001,3 +1074,4 @@ def test_help_and_list_do_not_duplicate_aliases():
     help_text = reg.help_text()
     assert help_text.count("/exit ") == 1
     assert "/quit" not in help_text
+    assert "Ctrl+Enter" in help_text

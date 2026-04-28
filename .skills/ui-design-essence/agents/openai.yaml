@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI Design Essence"
+  short_description: "Focused UI direction and tokens"
+  default_prompt: "Use UI Design Essence to design or improve this interface with a clear direction, token system, hierarchy, restrained density, and one signature detail."

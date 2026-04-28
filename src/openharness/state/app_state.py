@@ -14,6 +14,8 @@ class AppState:
     theme: str
     cwd: str = "."
     provider: str = "unknown"
+    active_profile: str = ""
+    provider_label: str = ""
     auth_status: str = "missing"
     base_url: str = ""
     vim_enabled: bool = False

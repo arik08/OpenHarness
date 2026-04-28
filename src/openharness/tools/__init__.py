@@ -20,6 +20,7 @@ from openharness.tools.file_read_tool import FileReadTool
 from openharness.tools.file_write_tool import FileWriteTool
 from openharness.tools.glob_tool import GlobTool
 from openharness.tools.grep_tool import GrepTool
+from openharness.tools.image_generation_tool import ImageGenerationTool
 from openharness.tools.list_mcp_resources_tool import ListMcpResourcesTool
 from openharness.tools.lsp_tool import LspTool
 from openharness.tools.mcp_auth_tool import McpAuthTool
@@ -59,6 +60,7 @@ def create_default_tool_registry(mcp_manager=None) -> ToolRegistry:
         McpAuthTool(),
         GlobTool(),
         GrepTool(),
+        ImageGenerationTool(),
         SkillTool(),
         ToolSearchTool(),
         WebFetchTool(),

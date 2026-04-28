@@ -50,7 +50,8 @@ log = logging.getLogger(__name__)
 
 
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
-AskUserPrompt = Callable[[str], Awaitable[str]]
+AskUserPrompt = Callable[..., Awaitable[str]]
+SteeringProvider = Callable[[], Awaitable[list[str]]]
 
 MAX_TRACKED_READ_FILES = 6
 MAX_TRACKED_SKILLS = 8
@@ -121,10 +122,38 @@ class QueryContext:
     auto_compact_threshold_tokens: int | None = None
     permission_prompt: PermissionPrompt | None = None
     ask_user_prompt: AskUserPrompt | None = None
+    steering_provider: SteeringProvider | None = None
     max_turns: int | None = 200
     hook_executor: HookExecutor | None = None
     tool_metadata: dict[str, object] | None = None
     auto_skill_learning_enabled: bool = True
+
+
+def _format_steering_prompt(text: str) -> str:
+    return (
+        "The user sent this steering update while you were already working. "
+        "Treat it as the latest instruction, adjust course if it conflicts with earlier work, "
+        "and avoid continuing work that the user has redirected.\n"
+        "User steering update:\n"
+        f"{text.strip()}"
+    )
+
+
+async def _drain_steering_messages(
+    context: QueryContext,
+    messages: list[ConversationMessage],
+) -> int:
+    if context.steering_provider is None:
+        return 0
+    updates = [
+        update.strip()
+        for update in await context.steering_provider()
+        if update and update.strip()
+    ]
+    for update in updates:
+        remember_user_goal(context.tool_metadata, update)
+        messages.append(ConversationMessage.from_user_text(_format_steering_prompt(update)))
+    return len(updates)
 
 
 def _append_capped_unique(bucket: list[Any], value: Any, *, limit: int) -> None:
@@ -556,6 +585,11 @@ async def run_query(
         async for event, usage in _stream_compaction(trigger="auto"):
             yield event, usage
         messages, was_compacted = last_compaction_result
+        steering_count = await _drain_steering_messages(context, messages)
+        if steering_count:
+            yield StatusEvent(
+                message=f"스티어링 지시 {steering_count}개를 반영합니다."
+            ), None
         # ---------------------------------------------------------------
 
         final_message: ConversationMessage | None = None
@@ -635,6 +669,12 @@ async def run_query(
             messages.append(coordinator_context_message)
 
         if not final_message.tool_uses:
+            steering_count = await _drain_steering_messages(context, messages)
+            if steering_count:
+                yield StatusEvent(
+                    message=f"스티어링 지시 {steering_count}개를 반영합니다."
+                ), None
+                continue
             if context.hook_executor is not None:
                 await context.hook_executor.execute(
                     HookEvent.STOP,
@@ -701,6 +741,11 @@ async def run_query(
                 ), None
 
         messages.append(ConversationMessage(role="user", content=tool_results))
+        steering_count = await _drain_steering_messages(context, messages)
+        if steering_count:
+            yield StatusEvent(
+                message=f"스티어링 지시 {steering_count}개를 반영합니다."
+            ), None
 
     if context.max_turns is not None:
         raise MaxTurnsExceeded(context.max_turns)

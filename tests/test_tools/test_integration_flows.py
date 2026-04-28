@@ -222,6 +222,38 @@ async def test_ask_user_question_flow_across_registry(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_ask_user_question_passes_structured_choices(tmp_path: Path):
+    registry = create_default_tool_registry()
+
+    async def _answer(question: str, choices: list[dict[str, str]]) -> str:
+        assert question == "Which color?"
+        assert choices == [
+            {"value": "green", "label": "Green", "description": "Use green"},
+            {"value": "blue", "label": "Blue"},
+        ]
+        return choices[0]["value"]
+
+    context = ToolExecutionContext(
+        cwd=tmp_path,
+        metadata={"tool_registry": registry, "ask_user_prompt": _answer},
+    )
+    ask_user = registry.get("ask_user_question")
+
+    answer_result = await ask_user.execute(
+        ask_user.input_model(
+            question="Which color?",
+            choices=[
+                {"value": "green", "label": "Green", "description": "Use green"},
+                {"value": "blue", "label": "Blue"},
+            ],
+        ),
+        context,
+    )
+
+    assert answer_result.output == "green"
+
+
+@pytest.mark.asyncio
 async def test_notebook_and_cron_flow_across_registry(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
     registry = create_default_tool_registry()

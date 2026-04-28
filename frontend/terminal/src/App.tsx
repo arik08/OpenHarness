@@ -271,7 +271,7 @@ function AppInner({config}: {config: FrontendConfig}): React.JSX.Element {
 				setModalInput('');
 				return;
 			}
-			if (!session.modal && !session.busy && input.trim()) {
+			if (!session.modal && input.trim()) {
 				onSubmit(input);
 				return;
 			}
@@ -303,11 +303,6 @@ function AppInner({config}: {config: FrontendConfig}): React.JSX.Element {
 		// --- Question modal (also appears while busy) ---
 		if (session.modal?.kind === 'question') {
 			return; // Let TextInput in ModalHost handle input
-		}
-
-		// --- Ignore input while busy ---
-		if (session.busy) {
-			return;
 		}
 
 		// --- Command / skill picker ---
@@ -405,7 +400,14 @@ function AppInner({config}: {config: FrontendConfig}): React.JSX.Element {
 			setModalInput('');
 			return;
 		}
-		if (!value.trim() || session.busy || !session.ready) {
+		if (!value.trim() || !session.ready) {
+			return;
+		}
+		if (session.busy) {
+			session.sendRequest({type: 'steer_line', line: value});
+			setHistory((items) => [...items, value]);
+			setHistoryIndex(-1);
+			setInput('');
 			return;
 		}
 		// Check if it's an interactive command
@@ -420,6 +422,20 @@ function AppInner({config}: {config: FrontendConfig}): React.JSX.Element {
 		setHistoryIndex(-1);
 		setInput('');
 		session.setBusy(true);
+	};
+
+	const onQueueSubmit = (value: string): void => {
+		if (!value.trim() || !session.ready) {
+			return;
+		}
+		if (!session.busy) {
+			onSubmit(value);
+			return;
+		}
+		session.sendRequest({type: 'queue_line', line: value});
+		setHistory((items) => [...items, value]);
+		setHistoryIndex(-1);
+		setInput('');
 	};
 
 	// Scripted automation
@@ -505,6 +521,7 @@ function AppInner({config}: {config: FrontendConfig}): React.JSX.Element {
 					input={input}
 					setInput={setInput}
 					onSubmit={onSubmit}
+					onQueueSubmit={onQueueSubmit}
 					toolName={session.busy ? currentToolName : undefined}
 					statusLabel={session.busy ? (session.busyLabel ?? (currentToolName ? `Running ${currentToolName}...` : 'Running agent loop...')) : undefined}
 					suppressSubmit={showPicker}
@@ -516,7 +533,8 @@ function AppInner({config}: {config: FrontendConfig}): React.JSX.Element {
 				<Box>
 					<Text dimColor>
 						<Text color={theme.colors.primary}>shift+enter</Text> newline{'  '}
-						<Text color={theme.colors.primary}>enter</Text> send{'  '}
+						<Text color={theme.colors.primary}>enter</Text> {session.busy ? 'steer' : 'send'}{'  '}
+						<Text color={theme.colors.primary}>ctrl+enter</Text> {session.busy ? 'queue' : 'send'}{'  '}
 						<Text color={theme.colors.primary}>/</Text> commands{'  '}
 						<Text color={theme.colors.primary}>$</Text> skills{'  '}
 						<Text color={theme.colors.primary}>{'\u2191\u2193'}</Text> history{'  '}

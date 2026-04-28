@@ -44,6 +44,30 @@ def test_save_and_load_session_snapshot(tmp_path: Path, monkeypatch):
     assert snapshot["tool_metadata"]["task_focus_state"]["goal"] == "Fix compact carry-over"
     assert snapshot["tool_metadata"]["recent_verified_work"] == ["Focused session storage test passed"]
 
+
+def test_user_edited_session_title_is_preserved(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "repo"
+    project.mkdir()
+
+    save_session_snapshot(
+        cwd=project,
+        model="claude-test",
+        system_prompt="system",
+        messages=[ConversationMessage(role="user", content=[TextBlock(text="삼성전자 보고서 만들어줘")])],
+        usage=UsageSnapshot(input_tokens=1, output_tokens=2),
+        tool_metadata={
+            "session_title": "내가 정한 제목",
+            "session_title_user_edited": True,
+        },
+    )
+
+    snapshot = load_session_snapshot(project)
+    assert snapshot is not None
+    assert snapshot["summary"] == "내가 정한 제목"
+    assert snapshot["tool_metadata"]["session_title_user_edited"] is True
+
+
 def test_export_session_markdown(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
     project = tmp_path / "repo"

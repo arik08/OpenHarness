@@ -7,6 +7,7 @@ const defaultAppSettings = {
   streamRevealWipePercent: 180,
   downloadMode: "ask",
   downloadFolderPath: "",
+  shell: "auto",
 };
 
 function loadAppSettings() {
@@ -27,6 +28,7 @@ function loadAppSettings() {
       streamRevealWipePercent: Math.max(100, Math.min(400, Number.isFinite(parsedRevealWipe) ? parsedRevealWipe : defaultAppSettings.streamRevealWipePercent)),
       downloadMode: parsed.downloadMode === "folder" ? "folder" : "ask",
       downloadFolderPath: String(parsed.downloadFolderPath || ""),
+      shell: ["auto", "powershell", "git-bash", "cmd"].includes(parsed.shell) ? parsed.shell : defaultAppSettings.shell,
     };
   } catch {
     return { ...defaultAppSettings };
@@ -51,6 +53,9 @@ export function saveAppSettings(nextSettings) {
   state.appSettings.streamRevealWipePercent = Math.max(100, Math.min(400, Number.isFinite(revealWipe) ? revealWipe : defaultAppSettings.streamRevealWipePercent));
   state.appSettings.downloadMode = state.appSettings.downloadMode === "folder" ? "folder" : "ask";
   state.appSettings.downloadFolderPath = String(state.appSettings.downloadFolderPath || "");
+  state.appSettings.shell = ["auto", "powershell", "git-bash", "cmd"].includes(state.appSettings.shell)
+    ? state.appSettings.shell
+    : defaultAppSettings.shell;
   localStorage.setItem(appSettingsKey, JSON.stringify(state.appSettings));
   return state.appSettings;
 }
@@ -92,9 +97,11 @@ export const state = {
   model: "-",
   effort: "-",
   provider: "-",
+  providerLabel: "",
   permissionMode: "-",
   planModePinned: null,
   systemPrompt: localStorage.getItem("openharness:systemPrompt") || "",
+  learnedSkillsMode: "hide",
   appSettings: loadAppSettings(),
   workspaceName: localStorage.getItem("openharness:workspaceName") || "",
   workspacePath: "",
@@ -111,6 +118,9 @@ export const state = {
   workflowSteps: [],
   workflowTimer: 0,
   workflowRestoredElapsedMs: 0,
+  todoNode: null,
+  todoMarkdown: "",
+  todoCollapsed: false,
   artifacts: [],
   activeArtifact: null,
   activeArtifactRaw: "",
@@ -156,6 +166,7 @@ export const els = {
   workspaceDropdown: document.querySelector("#workspaceDropdown"),
   planModeIndicator: document.querySelector("#planModeIndicator"),
   slashMenu: document.querySelector("#slashMenu"),
+  todoChecklistDock: document.querySelector("#todoChecklistDock"),
   attachmentTray: document.querySelector("#attachmentTray"),
   pastedTextTray: document.querySelector("#pastedTextTray"),
   composerToken: document.querySelector("#composerToken"),
@@ -201,6 +212,28 @@ export function compactToolProgressStatus(event, fallback = "처리 중") {
   if (lower.includes("glob")) return "파일 목록 확인 중";
   if (lower.includes("read")) return "파일 읽는 중";
   if (lower.includes("write") || lower.includes("edit") || lower.includes("notebook")) return "파일 작업 중";
+  return fallback;
+}
+
+export function activeEventStatus(event, fallback = "처리 중") {
+  if (!event || typeof event !== "object") {
+    return fallback;
+  }
+  if (event.type === "status") {
+    return event.message || fallback;
+  }
+  if (event.type === "tool_progress" || event.type === "tool_started") {
+    return compactToolProgressStatus(event, fallback);
+  }
+  if (event.type === "tool_completed") {
+    return event.is_error ? "도구 결과 확인 중" : "도구 결과 검토 중";
+  }
+  if (event.type === "assistant_delta") {
+    return "응답 작성 중";
+  }
+  if (event.type === "assistant_complete") {
+    return event.has_tool_uses ? "다음 작업 준비 중" : "응답 정리 중";
+  }
   return fallback;
 }
 
@@ -275,14 +308,15 @@ export function commandDescription(command, fallback = "") {
 export function updateState(snapshot = {}) {
   state.model = snapshot.model || "-";
   state.effort = snapshot.effort || "-";
-  state.provider = snapshot.provider || "-";
+  state.provider = snapshot.active_profile || snapshot.provider || "-";
+  state.providerLabel = snapshot.provider_label || state.providerLabel || "";
   const snapshotPermissionMode = snapshot.permission_mode || "-";
   state.permissionMode = state.planModePinned === null
     ? snapshotPermissionMode
     : state.planModePinned
       ? "Plan Mode"
       : "Default";
-  const providerLabel = formatProviderName(state.provider);
+  const providerLabel = state.providerLabel || formatProviderName(state.provider);
   const modelLabel = state.model || "-";
   const effortLabel = formatEffort(state.effort);
   const loading = providerLabel === "-" && modelLabel === "-" && effortLabel === "-";
@@ -313,13 +347,18 @@ function updatePlanModeIndicator() {
 export function formatProviderName(value) {
   const normalized = String(value || "").trim();
   const labels = {
-    "openai-codex": "Codex",
-    openai_codex: "Codex",
+    codex: "Codex Subscription",
+    "openai-codex": "Codex Subscription",
+    openai_codex: "Codex Subscription",
+    "openai-compatible": "OpenAI-Compatible API",
+    openai: "OpenAI-Compatible API",
     pgpt: "P-GPT",
     "p-gpt": "P-GPT",
     github_copilot: "GitHub Copilot",
-    anthropic: "Anthropic",
-    "claude-subscription": "Claude",
+    anthropic: "Anthropic-Compatible API",
+    anthropic_claude: "Claude Subscription",
+    "claude-subscription": "Claude Subscription",
+    "claude-api": "Anthropic-Compatible API",
     minimax: "MiniMax",
     gemini: "Gemini",
     moonshot: "Moonshot",

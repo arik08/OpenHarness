@@ -152,6 +152,29 @@ def test_load_skill_registry_filters_disabled_skills(tmp_path: Path, monkeypatch
     assert disabled_ship.enabled is False
 
 
+def test_load_skill_registry_skips_learned_skills_when_learning_off(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    from openharness.config.settings import Settings
+
+    skills_root = tmp_path / "skills"
+    skill_dir = skills_root / "learned-demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: learned-demo\n"
+        "description: Automatically learned test skill\n---\n\n"
+        "# Learned Demo\nUse the verified fix.\n",
+        encoding="utf-8",
+    )
+
+    registry = load_skill_registry(
+        tmp_path,
+        extra_skill_dirs=[skills_root],
+        settings=Settings(learning={"enabled": False, "mode": "off"}),
+    )
+
+    assert registry.get("learned-demo") is None
+
+
 # --- parse_skill_markdown unit tests ---
 
 

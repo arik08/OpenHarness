@@ -36,6 +36,7 @@ def load_skill_registry(
 ) -> SkillRegistry:
     """Load bundled and user-defined skills."""
     registry = SkillRegistry()
+    resolved_settings = settings or load_settings()
     loaded: list[SkillDefinition] = []
     loaded.extend(get_bundled_skills())
     loaded.extend(load_user_skills())
@@ -44,7 +45,6 @@ def load_skill_registry(
     if cwd is not None:
         from openharness.plugins.loader import load_plugins
 
-        resolved_settings = settings or load_settings()
         for plugin in load_plugins(resolved_settings, cwd, extra_roots=extra_plugin_roots):
             if not plugin.enabled:
                 continue
@@ -52,6 +52,8 @@ def load_skill_registry(
     # Register program-local skills last so the OpenHarness installation's
     # .skills directory is the default source of truth for bundled behavior.
     loaded.extend(load_program_skills())
+    if _learned_skill_mode(resolved_settings) == "off":
+        loaded = [skill for skill in loaded if not is_learned_skill(skill)]
     project_preferences = load_project_preferences(cwd) if cwd is not None else None
     disabled_skill_names = set(project_preferences.disabled_skills) if project_preferences is not None else None
     for skill in apply_skill_enabled_state(loaded, disabled_skill_names):
@@ -149,6 +151,22 @@ def load_skills_from_dirs(
                 )
             )
     return skills
+
+
+def is_learned_skill(skill: SkillDefinition) -> bool:
+    """Return whether a skill was created by automatic learning."""
+    return skill.name.strip().lower().startswith("learned-")
+
+
+def _learned_skill_mode(settings) -> str:
+    learning = getattr(settings, "learning", None)
+    effective_mode = getattr(learning, "effective_mode", None)
+    if isinstance(effective_mode, str):
+        return effective_mode
+    if getattr(learning, "enabled", True) is False:
+        return "off"
+    mode = str(getattr(learning, "mode", "use") or "use").strip().lower()
+    return mode if mode in {"use", "hide", "off"} else "use"
 
 
 def _parse_skill_markdown(default_name: str, content: str) -> tuple[str, str]:

@@ -6,6 +6,7 @@ export type FrontendConfig = {
 export type TranscriptItem = {
 	role: 'system' | 'user' | 'assistant' | 'tool' | 'tool_result' | 'log' | 'status';
 	text: string;
+	kind?: 'steering' | 'queued';
 	tool_name?: string;
 	tool_input?: Record<string, unknown>;
 	is_error?: boolean;

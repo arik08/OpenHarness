@@ -255,7 +255,7 @@ class CodexApiClient:
             "model": request.model,
             "store": False,
             "stream": True,
-            "instructions": request.system_prompt or "You are OpenHarness.",
+            "instructions": request.system_prompt or "You are MyHarness.",
             "input": _convert_messages_to_codex(request.messages),
             "text": {"verbosity": "medium"},
             "include": ["reasoning.encrypted_content"],
@@ -271,6 +271,8 @@ class CodexApiClient:
         content: list[TextBlock | ToolUseBlock] = []
         current_text_parts: list[str] = []
         completed_response: dict[str, Any] | None = None
+        tool_names_by_item_id: dict[str, str] = {}
+        current_tool_name: str | None = None
 
         headers = _build_codex_headers(self._auth_token)
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
@@ -287,10 +289,31 @@ class CodexApiClient:
                         if isinstance(delta, str) and delta:
                             current_text_parts.append(delta)
                             yield ApiTextDeltaEvent(text=delta)
+                    elif event_type == "response.output_item.added":
+                        item = event.get("item")
+                        if not isinstance(item, dict) or item.get("type") != "function_call":
+                            continue
+                        name = item.get("name")
+                        item_id = item.get("id")
+                        if isinstance(name, str) and name:
+                            current_tool_name = name
+                            if isinstance(item_id, str) and item_id:
+                                tool_names_by_item_id[item_id] = name
                     elif event_type == "response.function_call_arguments.delta":
                         delta = event.get("delta")
                         if isinstance(delta, str) and delta:
-                            yield ApiToolCallDeltaEvent(index=0, arguments_delta=delta)
+                            item_id = event.get("item_id")
+                            name = (
+                                tool_names_by_item_id.get(item_id)
+                                if isinstance(item_id, str)
+                                else current_tool_name
+                            )
+                            index = event.get("output_index")
+                            yield ApiToolCallDeltaEvent(
+                                index=index if isinstance(index, int) else 0,
+                                name=name,
+                                arguments_delta=delta,
+                            )
                     elif event_type == "response.output_item.done":
                         item = event.get("item")
                         if not isinstance(item, dict):

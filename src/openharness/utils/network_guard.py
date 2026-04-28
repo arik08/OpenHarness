@@ -9,6 +9,8 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from openharness.utils.certificates import httpx_verify_argument
+
 
 _DEFAULT_PORTS = {
     "http": 80,
@@ -66,6 +68,7 @@ async def fetch_public_http_response(
         follow_redirects=False,
         timeout=timeout,
         trust_env=False,
+        verify=httpx_verify_argument(),
     ) as client:
         for redirect_count in range(max_redirects + 1):
             await ensure_public_http_url(current_url)

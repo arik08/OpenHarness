@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
@@ -15,8 +16,9 @@ from uuid import uuid4
 
 from openharness.api.client import ApiMessageCompleteEvent, ApiMessageRequest, SupportsStreamingMessages
 from openharness.auth.manager import AuthManager
-from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, resolve_model_setting
+from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, Settings, resolve_model_setting
 from openharness.bridge import get_bridge_manager
+from openharness.coordinator.coordinator_mode import is_coordinator_mode
 from openharness.mcp.config import load_mcp_server_configs
 from openharness.mcp.types import McpConnectionStatus
 from openharness.themes import list_themes
@@ -46,8 +48,15 @@ from openharness.services.session_storage import (
     title_matches_first_user,
 )
 from openharness.skills import load_skill_registry
+from openharness.skills.display import display_skill_description
+from openharness.skills.loader import is_learned_skill
 from openharness.skills.types import SkillDefinition
 from openharness.tasks import get_task_manager
+from openharness.ui.async_agents import (
+    format_completed_task_notifications,
+    pending_async_agent_entries,
+    wait_for_completed_async_agent_entries,
+)
 from openharness.ui.protocol import BackendEvent, FrontendRequest, PluginSnapshot, SkillSnapshot, TranscriptItem
 from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
 from openharness.services.session_backend import SessionBackend
@@ -82,6 +91,23 @@ def _tool_progress_message(tool_name: str, tool_input: dict[str, object] | None,
     return f"{tool_name} 실행 중... {elapsed_seconds}초 경과" + (f" · {target}" if target else "")
 
 
+def _normalize_question_choices(choices: list[dict[str, object]]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in choices:
+        value = str(item.get("value") or "").strip()
+        key = value.lower()
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        label = str(item.get("label") or value).strip() or value
+        description = str(item.get("description") or "").strip()
+        normalized.append({"value": value, "label": label, "description": description})
+        if len(normalized) >= 6:
+            break
+    return normalized
+
+
 @dataclass(frozen=True)
 class BackendHostConfig:
     """Configuration for one backend host session."""
@@ -113,6 +139,8 @@ class ReactBackendHost:
         self._bundle = None
         self._write_lock = asyncio.Lock()
         self._request_queue: asyncio.Queue[FrontendRequest] = asyncio.Queue()
+        self._steering_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._queued_line_queue: asyncio.Queue[str] = asyncio.Queue()
         self._permission_requests: dict[str, asyncio.Future[bool]] = {}
         self._question_requests: dict[str, asyncio.Future[str]] = {}
         self._permission_lock = asyncio.Lock()
@@ -121,6 +149,7 @@ class ReactBackendHost:
         self._running = True
         # Track last tool input per name for rich event emission
         self._last_tool_inputs: dict[str, dict] = {}
+        self._async_agent_monitor_task: asyncio.Task[None] | None = None
 
     async def run(self) -> int:
         self._bundle = await build_runtime(
@@ -157,6 +186,7 @@ class ReactBackendHost:
             )
         )
         await self._emit(self._status_snapshot())
+        self._ensure_async_agent_monitor()
 
         reader = asyncio.create_task(self._read_requests())
         try:
@@ -170,6 +200,24 @@ class ReactBackendHost:
                 if request.type == "cancel_current":
                     await self._cancel_current_request()
                     continue
+                if request.type == "steer_line":
+                    if self._busy:
+                        await self._queue_steering_line(request.line or "")
+                    else:
+                        await self._request_queue.put(FrontendRequest(type="submit_line", line=request.line or ""))
+                    continue
+                if request.type == "queue_line":
+                    if self._busy:
+                        await self._queue_line_after_current(request.line or "")
+                    else:
+                        await self._request_queue.put(
+                            FrontendRequest(
+                                type="submit_line",
+                                line=request.line or "",
+                                attachments=request.attachments,
+                            )
+                        )
+                    continue
                 if request.type == "list_sessions":
                     await self._handle_list_sessions()
                     continue
@@ -177,6 +225,7 @@ class ReactBackendHost:
                     await self._handle_delete_session(request.value or "")
                     continue
                 if request.type == "refresh_skills":
+                    self._sync_learning_mode()
                     await self._emit(BackendEvent.skills_snapshot(self._skill_snapshots()))
                     await self._emit(self._status_snapshot())
                     continue
@@ -191,6 +240,9 @@ class ReactBackendHost:
                     continue
                 if request.type == "set_system_prompt":
                     await self._handle_set_system_prompt(request.value or "")
+                    continue
+                if request.type == "update_session_title":
+                    await self._handle_update_session_title(request.value or "")
                     continue
                 if request.type == "select_command":
                     await self._handle_select_command(request.command or "")
@@ -224,6 +276,7 @@ class ReactBackendHost:
                     if not should_continue:
                         await self._emit(BackendEvent(type="shutdown"))
                         break
+                    await self._promote_next_queued_line()
                     continue
                 if request.type != "submit_line":
                     await self._emit(BackendEvent(type="error", message=f"Unknown request type: {request.type}"))
@@ -237,7 +290,11 @@ class ReactBackendHost:
                 self._busy = True
                 try:
                     self._active_request_task = asyncio.create_task(
-                        self._process_line(line, attachments=request.attachments)
+                        self._process_line(
+                            line,
+                            attachments=request.attachments,
+                            emit_user_transcript=not request.suppress_user_transcript,
+                        )
                     )
                     should_continue = await self._active_request_task
                 except asyncio.CancelledError:
@@ -253,7 +310,13 @@ class ReactBackendHost:
                 if not should_continue:
                     await self._emit(BackendEvent(type="shutdown"))
                     break
+                await self._promote_next_queued_line()
         finally:
+            self._running = False
+            if self._async_agent_monitor_task is not None:
+                self._async_agent_monitor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._async_agent_monitor_task
             reader.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await reader
@@ -261,11 +324,75 @@ class ReactBackendHost:
                 await close_runtime(self._bundle)
         return 0
 
+    def _ensure_async_agent_monitor(self) -> None:
+        if self._bundle is None or not is_coordinator_mode():
+            return
+        metadata = getattr(self._bundle.engine, "tool_metadata", None)
+        if not pending_async_agent_entries(metadata):
+            return
+        if self._async_agent_monitor_task is not None and not self._async_agent_monitor_task.done():
+            return
+        self._async_agent_monitor_task = asyncio.create_task(self._monitor_async_agents())
+
+    async def _monitor_async_agents(self) -> None:
+        assert self._bundle is not None
+        metadata = self._bundle.engine.tool_metadata
+        while self._running:
+            if not pending_async_agent_entries(metadata):
+                return
+            completed = await wait_for_completed_async_agent_entries(metadata)
+            notification_payload = format_completed_task_notifications(completed)
+            if not notification_payload.strip():
+                return
+            await self._emit(BackendEvent(type="status", message="백그라운드 에이전트 결과를 가져왔습니다."))
+            await self._request_queue.put(
+                FrontendRequest(
+                    type="submit_line",
+                    line=notification_payload,
+                    suppress_user_transcript=True,
+                )
+            )
+
     async def _cancel_current_request(self) -> None:
         task = self._active_request_task
         if task is None or task.done():
             return
         task.cancel()
+
+    async def _queue_steering_line(self, line: str) -> None:
+        text = line.strip()
+        if not text:
+            return
+        await self._steering_queue.put(text)
+        await self._emit(
+            BackendEvent(type="transcript_item", item=TranscriptItem(role="user", text=text, kind="steering"))
+        )
+        await self._emit(BackendEvent(type="status", message="스티어링 지시를 대기열에 추가했습니다."))
+
+    async def _queue_line_after_current(self, line: str) -> None:
+        text = line.strip()
+        if not text:
+            return
+        await self._queued_line_queue.put(text)
+        await self._emit(
+            BackendEvent(type="transcript_item", item=TranscriptItem(role="user", text=text, kind="queued"))
+        )
+        await self._emit(BackendEvent(type="status", message="다음 질문을 대기열에 추가했습니다."))
+
+    async def _promote_next_queued_line(self) -> None:
+        if self._queued_line_queue.empty():
+            return
+        line = self._queued_line_queue.get_nowait()
+        await self._emit(BackendEvent(type="status", message="대기열 질문을 전송합니다."))
+        await self._request_queue.put(
+            FrontendRequest(type="submit_line", line=line, suppress_user_transcript=True)
+        )
+
+    async def _drain_steering_lines(self) -> list[str]:
+        lines: list[str] = []
+        while not self._steering_queue.empty():
+            lines.append(self._steering_queue.get_nowait())
+        return lines
 
     async def _read_requests(self) -> None:
         while True:
@@ -294,6 +421,24 @@ class ReactBackendHost:
             if request.type == "cancel_current":
                 await self._cancel_current_request()
                 continue
+            if request.type == "steer_line":
+                if self._busy:
+                    await self._queue_steering_line(request.line or "")
+                else:
+                    await self._request_queue.put(FrontendRequest(type="submit_line", line=request.line or ""))
+                continue
+            if request.type == "queue_line":
+                if self._busy:
+                    await self._queue_line_after_current(request.line or "")
+                else:
+                    await self._request_queue.put(
+                        FrontendRequest(
+                            type="submit_line",
+                            line=request.line or "",
+                            attachments=request.attachments,
+                        )
+                    )
+                continue
             await self._request_queue.put(request)
 
     async def _process_line(
@@ -303,6 +448,7 @@ class ReactBackendHost:
         transcript_line: str | None = None,
         attachments=None,
         quiet: bool = False,
+        emit_user_transcript: bool = True,
     ) -> bool:
         assert self._bundle is not None
         attachments = attachments or []
@@ -329,7 +475,12 @@ class ReactBackendHost:
         if image_blocks:
             suffix = f" [image attachments: {len(image_blocks)}]"
             transcript_text = f"{transcript_text}{suffix}" if transcript_text else suffix.strip()
-        if not quiet:
+        is_internal_task_notification = (
+            not emit_user_transcript
+            and isinstance(effective_prompt, str)
+            and effective_line.lstrip().startswith("<task-notification>")
+        )
+        if not quiet and emit_user_transcript:
             await self._emit(
                 BackendEvent(type="transcript_item", item=TranscriptItem(role="user", text=transcript_text))
             )
@@ -450,19 +601,7 @@ class ReactBackendHost:
                 # Emit todo_update when TodoWrite tool runs
                 if event.tool_name in ("TodoWrite", "todo_write"):
                     tool_input = self._last_tool_inputs.get(event.tool_name, {})
-                    # TodoWrite input may have 'todos' list or markdown content field
-                    todos = tool_input.get("todos") or tool_input.get("content") or []
-                    if isinstance(todos, list) and todos:
-                        lines = []
-                        for item in todos:
-                            if isinstance(item, dict):
-                                checked = item.get("status", "") in ("done", "completed", "x", True)
-                                text = item.get("content") or item.get("text") or str(item)
-                                lines.append(f"- [{'x' if checked else ' '}] {text}")
-                        if lines:
-                            await self._emit(BackendEvent(type="todo_update", todo_markdown="\n".join(lines)))
-                    else:
-                        await self._emit_todo_update_from_output(event.output)
+                    await self._emit_todo_update(tool_input, event.output)
                 # Emit plan_mode_change when plan-related tools complete
                 if event.tool_name in ("set_permission_mode", "plan_mode"):
                     assert self._bundle is not None
@@ -482,14 +621,24 @@ class ReactBackendHost:
         first_token = (line.strip().split(maxsplit=1) or [""])[0].lower()
         started_at = time.monotonic()
         try:
-            if first_token != "/clear" and not first_token.startswith("/") and not quiet:
+            if (
+                first_token != "/clear"
+                and not first_token.startswith("/")
+                and not quiet
+                and not is_internal_task_notification
+            ):
                 await self._maybe_update_session_title_from_prompt(transcript_text)
+            handle_line_kwargs = {
+                "print_system": _print_system,
+                "render_event": _render_event,
+                "clear_output": _clear_output,
+            }
+            if "steering_provider" in inspect.signature(handle_line).parameters:
+                handle_line_kwargs["steering_provider"] = self._drain_steering_lines
             should_continue = await handle_line(
                 self._bundle,
                 effective_prompt,
-                print_system=_print_system,
-                render_event=_render_event,
-                clear_output=_clear_output,
+                **handle_line_kwargs,
             )
             self._bundle.engine.tool_metadata["workflow_duration_seconds"] = max(1, round(time.monotonic() - started_at))
             if first_token != "/clear" and not quiet:
@@ -507,7 +656,8 @@ class ReactBackendHost:
                     self._set_saved_session_id(parts[1].strip().split()[0])
             if first_token in {"/reload-plugins", "/skills"}:
                 await self._emit(BackendEvent.skills_snapshot(self._skill_snapshots()))
-            if first_token != "/clear" and not quiet:
+            self._ensure_async_agent_monitor()
+            if first_token != "/clear" and not quiet and not is_internal_task_notification:
                 await self._maybe_update_session_title()
             await self._emit(BackendEvent(type="line_complete", quiet=quiet))
             return should_continue
@@ -665,6 +815,7 @@ class ReactBackendHost:
         assert self._bundle is not None
         for key in (
             "session_title",
+            "session_title_user_edited",
             "workflow_duration_seconds",
         ):
             self._bundle.engine.tool_metadata.pop(key, None)
@@ -703,23 +854,31 @@ class ReactBackendHost:
 
     def _skill_snapshots(self) -> list[SkillSnapshot]:
         assert self._bundle is not None
+        settings = self._bundle.current_settings()
         registry = load_skill_registry(
             self._bundle.cwd,
             extra_skill_dirs=self._bundle.extra_skill_dirs,
             extra_plugin_roots=self._bundle.extra_plugin_roots,
-            settings=self._bundle.current_settings(),
+            settings=settings,
             include_disabled=True,
         )
+        hide_learned = settings.learning.effective_mode == "hide"
         return [
             SkillSnapshot(
                 name=skill.name,
-                description=skill.description,
+                description=display_skill_description(skill),
                 source=skill.source,
                 enabled=skill.enabled,
             )
             for skill in registry.list_skills()
             if skill.source not in _BUILT_IN_SKILL_SOURCES
+            if not hide_learned or not is_learned_skill(skill)
         ]
+
+    def _sync_learning_mode(self) -> None:
+        assert self._bundle is not None
+        settings = self._bundle.current_settings()
+        self._bundle.engine.set_auto_skill_learning_enabled(settings.learning.effective_mode != "off")
 
     async def _handle_set_skill_enabled(self, name: str, enabled: bool | None) -> None:
         if not name.strip():
@@ -992,15 +1151,38 @@ class ReactBackendHost:
             for plugin in self._bundle.current_plugins()
         ]
 
-    async def _emit_todo_update_from_output(self, output: str) -> None:
-        """Emit a todo_update event by extracting markdown checklist from tool output."""
-        # TodoWrite tools typically echo back the written content
-        # We look for markdown checklist patterns in the output
-        lines = output.splitlines()
-        checklist_lines = [line for line in lines if line.strip().startswith("- [")]
-        if checklist_lines:
-            markdown = "\n".join(checklist_lines)
+    async def _emit_todo_update(self, tool_input: dict, output: str) -> None:
+        """Emit a todo_update event from TodoWrite input, persisted content, or output."""
+        todos = tool_input.get("todos") or tool_input.get("content") or []
+        if isinstance(todos, list) and todos:
+            lines = []
+            for item in todos:
+                if isinstance(item, dict):
+                    checked = item.get("checked") or item.get("status") in ("done", "completed", "x", True)
+                    text = item.get("text") or item.get("content") or str(item)
+                    lines.append(f"- [{'x' if checked else ' '}] {text}")
+            if lines:
+                await self._emit(BackendEvent(type="todo_update", todo_markdown="\n".join(lines)))
+                return
+
+        assert self._bundle is not None
+        path_value = str(tool_input.get("path") or "TODO.md")
+        path = Path(self._bundle.cwd) / path_value
+        if path.exists():
+            markdown = self._extract_todo_markdown(path.read_text(encoding="utf-8"))
+            if markdown:
+                await self._emit(BackendEvent(type="todo_update", todo_markdown=markdown))
+                return
+
+        markdown = self._extract_todo_markdown(output)
+        if markdown:
             await self._emit(BackendEvent(type="todo_update", todo_markdown=markdown))
+
+    @staticmethod
+    def _extract_todo_markdown(text: str) -> str:
+        lines = text.splitlines()
+        checklist_lines = [line for line in lines if line.strip().startswith("- [")]
+        return "\n".join(checklist_lines)
 
     def _emit_swarm_status(self, teammates: list[dict], notifications: list[dict] | None = None) -> None:
         """Emit a swarm_status event synchronously (schedule as coroutine)."""
@@ -1065,6 +1247,26 @@ class ReactBackendHost:
             )
         )
 
+    async def _handle_update_session_title(self, value: str) -> None:
+        assert self._bundle is not None
+        title = self._clean_session_title(value)
+        if not title:
+            await self._emit(BackendEvent(type="error", message="Missing session title"))
+            return
+        metadata = self._bundle.engine.tool_metadata
+        metadata["session_title"] = title
+        metadata["session_title_user_edited"] = True
+        self._bundle.session_backend.save_snapshot(
+            cwd=self._bundle.cwd,
+            model=self._bundle.engine.model,
+            system_prompt=self._bundle.engine.system_prompt,
+            messages=self._bundle.engine.messages,
+            usage=self._bundle.engine.total_usage,
+            session_id=self._bundle.session_id,
+            tool_metadata=metadata,
+        )
+        await self._emit(BackendEvent(type="session_title", message=title))
+
     async def _handle_select_command(self, command_name: str) -> None:
         assert self._bundle is not None
         command = command_name.strip().lstrip("/").lower()
@@ -1077,20 +1279,38 @@ class ReactBackendHost:
         _, active_profile = settings.resolve_profile()
         current_model = settings.model
 
+        if command == "runtime-picker":
+            provider_options = self._provider_select_options(settings)
+            profiles = AuthManager(settings).list_profiles()
+            model_options_by_provider = {
+                str(option["value"]): self._model_select_options(
+                    current_model,
+                    profiles[str(option["value"])].provider,
+                    profiles[str(option["value"])].allowed_models,
+                )
+                for option in provider_options
+                if str(option["value"]) in profiles
+            }
+            await self._emit(
+                BackendEvent(
+                    type="select_request",
+                    modal={
+                        "kind": "select",
+                        "title": "Runtime Picker",
+                        "command": "runtime-picker",
+                        "runtime_options": {
+                            "providers": provider_options,
+                            "models_by_provider": model_options_by_provider,
+                            "efforts": self._effort_select_options(settings),
+                        },
+                    },
+                    select_options=[],
+                )
+            )
+            return
+
         if command == "provider":
-            statuses = AuthManager(settings).get_profile_statuses()
-            hidden_profiles = {"copilot", "moonshot", "gemini", "minimax"}
-            hidden_providers = {"copilot", "moonshot", "gemini", "minimax"}
-            options = [
-                {
-                    "value": name,
-                    "label": info["label"],
-                    "description": f"{info['provider']} / {info['auth_source']}" + (" [missing auth]" if not info["configured"] else ""),
-                    "active": info["active"],
-                }
-                for name, info in statuses.items()
-                if name not in hidden_profiles and info["provider"] not in hidden_providers
-            ]
+            options = self._provider_select_options(settings)
             await self._emit(
                 BackendEvent(
                     type="select_request",
@@ -1168,13 +1388,7 @@ class ReactBackendHost:
             return
 
         if command == "effort":
-            options = [
-                {"value": "none", "label": "Auto", "description": "Use the provider default", "active": settings.effort in {"none", "auto", ""}},
-                {"value": "low", "label": "Low", "description": "Fastest responses", "active": settings.effort == "low"},
-                {"value": "medium", "label": "Medium", "description": "Balanced reasoning", "active": settings.effort == "medium"},
-                {"value": "high", "label": "High", "description": "Deepest reasoning", "active": settings.effort == "high"},
-                {"value": "xhigh", "label": "XHigh", "description": "Maximum reasoning", "active": settings.effort in {"xhigh", "max"}},
-            ]
+            options = self._effort_select_options(settings)
             await self._emit(
                 BackendEvent(
                     type="select_request",
@@ -1275,6 +1489,30 @@ class ReactBackendHost:
             return
 
         await self._emit(BackendEvent(type="error", message=f"No selector available for /{command}"))
+
+    def _provider_select_options(self, settings: Settings) -> list[dict[str, object]]:
+        statuses = AuthManager(settings).get_profile_statuses()
+        hidden_profiles = {"copilot", "moonshot", "gemini", "minimax"}
+        hidden_providers = {"copilot", "moonshot", "gemini", "minimax"}
+        return [
+            {
+                "value": name,
+                "label": info["label"],
+                "description": f"{info['provider']} / {info['auth_source']}" + (" [missing auth]" if not info["configured"] else ""),
+                "active": info["active"],
+            }
+            for name, info in statuses.items()
+            if name not in hidden_profiles and info["provider"] not in hidden_providers
+        ]
+
+    def _effort_select_options(self, settings: Settings) -> list[dict[str, object]]:
+        return [
+            {"value": "none", "label": "Auto", "description": "Use the provider default", "active": settings.effort in {"none", "auto", ""}},
+            {"value": "low", "label": "Low", "description": "Fastest responses", "active": settings.effort == "low"},
+            {"value": "medium", "label": "Medium", "description": "Balanced reasoning", "active": settings.effort == "medium"},
+            {"value": "high", "label": "High", "description": "Deepest reasoning", "active": settings.effort == "high"},
+            {"value": "xhigh", "label": "XHigh", "description": "Maximum reasoning", "active": settings.effort in {"xhigh", "max"}},
+        ]
 
     def _model_select_options(self, current_model: str, provider: str, allowed_models: list[str] | None = None) -> list[dict[str, object]]:
         if allowed_models:
@@ -1388,10 +1626,11 @@ class ReactBackendHost:
             finally:
                 self._permission_requests.pop(request_id, None)
 
-    async def _ask_question(self, question: str) -> str:
+    async def _ask_question(self, question: str, choices: list[dict[str, object]] | None = None) -> str:
         request_id = uuid4().hex
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._question_requests[request_id] = future
+        normalized_choices = _normalize_question_choices(choices or [])
         await self._emit(
             BackendEvent(
                 type="modal_request",
@@ -1399,6 +1638,7 @@ class ReactBackendHost:
                     "kind": "question",
                     "request_id": request_id,
                     "question": question,
+                    "choices": normalized_choices,
                 },
             )
         )

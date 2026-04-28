@@ -29,7 +29,7 @@ from openharness.engine.messages import (
     ToolUseBlock,
     sanitize_conversation_messages,
 )
-from openharness.engine.query import MaxTurnsExceeded
+from openharness.engine.query import MaxTurnsExceeded, SteeringProvider
 from openharness.engine.stream_events import StreamEvent, ToolExecutionCompleted, ToolExecutionStarted
 from openharness.hooks import HookEvent, HookExecutionContext, HookExecutor, load_hook_registry
 from openharness.hooks.hot_reload import HookReloader
@@ -45,7 +45,7 @@ from openharness.tools import ToolExecutionContext, ToolRegistry, create_default
 from openharness.keybindings import load_keybindings
 
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
-AskUserPrompt = Callable[[str], Awaitable[str]]
+AskUserPrompt = Callable[..., Awaitable[str]]
 SystemPrinter = Callable[[str], Awaitable[None]]
 StreamRenderer = Callable[[StreamEvent], Awaitable[None]]
 ClearHandler = Callable[[], Awaitable[None]]
@@ -206,15 +206,14 @@ def _missing_auth_message(settings) -> str:
     if settings.resolve_profile()[1].auth_source == "pgpt_api_key":
         return (
             "P-GPT 인증 정보가 없습니다. PGPT_API_KEY와 PGPT_EMPLOYEE_NO 환경 변수를 "
-            "설정하거나 앱 설정에서 P-GPT API Key와 사번을 저장하세요."
+            "설정하세요. run_openharness_web.bat 실행 시 환경변수 등록을 진행할 수 있습니다."
         )
     if settings.provider == "openai_codex":
         return "Codex 인증 정보가 없습니다. `oh auth codex-login`으로 로그인하세요."
     if settings.provider == "anthropic_claude":
         return "Claude 인증 정보가 없습니다. `oh auth claude-login`으로 로그인하세요."
     return (
-        "API key가 없습니다. 설정에서 현재 provider 인증 정보를 저장하거나 "
-        "해당 환경 변수를 설정하세요."
+        "API key가 없습니다. 현재 provider에 맞는 환경 변수를 설정하세요."
     )
 
 
@@ -275,6 +274,7 @@ async def build_runtime(
             for tool in plugin.tools:
                 tool_registry.register(tool)
     provider = detect_provider(settings)
+    active_profile_name, active_profile = settings.resolve_profile()
     bridge_manager = get_bridge_manager()
     app_state = AppStateStore(
         AppState(
@@ -285,6 +285,8 @@ async def build_runtime(
             theme=settings.theme,
             cwd=cwd,
             provider=provider.name,
+            active_profile=active_profile_name,
+            provider_label=active_profile.label,
             auth_status=auth_status(settings),
             base_url=settings.base_url or "",
             vim_enabled=settings.vim_mode,
@@ -363,13 +365,16 @@ async def build_runtime(
         permission_prompt=permission_prompt,
         ask_user_prompt=ask_user_prompt,
         hook_executor=hook_executor,
-        auto_skill_learning_enabled=settings.learning.enabled,
+        auto_skill_learning_enabled=settings.learning.effective_mode != "off",
         tool_metadata={
             "mcp_manager": mcp_manager,
             "bridge_manager": bridge_manager,
             "extra_skill_dirs": normalized_skill_dirs,
             "extra_plugin_roots": normalized_plugin_roots,
             "session_id": session_id,
+            "active_profile": settings.active_profile,
+            "provider": settings.provider,
+            "runtime_model": settings.model,
             **restored_metadata,
         },
     )
@@ -555,6 +560,7 @@ async def handle_line(
     print_system: SystemPrinter,
     render_event: StreamRenderer,
     clear_output: ClearHandler,
+    steering_provider: SteeringProvider | None = None,
 ) -> bool:
     """Handle one submitted line for either headless or TUI rendering."""
     if not bundle.external_api_client:
@@ -609,7 +615,10 @@ async def handle_line(
             )
             bundle.engine.set_system_prompt(system_prompt)
             try:
-                async for event in bundle.engine.submit_message(submit_prompt):
+                async for event in bundle.engine.submit_message(
+                    submit_prompt,
+                    steering_provider=steering_provider,
+                ):
                     await render_event(event)
             except MaxTurnsExceeded as exc:
                 await print_system(f"Stopped after {exc.max_turns} turns (max_turns).")
@@ -642,7 +651,10 @@ async def handle_line(
             bundle.engine.set_system_prompt(system_prompt)
             turns = result.continue_turns if result.continue_turns is not None else bundle.engine.max_turns
             try:
-                async for event in bundle.engine.continue_pending(max_turns=turns):
+                async for event in bundle.engine.continue_pending(
+                    max_turns=turns,
+                    steering_provider=steering_provider,
+                ):
                     await render_event(event)
             except MaxTurnsExceeded as exc:
                 await print_system(f"Stopped after {exc.max_turns} turns (max_turns).")
@@ -673,7 +685,10 @@ async def handle_line(
     )
     bundle.engine.set_system_prompt(system_prompt)
     try:
-        async for event in bundle.engine.submit_message(line):
+        async for event in bundle.engine.submit_message(
+            line,
+            steering_provider=steering_provider,
+        ):
             await render_event(event)
     except MaxTurnsExceeded as exc:
         await print_system(f"Stopped after {exc.max_turns} turns (max_turns).")

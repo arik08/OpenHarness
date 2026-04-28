@@ -12,6 +12,10 @@ export function createModals(ctx) {
   function deleteWorkspace(...args) { return ctx.deleteWorkspace(...args); }
   function readWorkspaceScopeSettings(...args) { return ctx.readWorkspaceScopeSettings(...args); }
   function changeWorkspaceScope(...args) { return ctx.changeWorkspaceScope(...args); }
+  function readLearnedSkillsSettings(...args) { return ctx.readLearnedSkillsSettings(...args); }
+  function changeLearnedSkillsMode(...args) { return ctx.changeLearnedSkillsMode(...args); }
+  function readShellSettings(...args) { return ctx.readShellSettings(...args); }
+  function changeShellPreference(...args) { return ctx.changeShellPreference(...args); }
   function restartSessionForWorkspace(...args) { return ctx.restartSessionForWorkspace(...args); }
   function formatEffort(...args) { return ctx.formatEffort(...args); }
   function formatProviderName(...args) { return ctx.formatProviderName(...args); }
@@ -67,10 +71,18 @@ function showSettingsModal() {
 
 function downloadModeLabel() {
   const settings = state.appSettings || {};
+  if (!isLocalBrowserHost()) {
+    return "브라우저 다운로드";
+  }
   if (settings.downloadMode === "folder") {
     return settings.downloadFolderPath ? `지정 폴더: ${settings.downloadFolderPath}` : "지정 폴더 필요";
   }
   return "매번 저장 위치 선택";
+}
+
+function isLocalBrowserHost() {
+  const host = String(window.location.hostname || "").trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
 }
 
 function streamingSettingsLabel() {
@@ -85,6 +97,25 @@ function streamingSettingsLabel() {
 function workspaceScopeLabel() {
   const mode = state.workspaceScope?.mode || "shared";
   return mode === "ip" ? "IP별 프로젝트 분리" : "공용 shared 프로젝트";
+}
+
+function learnedSkillsLabel(mode = state.learnedSkillsMode) {
+  const labels = {
+    use: "사용",
+    hide: "숨기기",
+    off: "미사용",
+  };
+  return labels[mode] || "사용";
+}
+
+function shellPreferenceLabel(value = state.appSettings?.shell) {
+  const labels = {
+    auto: "자동: PowerShell 우선",
+    powershell: "PowerShell",
+    "git-bash": "Git Bash",
+    cmd: "cmd",
+  };
+  return labels[value] || labels.auto;
 }
 
 function setAppSettingsDismissAction() {
@@ -188,13 +219,35 @@ function showSettingsModal() {
   list.append(
     settingsButton("프롬프트", state.systemPrompt ? "사용자 프롬프트 적용 중" : "기본값", showSystemPromptModal),
     settingsButton("스트리밍 스크롤", streamingSettingsLabel(), showBehaviorSettingsModal),
-    settingsButton("파일 저장", downloadModeLabel(), showDownloadSettingsModal),
+    settingsButton("파일 저장경로", downloadModeLabel(), showDownloadSettingsModal),
+    settingsButton("명령어 셀 (CLI)", shellPreferenceLabel(), showShellSettingsModal, "shell"),
     settingsButton("작업공간 범위", workspaceScopeLabel(), showWorkspaceScopeSettingsModal),
-    settingsButton("P-GPT 키", "API Key / 사번 / 회사번호", showPgptSettingsModal),
+    settingsButton("자동학습 스킬 표시", learnedSkillsLabel(), showLearnedSkillsSettingsModal, "learned-skills"),
+    settingsButton("P-GPT API KEY", "API Key / 사번 / 회사번호", showPgptSettingsModal),
   );
 
   card.append(title, body, list);
   els.modalHost.append(card);
+  readLearnedSkillsSettings()
+    .then((current) => {
+      const mode = ["use", "hide", "off"].includes(current.mode) ? current.mode : "hide";
+      state.learnedSkillsMode = mode;
+      const value = list.querySelector("[data-setting-value='learned-skills']");
+      if (value) {
+        value.textContent = learnedSkillsLabel(mode);
+      }
+    })
+    .catch(() => {});
+  readShellSettings()
+    .then((current) => {
+      const shell = ["auto", "powershell", "git-bash", "cmd"].includes(current.shell) ? current.shell : "auto";
+      saveAppSettings({ shell });
+      const value = list.querySelector("[data-setting-value='shell']");
+      if (value) {
+        value.textContent = shellPreferenceLabel(shell);
+      }
+    })
+    .catch(() => {});
 }
 
 function showSystemPromptModal() {
@@ -356,6 +409,79 @@ function showBehaviorSettingsModal() {
   followInput.focus();
 }
 
+async function showLearnedSkillsSettingsModal() {
+  els.modalHost.classList.remove("hidden");
+  els.modalHost.textContent = "";
+  setAppSettingsDismissAction();
+
+  const card = document.createElement("div");
+  card.className = "modal-card settings-card app-settings-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.append(modalCloseButton(showSettingsModal));
+
+  const title = document.createElement("h2");
+  title.textContent = "자동학습 스킬 표시";
+  const body = document.createElement("p");
+  body.textContent = "자동으로 학습된 스킬을 사용할지와 목록 노출 여부를 정합니다.";
+  const loading = document.createElement("p");
+  loading.className = "settings-helper";
+  loading.textContent = "설정을 불러오는 중...";
+  card.append(title, body, loading);
+  els.modalHost.append(card);
+
+  try {
+    const current = await readLearnedSkillsSettings();
+    loading.remove();
+    let selectedMode = ["use", "hide", "off"].includes(current.mode) ? current.mode : "hide";
+    state.learnedSkillsMode = selectedMode;
+
+    const control = document.createElement("div");
+    control.className = "scope-segmented-control learned-skill-mode-list";
+    control.setAttribute("role", "radiogroup");
+    control.setAttribute("aria-label", "자동학습 스킬 표시");
+
+    const useButton = scopeModeButton("use", "사용:", "스킬을 사용하고 $와 /help 목록에도 표시합니다.");
+    const hideButton = scopeModeButton("hide", "숨기기:", "스킬은 사용하지만 $와 /help 목록에는 표시하지 않습니다.");
+    const offButton = scopeModeButton("off", "미사용:", "스킬을 로드하지 않고 자동 학습도 중지합니다.");
+    const buttons = [useButton, hideButton, offButton];
+    const syncButtons = () => {
+      for (const button of buttons) {
+        const active = button.dataset.mode === selectedMode;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-checked", active ? "true" : "false");
+      }
+    };
+    for (const button of buttons) {
+      button.addEventListener("click", () => {
+        selectedMode = button.dataset.mode;
+        syncButtons();
+      });
+    }
+    control.append(useButton, hideButton, offButton);
+    syncButtons();
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    actions.append(
+      modalButton("뒤로", false, showSettingsModal),
+      modalButton("저장", true, async () => {
+        try {
+          const saved = await changeLearnedSkillsMode(selectedMode);
+          state.learnedSkillsMode = saved.mode || selectedMode;
+          showSettingsModal();
+        } catch (error) {
+          appendMessage("system", `자동학습 스킬 표시 설정 저장 실패: ${error.message}`);
+        }
+      }),
+    );
+
+    card.append(control, actions);
+  } catch (error) {
+    loading.textContent = `자동학습 스킬 표시 설정을 불러오지 못했습니다: ${error.message}`;
+  }
+}
+
 async function showWorkspaceScopeSettingsModal() {
   els.modalHost.classList.remove("hidden");
   els.modalHost.textContent = "";
@@ -383,7 +509,7 @@ async function showWorkspaceScopeSettingsModal() {
     let selectedMode = current.mode === "ip" ? "ip" : "shared";
 
     const control = document.createElement("div");
-    control.className = "scope-segmented-control";
+    control.className = "scope-segmented-control workspace-scope-mode-list";
     control.setAttribute("role", "radiogroup");
     control.setAttribute("aria-label", "작업공간 범위");
 
@@ -453,6 +579,7 @@ function showDownloadSettingsModal() {
   els.modalHost.classList.remove("hidden");
   els.modalHost.textContent = "";
   setAppSettingsDismissAction();
+  const localBrowserHost = isLocalBrowserHost();
 
   const card = document.createElement("div");
   card.className = "modal-card settings-card app-settings-card";
@@ -461,28 +588,42 @@ function showDownloadSettingsModal() {
   card.append(modalCloseButton(showSettingsModal));
 
   const title = document.createElement("h2");
-  title.textContent = "파일 저장";
+  title.textContent = "파일 저장경로";
   const body = document.createElement("p");
-  body.textContent = "다운로드할 때마다 위치를 물어볼지, 지정 폴더에 바로 저장할지 선택합니다.";
+  body.textContent = localBrowserHost
+    ? "다운로드할 때마다 위치를 물어볼지, 지정 폴더에 바로 저장할지 선택합니다."
+    : "원격 접속에서는 Host 폴더 선택 창을 열지 않고 브라우저 다운로드를 사용합니다.";
 
-  const modeField = settingField("저장 방식", "지정 폴더 저장은 앱 서버가 해당 경로로 파일을 복사합니다.");
+  const modeField = settingField(
+    "저장 방식",
+    localBrowserHost
+      ? "지정 폴더 저장은 앱 서버가 해당 경로로 파일을 복사합니다."
+      : "클라이언트 PC의 실제 저장 위치는 브라우저 다운로드 설정을 따릅니다.",
+  );
   const mode = document.createElement("select");
   mode.innerHTML = `
     <option value="ask">매번 저장 위치 선택</option>
     <option value="folder">지정 폴더에 자동 저장</option>
   `;
-  mode.value = state.appSettings?.downloadMode || "ask";
+  mode.querySelector("option[value='folder']").disabled = !localBrowserHost;
+  mode.value = localBrowserHost ? state.appSettings?.downloadMode || "ask" : "ask";
   modeField.append(mode);
 
-  const folderField = settingField("지정 폴더", "찾아보기를 눌러 저장할 폴더를 선택하세요.");
+  const folderField = settingField(
+    "지정 폴더",
+    localBrowserHost ? "찾아보기를 눌러 저장할 폴더를 선택하세요." : "원격 접속에서는 Host 폴더 선택을 사용할 수 없습니다.",
+  );
   const folderPicker = document.createElement("div");
   folderPicker.className = "folder-picker";
   const folder = document.createElement("input");
   folder.type = "text";
-  folder.placeholder = "선택된 폴더가 없습니다";
+  folder.placeholder = localBrowserHost ? "선택된 폴더가 없습니다" : "브라우저 다운로드 사용";
   folder.readOnly = true;
-  folder.value = state.appSettings?.downloadFolderPath || "";
+  folder.value = localBrowserHost ? state.appSettings?.downloadFolderPath || "" : "";
   const browse = modalButton("찾아보기", false, async () => {
+    if (!localBrowserHost) {
+      return;
+    }
     browse.disabled = true;
     browse.textContent = "여는 중...";
     try {
@@ -498,6 +639,7 @@ function showDownloadSettingsModal() {
       browse.textContent = "찾아보기";
     }
   });
+  browse.disabled = !localBrowserHost;
   folderPicker.append(folder, browse);
   folderField.append(folderPicker);
 
@@ -507,8 +649,8 @@ function showDownloadSettingsModal() {
     modalButton("뒤로", false, showSettingsModal),
     modalButton("저장", true, () => {
       saveAppSettings({
-        downloadMode: mode.value,
-        downloadFolderPath: folder.value,
+        downloadMode: localBrowserHost ? mode.value : "ask",
+        downloadFolderPath: localBrowserHost ? folder.value : "",
       });
       showSettingsModal();
     }),
@@ -516,6 +658,86 @@ function showDownloadSettingsModal() {
   card.append(title, body, modeField, folderField, actions);
   els.modalHost.append(card);
   mode.focus();
+}
+
+async function showShellSettingsModal() {
+  els.modalHost.classList.remove("hidden");
+  els.modalHost.textContent = "";
+  setAppSettingsDismissAction();
+
+  const card = document.createElement("div");
+  card.className = "modal-card settings-card app-settings-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.append(modalCloseButton(showSettingsModal));
+
+  const title = document.createElement("h2");
+  title.textContent = "명령어 셀 (CLI)";
+  const body = document.createElement("p");
+  body.textContent = "에이전트와 웹 명령 실행에 사용할 Windows 셸을 선택합니다.";
+  const loading = document.createElement("p");
+  loading.className = "settings-helper";
+  loading.textContent = "설정을 불러오는 중...";
+  card.append(title, body, loading);
+  els.modalHost.append(card);
+
+  try {
+    const current = await readShellSettings();
+    loading.remove();
+    let selectedShell = ["auto", "powershell", "git-bash", "cmd"].includes(current.shell)
+      ? current.shell
+      : "auto";
+    const options = Array.isArray(current.options) && current.options.length
+      ? current.options
+      : [
+        { value: "auto", label: "자동", description: "PowerShell을 우선 사용합니다." },
+        { value: "powershell", label: "PowerShell", description: "pwsh 또는 Windows PowerShell을 사용합니다." },
+        { value: "git-bash", label: "Git Bash", description: "Git for Windows의 bash.exe를 사용합니다." },
+        { value: "cmd", label: "cmd", description: "cmd.exe를 사용합니다." },
+      ];
+
+    const control = document.createElement("div");
+    control.className = "scope-segmented-control shell-mode-list";
+    control.setAttribute("role", "radiogroup");
+    control.setAttribute("aria-label", "명령어 셀 (CLI)");
+
+    const buttons = options.map((option) => scopeModeButton(option.value, option.label, option.description));
+    const syncButtons = () => {
+      for (const button of buttons) {
+        const active = button.dataset.mode === selectedShell;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-checked", active ? "true" : "false");
+      }
+    };
+    for (const button of buttons) {
+      button.addEventListener("click", () => {
+        selectedShell = button.dataset.mode;
+        syncButtons();
+      });
+    }
+    control.append(...buttons);
+    syncButtons();
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    actions.append(
+      modalButton("뒤로", false, showSettingsModal),
+      modalButton("저장", true, async () => {
+        try {
+          const saved = await changeShellPreference(selectedShell);
+          const shell = saved.shell || selectedShell;
+          saveAppSettings({ shell });
+          showSettingsModal();
+          appendMessage("system", `명령어 셀 (CLI)을 ${shellPreferenceLabel(shell)}로 변경했습니다.`);
+        } catch (error) {
+          appendMessage("system", `명령어 셀 (CLI) 저장 실패: ${error.message}`);
+        }
+      }),
+    );
+    card.append(control, actions);
+  } catch (error) {
+    loading.textContent = `명령어 셀 (CLI) 설정을 불러오지 못했습니다: ${error.message}`;
+  }
 }
 
 async function showPgptSettingsModal() {
@@ -530,7 +752,7 @@ async function showPgptSettingsModal() {
   card.append(modalCloseButton(showSettingsModal));
 
   const title = document.createElement("h2");
-  title.textContent = "P-GPT 키";
+  title.textContent = "P-GPT API KEY";
   const body = document.createElement("p");
   body.textContent = "P-GPT OpenAI-compatible 연결에 필요한 값을 저장합니다.";
   const loading = document.createElement("p");
@@ -637,7 +859,7 @@ function showModelSettingsModal() {
   }
 
   list.append(
-    settingsButton("Provider", formatProviderName(state.provider), () => selectCommand("provider"), "provider"),
+    settingsButton("Provider", providerDisplayName(), () => selectCommand("provider"), "provider"),
     settingsButton("모델", state.model, () => selectCommand("model"), "model"),
     settingsButton("추론 노력", formatEffort(state.effort), () => selectCommand("effort"), "effort"),
   );
@@ -938,7 +1160,7 @@ function showImagePreview(image) {
 function showInlineQuestion(modal) {
   closeRuntimePicker();
   closeModal();
-  closeInlineQuestion();
+  closeInlineQuestion({ clearSlot: false });
 
   const question = String(modal.question || "").trim() || "추가 정보가 필요합니다.";
   const root = document.createElement("section");
@@ -948,7 +1170,9 @@ function showInlineQuestion(modal) {
   root.dataset.requestId = modal.request_id || "";
 
   const choices = normalizeQuestionChoices(modal, question);
-  const conciseQuestion = stripQuestionChoiceLines(question, choices);
+  const shouldStripChoiceLines = choices.some((choice) => choice.source === "question")
+    && !choices.some((choice) => choice.source === "structured");
+  const conciseQuestion = shouldStripChoiceLines ? stripQuestionChoiceLines(question, choices) : question;
   const header = document.createElement("div");
   header.className = "inline-question-header";
   const label = document.createElement("strong");
@@ -975,6 +1199,12 @@ function showInlineQuestion(modal) {
     copy.className = "inline-question-choice-copy";
     copy.textContent = choice.label;
     button.append(number, copy);
+    if (choice.description) {
+      const description = document.createElement("small");
+      description.className = "inline-question-choice-description";
+      description.textContent = choice.description;
+      button.append(description);
+    }
     button.addEventListener("click", () => {
       submitInlineQuestion(modal, choice.value, root.querySelectorAll("button, textarea"));
     });
@@ -1033,7 +1263,11 @@ function showInlineQuestion(modal) {
   root.append(form);
 
   els.composerBox?.before(root);
-  state.inlineQuestion = { root, modal };
+  const activeSlot = state.chatSlots?.get?.(state.activeFrontendId);
+  if (activeSlot) {
+    activeSlot.inlineQuestionModal = modal;
+  }
+  state.inlineQuestion = { root, modal, frontendId: state.activeFrontendId };
   requestAnimationFrame(() => updateInlineQuestionTooltips(root));
   input.focus();
 }
@@ -1073,7 +1307,7 @@ function normalizeQuestionChoices(modal, question) {
       continue;
     }
     for (const item of source) {
-      const choice = normalizeQuestionChoice(item);
+      const choice = normalizeQuestionChoice(item, "structured");
       if (choice) {
         choices.push(choice);
       }
@@ -1113,10 +1347,10 @@ function escapeRegExp(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function normalizeQuestionChoice(item) {
+function normalizeQuestionChoice(item, source = "structured") {
   if (typeof item === "string") {
     const value = item.trim();
-    return value ? { label: value, value, description: "" } : null;
+    return value ? { label: value, value, description: "", source } : null;
   }
   if (!item || typeof item !== "object") {
     return null;
@@ -1129,6 +1363,7 @@ function normalizeQuestionChoice(item) {
     label: String(item.label ?? item.title ?? value).trim() || value,
     value,
     description: String(item.description ?? item.detail ?? "").trim(),
+    source,
   };
 }
 
@@ -1139,22 +1374,22 @@ function extractQuestionChoices(question) {
     .map((value) => value.trim())
     .filter(Boolean)
     .slice(0, 6)
-    .map((value) => ({ label: value, value, description: "" }));
+    .map((value) => ({ label: value, value, description: "", source: "question" }));
 }
 
 function defaultQuestionChoices(question) {
   const text = String(question || "");
   if (/(예|아니오|yes|no|할까요|원하시나요|진행할까요|괜찮을까요|맞나요)/i.test(text)) {
     return [
-      { label: "네, 진행해주세요", value: "네, 진행해주세요", description: "" },
-      { label: "아니요", value: "아니요", description: "" },
-      { label: "선택지를 더 보여주세요", value: "선택지를 더 보여주세요", description: "" },
+      { label: "네, 진행해주세요", value: "네, 진행해주세요", description: "", source: "default" },
+      { label: "아니요", value: "아니요", description: "", source: "default" },
+      { label: "선택지를 더 보여주세요", value: "선택지를 더 보여주세요", description: "", source: "default" },
     ];
   }
   return [
-    { label: "추천안으로 진행", value: "추천안으로 진행해주세요", description: "" },
-    { label: "선택지 더 제안", value: "선택지를 더 제안해주세요", description: "" },
-    { label: "적절히 판단", value: "잘 모르겠습니다. 적절히 판단해주세요", description: "" },
+    { label: "추천안으로 진행해주세요", value: "추천안으로 진행해주세요", description: "", source: "default" },
+    { label: "선택지를 더 제안해주세요", value: "선택지를 더 제안해주세요", description: "", source: "default" },
+    { label: "적절히 판단해주세요", value: "적절히 판단해주세요", description: "", source: "default" },
   ];
 }
 
@@ -1170,8 +1405,17 @@ async function submitInlineQuestion(modal, answer, controls = []) {
   }
 }
 
-function closeInlineQuestion() {
-  state.inlineQuestion?.root?.remove();
+function closeInlineQuestion(options = {}) {
+  const { clearSlot = true } = options || {};
+  const inlineQuestion = state.inlineQuestion || null;
+  inlineQuestion?.root?.remove();
+  if (clearSlot) {
+    const slotId = inlineQuestion?.frontendId || state.activeFrontendId;
+    const slot = state.chatSlots?.get?.(slotId);
+    if (slot) {
+      slot.inlineQuestionModal = null;
+    }
+  }
   state.inlineQuestion = null;
 }
 
@@ -1256,12 +1500,20 @@ function ensureRuntimePicker() {
       anchor: null,
       providerModal: null,
       modelModal: null,
+      effortModal: null,
       providerOptions: null,
+      modelOptionsByProvider: null,
       modelOptions: null,
+      effortOptions: null,
       providerError: "",
       modelError: "",
+      effortError: "",
       modelOpen: false,
+      effortOpen: false,
+      lockedTop: null,
       pendingCommand: "",
+      pendingCommands: new Set(),
+      prefetchCommands: new Set(),
       dismissedCommands: new Set(),
       listenersInstalled: false,
     };
@@ -1292,21 +1544,37 @@ function showRuntimePicker(anchor) {
   picker.anchor = anchor;
   picker.providerModal = null;
   picker.modelModal = null;
+  picker.effortModal = null;
   picker.providerOptions = null;
+  picker.modelOptionsByProvider = null;
   picker.modelOptions = null;
+  picker.effortOptions = null;
   picker.providerError = "";
   picker.modelError = "";
+  picker.effortError = "";
   picker.modelOpen = false;
-  picker.pendingCommand = "provider";
+  picker.effortOpen = false;
+  picker.lockedTop = null;
+  picker.pendingCommand = "";
+  picker.pendingCommands?.clear?.();
+  picker.prefetchCommands?.clear?.();
   anchor.setAttribute("aria-expanded", "true");
-  renderRuntimePicker();
+  installRuntimePickerListeners();
   requestRuntimePickerCommand("provider");
+  requestRuntimePickerCommand("model", { prefetch: true });
+  requestRuntimePickerCommand("effort", { prefetch: true });
 }
 
-function requestRuntimePickerCommand(command) {
+function requestRuntimePickerCommand(command, options = {}) {
   const picker = ensureRuntimePicker();
   const normalizedCommand = String(command || "").trim().toLowerCase();
   picker.pendingCommand = normalizedCommand;
+  picker.pendingCommands?.add?.(normalizedCommand);
+  if (options.prefetch) {
+    picker.prefetchCommands?.add?.(normalizedCommand);
+  } else {
+    picker.prefetchCommands?.delete?.(normalizedCommand);
+  }
   if (!state.sessionId) {
     setRuntimePickerError(normalizedCommand, "세션이 준비되면 선택할 수 있습니다.");
     return;
@@ -1322,12 +1590,16 @@ function requestRuntimePickerCommand(command) {
 
 function setRuntimePickerError(command, message) {
   const picker = ensureRuntimePicker();
-  if (command === "model") {
+  if (command === "effort") {
+    picker.effortError = message;
+  } else if (command === "model") {
     picker.modelError = message;
   } else {
     picker.providerError = message;
   }
-  picker.pendingCommand = "";
+  picker.prefetchCommands?.delete?.(command);
+  picker.pendingCommands?.delete?.(command);
+  picker.pendingCommand = picker.pendingCommands?.size ? picker.pendingCommand : "";
   renderRuntimePicker();
 }
 
@@ -1339,21 +1611,69 @@ function renderRuntimePickerSelect(event) {
     picker.dismissedCommands.delete(command);
     return true;
   }
-  if (!picker.open || !["provider", "model"].includes(command)) {
+  if (!picker.open || !["provider", "model", "effort", "runtime-picker"].includes(command)) {
     return false;
   }
-  const options = (event.select_options || []).map((option) => normalizeSelectOption(modal, option));
+  const wasPrefetch = Boolean(picker.prefetchCommands?.has?.(command));
+  if (command === "runtime-picker") {
+    const runtimeOptions = modal.runtime_options || {};
+    const providerModal = runtimePickerCommandModal("provider");
+    const modelModal = runtimePickerCommandModal("model");
+    const effortModal = runtimePickerCommandModal("effort");
+    picker.providerModal = providerModal;
+    picker.modelModal = modelModal;
+    picker.effortModal = effortModal;
+    picker.providerOptions = normalizeRuntimePickerOptions(
+      "provider",
+      (runtimeOptions.providers || []).map((option) => normalizeSelectOption(providerModal, option)),
+    );
+    picker.modelOptionsByProvider = new Map(
+      Object.entries(runtimeOptions.models_by_provider || {}).map(([provider, options]) => [
+        provider,
+        normalizeRuntimePickerOptions(
+          "model",
+          (options || []).map((option) => normalizeSelectOption(modelModal, option)),
+        ),
+      ]),
+    );
+    const activeProvider = picker.providerOptions.find((option) => option.active)?.value || state.provider;
+    picker.modelOptions = picker.modelOptionsByProvider.get(String(activeProvider)) || null;
+    picker.effortOptions = normalizeRuntimePickerOptions(
+      "effort",
+      (runtimeOptions.efforts || []).map((option) => normalizeSelectOption(effortModal, option)),
+    );
+    picker.providerError = "";
+    picker.modelError = "";
+    picker.effortError = "";
+    picker.lockedTop = null;
+    picker.pendingCommands?.delete?.(command);
+    picker.pendingCommand = picker.pendingCommands?.size ? picker.pendingCommand : "";
+    renderRuntimePicker();
+    return true;
+  }
+  const options = normalizeRuntimePickerOptions(
+    command,
+    (event.select_options || []).map((option) => normalizeSelectOption(modal, option)),
+  );
   if (command === "provider") {
     picker.providerModal = modal;
     picker.providerOptions = options;
     picker.providerError = "";
-  } else {
+    picker.lockedTop = null;
+  } else if (command === "model") {
     picker.modelModal = modal;
     picker.modelOptions = options;
     picker.modelError = "";
-    picker.modelOpen = true;
+    picker.modelOpen = picker.modelOpen || !wasPrefetch;
+  } else {
+    picker.effortModal = modal;
+    picker.effortOptions = options;
+    picker.effortError = "";
+    picker.effortOpen = picker.effortOpen || !wasPrefetch;
   }
-  picker.pendingCommand = "";
+  picker.prefetchCommands?.delete?.(command);
+  picker.pendingCommands?.delete?.(command);
+  picker.pendingCommand = picker.pendingCommands?.size ? picker.pendingCommand : "";
   renderRuntimePicker();
   return true;
 }
@@ -1370,31 +1690,38 @@ function renderRuntimePicker() {
     document.body.append(picker.root);
   }
   installRuntimePickerListeners();
-  positionRuntimePicker();
-  picker.root.textContent = "";
+  const fragment = document.createDocumentFragment();
 
   const providerPanel = document.createElement("section");
-  providerPanel.className = "runtime-picker-panel";
+  providerPanel.className = "runtime-picker-panel runtime-picker-provider-panel";
   providerPanel.setAttribute("aria-label", "Provider 선택");
-  providerPanel.append(runtimePickerHeader("Provider", formatProviderName(state.provider)));
+  providerPanel.append(runtimePickerHeader("Provider", providerDisplayName()));
 
   const providerList = document.createElement("div");
   providerList.className = "runtime-picker-list";
   if (picker.providerError) {
     providerList.append(runtimePickerEmpty(picker.providerError));
   } else if (!picker.providerOptions) {
-    providerList.append(runtimePickerEmpty("불러오는 중..."));
+    providerList.append(runtimePickerEmpty(""));
   } else {
     for (const option of picker.providerOptions) {
       providerList.append(runtimePickerOption(picker.providerModal, option, "›", async (button) => {
         button.disabled = true;
         const ok = await applySelectChoice(picker.providerModal, option, { closeBeforeRequest: false });
         if (ok) {
-          picker.modelOpen = true;
-          picker.modelOptions = null;
+          markRuntimePickerActive("provider", option.value);
+          const modelOptions = picker.modelOptionsByProvider?.get?.(String(option.value)) || null;
+          picker.modelOpen = Boolean(modelOptions);
+          picker.modelModal = picker.modelModal || runtimePickerCommandModal("model");
+          picker.modelOptions = modelOptions;
           picker.modelError = "";
+          picker.effortOpen = false;
+          picker.effortModal = picker.effortModal || runtimePickerCommandModal("effort");
+          picker.effortError = "";
           renderRuntimePicker();
-          requestRuntimePickerCommand("model");
+          if (!modelOptions) {
+            requestRuntimePickerCommand("model");
+          }
         } else {
           button.disabled = false;
         }
@@ -1402,7 +1729,7 @@ function renderRuntimePicker() {
     }
   }
   providerPanel.append(providerList);
-  picker.root.append(providerPanel);
+  fragment.append(providerPanel);
 
   if (picker.modelOpen) {
     const modelPanel = document.createElement("section");
@@ -1415,14 +1742,22 @@ function renderRuntimePicker() {
     if (picker.modelError) {
       modelList.append(runtimePickerEmpty(picker.modelError));
     } else if (!picker.modelOptions) {
-      modelList.append(runtimePickerEmpty("불러오는 중..."));
+      modelList.append(runtimePickerEmpty(""));
     } else {
       for (const option of picker.modelOptions) {
-        modelList.append(runtimePickerOption(picker.modelModal, option, "", async (button) => {
+        modelList.append(runtimePickerOption(picker.modelModal, option, "›", async (button) => {
           button.disabled = true;
           const ok = await applySelectChoice(picker.modelModal, option, { closeBeforeRequest: false });
           if (ok) {
-            closeRuntimePicker();
+            markRuntimePickerActive("model", option.value);
+            picker.effortOpen = Boolean(picker.effortOptions);
+            picker.effortModal = picker.effortModal || runtimePickerCommandModal("effort");
+            picker.effortOptions = picker.effortOptions || null;
+            picker.effortError = "";
+            renderRuntimePicker();
+            if (!picker.effortOptions) {
+              requestRuntimePickerCommand("effort");
+            }
           } else {
             button.disabled = false;
           }
@@ -1430,9 +1765,54 @@ function renderRuntimePicker() {
       }
     }
     modelPanel.append(modelList);
-    picker.root.append(modelPanel);
+    fragment.append(modelPanel);
   }
+
+  if (picker.effortOpen) {
+    const effortPanel = document.createElement("section");
+    effortPanel.className = "runtime-picker-panel runtime-picker-effort-panel";
+    effortPanel.setAttribute("aria-label", "추론 노력 선택");
+    effortPanel.append(runtimePickerHeader("추론 노력", formatEffort(state.effort)));
+
+    const effortList = document.createElement("div");
+    effortList.className = "runtime-picker-list";
+    if (picker.effortError) {
+      effortList.append(runtimePickerEmpty(picker.effortError));
+    } else if (!picker.effortOptions) {
+      effortList.append(runtimePickerEmpty(""));
+    } else {
+      for (const option of picker.effortOptions) {
+        effortList.append(runtimePickerOption(picker.effortModal, option, "", async (button) => {
+          button.disabled = true;
+          const ok = await applySelectChoice(picker.effortModal, option, { closeBeforeRequest: false });
+          if (ok) {
+            markRuntimePickerActive("effort", option.value);
+            renderRuntimePicker();
+          } else {
+            button.disabled = false;
+          }
+        }));
+      }
+    }
+    effortPanel.append(effortList);
+    fragment.append(effortPanel);
+  }
+  picker.root.replaceChildren(fragment);
   positionRuntimePicker();
+}
+
+function runtimePickerCommandModal(command) {
+  const normalizedCommand = String(command || "").trim().toLowerCase();
+  const titles = {
+    provider: "Provider Profile",
+    model: "Model",
+    effort: "Reasoning Effort",
+  };
+  return { kind: "select", title: titles[normalizedCommand] || "Selection", command: normalizedCommand };
+}
+
+function providerDisplayName() {
+  return state.providerLabel || formatProviderName(state.provider);
 }
 
 function runtimePickerHeader(title, value) {
@@ -1453,14 +1833,69 @@ function runtimePickerEmpty(text) {
   return node;
 }
 
+function normalizeRuntimePickerOptions(command, options) {
+  const items = Array.isArray(options) ? options.map((option) => ({ ...option })) : [];
+  const normalizedCommand = String(command || "").trim().toLowerCase();
+  const currentValue = normalizedCommand === "provider"
+    ? String(state.provider || "").trim()
+    : normalizedCommand === "model"
+      ? String(state.model || "").trim()
+      : String(state.effort || "").trim();
+  const currentLower = currentValue.toLowerCase();
+  let activeIndex = items.findIndex((option) => String(option.value || "").trim() === currentValue);
+  if (activeIndex < 0 && normalizedCommand === "effort") {
+    const autoValues = new Set(["", "none", "auto"]);
+    activeIndex = items.findIndex((option) => autoValues.has(String(option.value || "").trim().toLowerCase()) && autoValues.has(currentLower));
+  }
+  if (activeIndex < 0) {
+    const activeItems = items
+      .map((option, index) => ({ option, index }))
+      .filter(({ option }) => Boolean(option.active));
+    if (normalizedCommand === "model") {
+      activeIndex = activeItems.find(({ option }) => !["default", "best"].includes(String(option.value || "").trim().toLowerCase()))?.index ?? -1;
+    }
+    if (activeIndex < 0) {
+      activeIndex = activeItems[0]?.index ?? -1;
+    }
+  }
+  return items.map((option, index) => ({ ...option, active: index === activeIndex }));
+}
+
+function markRuntimePickerActive(command, value) {
+  const picker = ensureRuntimePicker();
+  const normalizedCommand = String(command || "").trim().toLowerCase();
+  const normalizedValue = String(value || "").trim();
+  const mark = (options) => normalizeRuntimePickerOptions(
+    normalizedCommand,
+    (options || []).map((option) => ({
+      ...option,
+      active: String(option.value || "").trim() === normalizedValue,
+    })),
+  );
+  if (normalizedCommand === "provider") {
+    picker.providerOptions = mark(picker.providerOptions);
+  } else if (normalizedCommand === "model") {
+    picker.modelOptions = mark(picker.modelOptions);
+  } else if (normalizedCommand === "effort") {
+    const valueLower = normalizedValue.toLowerCase();
+    const autoValues = new Set(["", "none", "auto"]);
+    picker.effortOptions = normalizeRuntimePickerOptions(
+      "effort",
+      (picker.effortOptions || []).map((option) => {
+        const optionLower = String(option.value || "").trim().toLowerCase();
+        return {
+          ...option,
+          active: optionLower === valueLower || (autoValues.has(optionLower) && autoValues.has(valueLower)),
+        };
+      }),
+    );
+  }
+}
+
 function runtimePickerOption(modal, option, suffix, onClick) {
   const command = String(modal?.command || "").trim().toLowerCase();
   const selectedOption = { ...option };
-  if (command === "provider") {
-    selectedOption.active = String(option.value || "") === String(state.provider || "");
-  } else if (command === "model") {
-    selectedOption.active = String(option.value || "") === String(state.model || "");
-  }
+  selectedOption.active = Boolean(option.active);
   const button = createSelectOptionButton(modal, selectedOption, () => onClick(button));
   button.classList.add("runtime-picker-option", `runtime-picker-option-${command || "item"}`);
   button.dataset.runtimeCommand = command;
@@ -1480,22 +1915,46 @@ function positionRuntimePicker() {
   const gap = 8;
   const viewportPad = 8;
   const bottomLimit = Math.max(viewportPad, rect.top - gap);
-  const providerPanel = picker.root.querySelector(".runtime-picker-panel:not(.runtime-picker-model-panel)");
-  const modelPanel = picker.root.querySelector(".runtime-picker-model-panel");
-  const providerHeight = providerPanel?.offsetHeight || picker.root.offsetHeight || 0;
-  const modelHeight = modelPanel?.offsetHeight || providerHeight;
-  const topAlignedTop = Math.max(viewportPad, bottomLimit - providerHeight);
-  const shouldBottomAlign = Boolean(modelPanel && topAlignedTop + modelHeight > bottomLimit);
+  if (picker.lockedTop === null || picker.lockedTop === undefined) {
+    const providerPanel = picker.root.querySelector(".runtime-picker-provider-panel");
+    const providerHeight = Math.min(
+      Math.max(96, bottomLimit - viewportPad),
+      Math.max(
+        96,
+        picker.providerOptions || picker.providerError
+          ? runtimePickerNaturalPanelHeight(providerPanel)
+          : providerPanel?.scrollHeight || providerPanel?.offsetHeight || picker.root.offsetHeight || 0,
+      ),
+    );
+    const candidateTop = Math.max(viewportPad, bottomLimit - providerHeight);
+    if (picker.providerOptions || picker.providerError) {
+      picker.lockedTop = candidateTop;
+    } else {
+      picker.root.style.left = `${Math.max(8, rect.left + 4)}px`;
+      picker.root.style.bottom = "";
+      picker.root.style.top = `${candidateTop}px`;
+      picker.root.style.setProperty("--runtime-picker-panel-max-height", `${Math.max(96, bottomLimit - candidateTop)}px`);
+      return;
+    }
+  }
+  const top = Math.max(viewportPad, picker.lockedTop);
+  const availablePanelHeight = Math.max(96, Math.min(360, bottomLimit - top));
 
   picker.root.style.left = `${Math.max(8, rect.left + 4)}px`;
-  picker.root.classList.toggle("align-bottom", shouldBottomAlign);
-  if (shouldBottomAlign) {
-    picker.root.style.top = "";
-    picker.root.style.bottom = `${Math.max(viewportPad, window.innerHeight - bottomLimit)}px`;
-  } else {
-    picker.root.style.bottom = "";
-    picker.root.style.top = `${topAlignedTop}px`;
+  picker.root.style.bottom = "";
+  picker.root.style.top = `${top}px`;
+  picker.root.style.setProperty("--runtime-picker-panel-max-height", `${availablePanelHeight}px`);
+}
+
+function runtimePickerNaturalPanelHeight(panel) {
+  if (!panel) {
+    return 0;
   }
+  const header = panel.querySelector(".runtime-picker-header");
+  const list = panel.querySelector(".runtime-picker-list");
+  const styles = getComputedStyle(panel);
+  const borderY = parseFloat(styles.borderTopWidth || "0") + parseFloat(styles.borderBottomWidth || "0");
+  return (header?.offsetHeight || 0) + (list?.scrollHeight || 0) + borderY;
 }
 
 function installRuntimePickerListeners() {
@@ -1542,6 +2001,9 @@ function handleRuntimePickerKeydown(event) {
 
 function closeRuntimePicker() {
   const picker = ensureRuntimePicker();
+  for (const command of picker.pendingCommands || []) {
+    picker.dismissedCommands?.add(command);
+  }
   if (picker.pendingCommand) {
     picker.dismissedCommands?.add(picker.pendingCommand);
   }
@@ -1552,9 +2014,15 @@ function closeRuntimePicker() {
   picker.anchor = null;
   picker.providerModal = null;
   picker.modelModal = null;
+  picker.effortModal = null;
   picker.providerOptions = null;
+  picker.modelOptionsByProvider = null;
   picker.modelOptions = null;
+  picker.effortOptions = null;
+  picker.lockedTop = null;
   picker.pendingCommand = "";
+  picker.pendingCommands?.clear?.();
+  picker.prefetchCommands?.clear?.();
   uninstallRuntimePickerListeners();
 }
 
@@ -1619,9 +2087,10 @@ function createSelectOptionButton(modal, normalizedOption, onClick) {
 
 async function applySelectChoice(modal, normalizedOption, options = {}) {
   const previousProvider = state.provider;
+  const previousProviderLabel = state.providerLabel;
   const previousModel = state.model;
   const previousEffort = state.effort;
-  applySelectOptimistic(modal.command, normalizedOption.value);
+  applySelectOptimistic(modal.command, normalizedOption.value, normalizedOption);
   try {
     if (options.closeBeforeRequest) {
       await respond({ type: "apply_select_command", command: modal.command, value: normalizedOption.value });
@@ -1635,6 +2104,7 @@ async function applySelectChoice(modal, normalizedOption, options = {}) {
     return true;
   } catch (error) {
     state.provider = previousProvider;
+    state.providerLabel = previousProviderLabel;
     state.model = previousModel;
     state.effort = previousEffort;
     refreshProviderSummary();
@@ -1648,7 +2118,7 @@ async function applySelectChoice(modal, normalizedOption, options = {}) {
 function updateModelSettingsRows() {
   const provider = els.modalHost.querySelector("[data-setting-value='provider']");
   if (provider) {
-    provider.textContent = formatProviderName(state.provider);
+    provider.textContent = providerDisplayName();
   }
   const model = els.modalHost.querySelector("[data-setting-value='model']");
   if (model) {
@@ -1673,7 +2143,7 @@ function normalizeSelectOption(modal, option) {
   return normalized;
 }
 
-function applySelectOptimistic(command, value) {
+function applySelectOptimistic(command, value, option = null) {
   const normalizedCommand = String(command || "").trim().toLowerCase();
   const normalizedValue = String(value || "").trim();
   if (!normalizedValue) {
@@ -1687,6 +2157,7 @@ function applySelectOptimistic(command, value) {
     refreshModelSummary();
   } else if (normalizedCommand === "provider") {
     state.provider = normalizedValue;
+    state.providerLabel = String(option?.label || "").trim() || formatProviderName(normalizedValue);
     refreshProviderSummary();
   }
 }
@@ -1695,7 +2166,7 @@ function refreshProviderSummary() {
   if (!els.provider) {
     return;
   }
-  const text = `Provider: ${formatProviderName(state.provider)}`;
+  const text = `Provider: ${providerDisplayName()}`;
   els.provider.textContent = text;
   els.provider.title = text;
 }
@@ -1772,6 +2243,7 @@ function dismissModal() {
     settingsButton,
     showModal,
     showSelect,
+    closeInlineQuestion,
     modalCloseButton,
     modalButton,
     respond,

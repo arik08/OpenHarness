@@ -5,7 +5,12 @@ from typing import Any
 
 import pytest
 
-from openharness.api.client import ApiMessageRequest, ApiMessageCompleteEvent, ApiTextDeltaEvent
+from openharness.api.client import (
+    ApiMessageCompleteEvent,
+    ApiMessageRequest,
+    ApiTextDeltaEvent,
+    ApiToolCallDeltaEvent,
+)
 from openharness.api.codex_client import (
     CodexApiClient,
     _convert_messages_to_codex,
@@ -223,3 +228,40 @@ async def test_codex_client_emits_tool_use(monkeypatch):
     assert tool_use.input == {"pattern": "src/**/*.py"}
     assert sink["json"]["reasoning"] == {"effort": "xhigh"}
     assert sink["json"]["tools"][0]["name"] == "glob"
+
+
+@pytest.mark.asyncio
+async def test_codex_client_names_tool_argument_deltas(monkeypatch):
+    sink: dict[str, Any] = {}
+    response = _FakeStreamResponse(
+        lines=[
+            'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","arguments":"","call_id":"call_abc","name":"write_file"}}',
+            "",
+            'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\\"path\\":\\"notes.md\\","}',
+            "",
+            'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\\"content\\":\\"hello"}',
+            "",
+            'data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","arguments":"{\\"path\\":\\"notes.md\\",\\"content\\":\\"hello\\"}","call_id":"call_abc","name":"write_file"}}',
+            "",
+            'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":2}}}',
+            "",
+        ]
+    )
+    monkeypatch.setattr(
+        "openharness.api.codex_client.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(response, sink),
+    )
+
+    client = CodexApiClient(_fake_codex_token())
+    request = ApiMessageRequest(
+        model="gpt-5.5",
+        messages=[ConversationMessage.from_user_text("write")],
+        system_prompt="Use tools.",
+        tools=[{"name": "write_file", "description": "write files", "input_schema": {"type": "object"}}],
+    )
+    events = [event async for event in client.stream_message(request)]
+
+    deltas = [event for event in events if isinstance(event, ApiToolCallDeltaEvent)]
+    assert [event.name for event in deltas] == ["write_file", "write_file"]
+    assert [event.index for event in deltas] == [0, 0]
+    assert "".join(event.arguments_delta for event in deltas) == '{"path":"notes.md","content":"hello'

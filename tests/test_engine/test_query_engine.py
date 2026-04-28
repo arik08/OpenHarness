@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -54,9 +54,10 @@ class FakeApiClient:
 
     def __init__(self, responses: list[_FakeResponse]) -> None:
         self._responses = list(responses)
+        self.requests = []
 
     async def stream_message(self, request):
-        del request
+        self.requests.append(replace(request, messages=list(request.messages)))
         response = self._responses.pop(0)
         for block in response.message.content:
             if isinstance(block, TextBlock) and block.text:
@@ -200,6 +201,62 @@ async def test_query_engine_plain_text_reply(tmp_path: Path, monkeypatch):
     assert engine.total_usage.input_tokens == 10
     assert engine.total_usage.output_tokens == 5
     assert len(engine.messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_query_engine_applies_steering_after_current_answer(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
+    api_client = FakeApiClient(
+        [
+            _FakeResponse(
+                message=ConversationMessage(
+                    role="assistant",
+                    content=[TextBlock(text="Long first draft.")],
+                ),
+                usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+            ),
+            _FakeResponse(
+                message=ConversationMessage(
+                    role="assistant",
+                    content=[TextBlock(text="Short version.")],
+                ),
+                usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+            ),
+        ]
+    )
+    engine = QueryEngine(
+        api_client=api_client,
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO)),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+    )
+    drain_calls = 0
+
+    async def _steering_provider() -> list[str]:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 2:
+            return ["make it shorter"]
+        return []
+
+    events = [
+        event
+        async for event in engine.submit_message(
+            "hello",
+            steering_provider=_steering_provider,
+        )
+    ]
+
+    assistant_turns = [event for event in events if isinstance(event, AssistantTurnComplete)]
+    assert [event.message.text for event in assistant_turns] == ["Long first draft.", "Short version."]
+    assert any(isinstance(event, StatusEvent) and "스티어링" in event.message for event in events)
+    assert len(api_client.requests) == 2
+    steering_message = api_client.requests[1].messages[-1]
+    assert steering_message.text == "make it shorter"
+    assert steering_message.content[0].text.startswith("The user sent this steering update")
+    assert engine.messages[-2].text == "make it shorter"
 
 
 @pytest.mark.asyncio

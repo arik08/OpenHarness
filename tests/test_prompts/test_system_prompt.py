@@ -65,6 +65,8 @@ def test_build_system_prompt_custom_prompt():
 def test_build_system_prompt_default_includes_base():
     env = _make_env()
     prompt = build_system_prompt(env=env)
+    assert "You are MyHarness" in prompt
+    assert "You are OpenHarness" not in prompt
     assert "OpenHarness" in prompt
 
 
@@ -74,8 +76,10 @@ def test_build_system_prompt_encourages_parallel_research_tools():
 
     assert "Parallelism is for speed, not for increasing the amount of work" in prompt
     assert "start with a small, high-signal batch" in prompt
-    assert "2-3 `web_fetch` calls" in prompt
-    assert "Avoid 4 or more parallel web calls" in prompt
+    assert "2-3 `web_search` calls" in prompt
+    assert "1-2 `web_fetch` calls" in prompt
+    assert "around 5 parallel web calls total" in prompt
+    assert "Avoid 6 or more parallel web calls" in prompt
     assert "call those `web_fetch` or `web_search` tools in parallel" in prompt
     assert "Escalate blocked web research by source importance" in prompt
     assert "central to the answer" in prompt
@@ -90,10 +94,27 @@ def test_build_system_prompt_plans_substantial_tasks_first():
     env = _make_env()
     prompt = build_system_prompt(env=env)
 
-    assert "For substantial tasks, share a short execution plan" in prompt
+    assert "For substantial tasks, share progress as a short markdown checklist" in prompt
+    assert "`todo_write` with a full `todos` list and `persist=false`" in prompt
     assert "3+ files" in prompt
     assert "broad refactors" in prompt
-    assert "Do not add a plan for tiny, obvious, or purely informational tasks" in prompt
+    assert "Do not add a checklist for tiny, obvious, or purely informational tasks" in prompt
+
+
+def test_build_system_prompt_guides_chat_html_rendering_and_report_charts():
+    env = _make_env()
+    prompt = build_system_prompt(env=env)
+
+    assert "MyHarness can render fenced `html` code blocks directly in the chat" in prompt
+    assert "quick charts, small data views" in prompt
+    assert "Do not force inline HTML for every answer" in prompt
+    assert "HTML report or 리포트" in prompt
+    assert "add charts or graphs" in prompt
+    assert "prefer ECharts via CDN" in prompt
+    assert "business-style HTML reports, dashboards, and charts" in prompt
+    assert "Avoid oversized border-radius" in prompt
+    assert "usually around 4-8px radius" in prompt
+    assert "self-contained, compact, readable in a constrained iframe" in prompt
 
 
 def test_build_system_prompt_prefers_existing_files_and_batched_edits():
@@ -112,5 +133,8 @@ def test_build_system_prompt_prefers_existing_files_and_batched_edits():
     assert "For unrelated standalone HTML previews or demos" in prompt
     assert "required app/framework/hosting entrypoint would otherwise break" in prompt
     assert "If both editing and creating are plausible" in prompt
+    assert "create, install, persist, or update a MyHarness/OpenHarness skill" in prompt
+    assert "(program location)\\OpenHarness\\.skills" in prompt
+    assert "Use a workspace `.skills`, user-level skill directory, or another location only" in prompt
     assert "batch them into one `edit_file` call with the `edits` array" in prompt
     assert "issue the necessary `edit_file` calls in the same assistant response" in prompt

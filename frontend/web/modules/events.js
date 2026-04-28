@@ -1,4 +1,33 @@
-import { compactToolProgressStatus } from "./state.js";
+import { activeEventStatus } from "./state.js";
+
+const koSkillDescriptionsByName = {
+  "dot-skill": "인물이나 자료에 대한 원문을 재사용 가능한 AI 스킬로 바꾸기 위한 영어 우선 메타 스킬입니다.",
+  "insane-search": "차단된 웹사이트를 자동으로 우회하기 위해 가능한 방법을 순차적으로 시도합니다. WebFetch가 402/403/차단 오류를 반환하거나 X/Twitter, Reddit, YouTube, GitHub, Mastodon, Medium, Substack, Stack Overflow, Threads, Naver, Coupang, LinkedIn처럼 WAF나 봇 보호가 있는 플랫폼에 접근할 때 사용합니다. yt-dlp, Jina Reader, 공개 API, TLS 위장, 모바일 URL 변환, Playwright 실제 Chrome 체인을 활용합니다.",
+  "playwright-capture": "Playwright/Chromium으로 로컬 또는 원격 HTML 페이지를 렌더링하고 스크린샷이나 PDF로 내보냅니다. 웹페이지 캡처, HTML의 PNG/PDF 변환, 브라우저 렌더링 결과 점검, PPT용 스크린샷 생성, 반응형 뷰포트 테스트, 시각적 HTML 파일의 실제 열림/내보내기 검증에 사용합니다.",
+  "skill-creator": "효과적인 스킬을 만들거나 기존 스킬을 업데이트하는 절차를 안내합니다. 전문 지식, 워크플로, 도구 통합으로 Codex의 기능을 확장하려는 요청에 사용합니다.",
+  "ui-design-essence": "페이지, 컴포넌트, 대시보드, 보고서, 프로토타입, 랜딩 페이지, HTML 프리뷰를 만들거나 개선할 때의 시각 UI 디자인 기준입니다. 시각적 위계, 스타일 방향, 디자인 토큰, 반응형/접근성/밀도/모션 점검에 사용합니다.",
+  "visual-artifact": "보고서, 대시보드, 인포그래픽, 원페이지, 슬라이드형 웹페이지, 시각 요약, 비교 페이지, 타임라인, 인터랙티브 프리뷰 같은 단일 HTML 시각 산출물을 만듭니다. 브라우저에서 열거나 PPT/PDF로 캡처할 재사용 가능한 시각 자료가 필요할 때 사용합니다.",
+  "visual-review": "브라우저에서 렌더링된 시각 산출물의 레이아웃, 내보내기, 접근성, 발표 품질을 검토합니다. HTML 보고서, 대시보드, 인포그래픽, 슬라이드형 페이지, 스크린샷, PDF, PPT용 시각 자료를 만든 뒤 잘림/넘침, PDF/스크린샷 준비 상태, 전반적인 완성도를 점검할 때 사용합니다.",
+};
+
+const koSkillDescriptionsByText = {
+  "English-first meta-skill for turning source material about a person into a reusable AI skill.": "인물이나 자료에 대한 원문을 재사용 가능한 AI 스킬로 바꾸기 위한 영어 우선 메타 스킬입니다.",
+  "Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Codex's capabilities with specialized knowledge, workflows, or tool integrations.": "효과적인 스킬을 만들거나 기존 스킬을 업데이트하는 절차를 안내합니다. 전문 지식, 워크플로, 도구 통합으로 Codex의 기능을 확장하려는 요청에 사용합니다.",
+};
+
+function normalizeDescriptionText(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function displaySkillDescription(name, description) {
+  const text = String(description || "").trim();
+  const mappedByText = koSkillDescriptionsByText[normalizeDescriptionText(text)];
+  if (mappedByText) {
+    return mappedByText;
+  }
+  const normalizedName = String(name || "").trim().replace(/^\$/, "").toLowerCase();
+  return koSkillDescriptionsByName[normalizedName] || text;
+}
 
 export function createEvents(ctx) {
   const { state, els, STATUS_LABELS, commandDescription, updateState } = ctx;
@@ -15,6 +44,9 @@ export function createEvents(ctx) {
   function setChatTitle(...args) { return ctx.setChatTitle(...args); }
   function renderWelcome(...args) { return ctx.renderWelcome(...args); }
   function resetWorkflowPanel(...args) { return ctx.resetWorkflowPanel(...args); }
+  function resetTodoChecklist(...args) { return ctx.resetTodoChecklist?.(...args); }
+  function renderTodoChecklist(...args) { return ctx.renderTodoChecklist?.(...args); }
+  function archiveTodoChecklist(...args) { return ctx.archiveTodoChecklist?.(...args); }
   function collapseWorkflowPanel(...args) { return ctx.collapseWorkflowPanel(...args); }
   function finalizeWorkflowSummary(...args) { return ctx.finalizeWorkflowSummary(...args); }
   function failWorkflowPanel(...args) { return ctx.failWorkflowPanel?.(...args); }
@@ -30,6 +62,7 @@ export function createEvents(ctx) {
   function markActiveHistory(...args) { return ctx.markActiveHistory?.(...args); }
   function showModal(...args) { return ctx.showModal(...args); }
   function showSelect(...args) { return ctx.showSelect(...args); }
+  function closeInlineQuestion(...args) { return ctx.closeInlineQuestion?.(...args); }
   function updateSlashMenu(...args) { return ctx.updateSlashMenu(...args); }
   function extractAndRenderArtifacts(...args) { return ctx.extractAndRenderArtifacts?.(...args); }
   function resetArtifacts(...args) { return ctx.resetArtifacts?.(...args); }
@@ -43,6 +76,7 @@ let streamingTextBuffer = "";
 let streamingLiveNode = null;
 let streamingRenderedTextLength = 0;
 let streamingDisplayStarted = false;
+let pendingAssistantActions = null;
 const STREAMING_FLUSH_INTERVAL_MS = 36;
 const STREAMING_START_BUFFER_MS = 180;
 const STREAMING_MIN_CHARS_PER_FLUSH = 3;
@@ -53,11 +87,12 @@ function streamingStartBufferMs() {
   return Math.max(0, Math.min(2000, Number.isFinite(configured) ? configured : STREAMING_START_BUFFER_MS));
 }
 
-function streamingScrollOptions(duration = state.appSettings?.streamScrollDurationMs ?? 2000) {
+function streamingScrollOptions(duration = state.appSettings?.streamScrollDurationMs ?? 2000, smooth = true, continuous = false) {
   return {
-    smooth: true,
+    smooth,
     duration,
     followTail: true,
+    continuous,
   };
 }
 
@@ -75,7 +110,7 @@ function normalizeSkills(skills) {
     ? skills
         .map((skill) => ({
           name: String(skill.name || "").trim(),
-          description: String(skill.description || "").trim(),
+          description: displaySkillDescription(skill.name, skill.description),
           source: String(skill.source || "").trim(),
           enabled: skill.enabled !== false,
         }))
@@ -114,6 +149,41 @@ function normalizePlugins(plugins) {
         .filter((plugin) => plugin.name)
         .sort((left, right) => left.name.localeCompare(right.name))
     : [];
+}
+
+function todoMarkdownFromToolEvent(event = {}) {
+  const toolName = String(event.tool_name || "").trim().toLowerCase();
+  if (toolName !== "todo_write" && toolName !== "todowrite") {
+    return "";
+  }
+  const input = event.tool_input || {};
+  const todos = Array.isArray(input.todos)
+    ? input.todos
+    : Array.isArray(input.content)
+      ? input.content
+      : [];
+  if (todos.length) {
+    return todos
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return "";
+        }
+        const status = String(item.status || "").trim().toLowerCase();
+        const checked = item.checked === true || ["done", "completed", "x"].includes(status);
+        const text = String(item.text || item.content || "").trim();
+        return text ? `- [${checked ? "x" : " "}] ${text}` : "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  const itemText = String(input.item || "").trim();
+  if (itemText) {
+    return `- [${input.checked ? "x" : " "}] ${itemText}`;
+  }
+  return String(event.output || "")
+    .split(/\r?\n/)
+    .filter((line) => /^\s*-\s+\[[ xX]\]\s+/.test(line))
+    .join("\n");
 }
 
 function isStreamingTextNode(node) {
@@ -287,7 +357,7 @@ function keepStreamingTailVisible() {
   streamingScrollTimer = window.setTimeout(() => {
     streamingScrollTimer = 0;
     if (!state.restoringHistory && state.autoFollowMessages) {
-      scrollMessagesToBottom(streamingScrollOptions());
+      scrollMessagesToBottom(streamingScrollOptions(undefined, true, true));
     }
   }, 60);
 }
@@ -300,8 +370,48 @@ function settleStreamingTailVisible() {
   window.clearTimeout(streamingScrollTimer);
   requestAnimationFrame(() => {
     els.messages.classList.remove("streaming-follow");
-    scrollMessagesToBottom(streamingScrollOptions(760));
+    scrollMessagesToBottom(streamingScrollOptions());
   });
+}
+
+function streamingStateSnapshot() {
+  return {
+    textBuffer: streamingTextBuffer,
+    liveNode: streamingLiveNode,
+    renderedTextLength: streamingRenderedTextLength,
+    displayStarted: streamingDisplayStarted,
+  };
+}
+
+function clearStreamingTimers() {
+  window.clearTimeout(streamingFlushTimer);
+  window.clearTimeout(streamingRenderTimer);
+  window.clearTimeout(streamingScrollTimer);
+  streamingFlushTimer = 0;
+  streamingRenderTimer = 0;
+  streamingScrollTimer = 0;
+}
+
+function pauseActiveStreaming() {
+  clearStreamingTimers();
+  els.messages?.classList.remove("streaming-follow");
+}
+
+function restoreStreamingState(snapshot = {}) {
+  clearStreamingTimers();
+  streamingTextBuffer = String(snapshot.textBuffer || "");
+  streamingLiveNode = snapshot.liveNode || null;
+  streamingRenderedTextLength = Number.isFinite(snapshot.renderedTextLength)
+    ? snapshot.renderedTextLength
+    : countRenderedStreamingText(state.assistantNode);
+  streamingDisplayStarted = Boolean(snapshot.displayStarted);
+  els.messages?.classList.toggle(
+    "streaming-follow",
+    Boolean(state.assistantNode && state.autoFollowMessages && !state.restoringHistory),
+  );
+  if (state.assistantNode && streamingTextBuffer) {
+    scheduleStreamingFlush();
+  }
 }
 
 function renderStreamingAssistant(revealStart = null) {
@@ -317,7 +427,7 @@ function renderStreamingAssistant(revealStart = null) {
   const renderText = stabilizeStreamingTableRows(displayText);
   const previousLength = Number.isFinite(revealStart) ? revealStart : streamingRenderedTextLength;
   const rawText = state.assistantNode.dataset.rawText || "";
-  setMarkdown(state.assistantNode, renderText);
+  setMarkdown(state.assistantNode, renderText, { rawMarkdown: displayText });
   state.assistantNode.dataset.rawText = rawText;
   state.assistantNode.dataset.displayText = displayText;
   streamingLiveNode = null;
@@ -361,17 +471,34 @@ function scheduleStreamingFlush() {
 }
 
 function resetStreamingState() {
-  window.clearTimeout(streamingFlushTimer);
-  window.clearTimeout(streamingRenderTimer);
-  window.clearTimeout(streamingScrollTimer);
-  streamingFlushTimer = 0;
-  streamingRenderTimer = 0;
-  streamingScrollTimer = 0;
+  clearStreamingTimers();
   streamingTextBuffer = "";
   streamingLiveNode = null;
   streamingRenderedTextLength = 0;
   streamingDisplayStarted = false;
   els.messages.classList.remove("streaming-follow");
+}
+
+function queueAssistantActions(content, rawText) {
+  const text = String(rawText || "").trim();
+  pendingAssistantActions = content && text
+    ? { content, text }
+    : null;
+}
+
+function attachPendingAssistantActions() {
+  if (!pendingAssistantActions) {
+    return;
+  }
+  const { content, text } = pendingAssistantActions;
+  pendingAssistantActions = null;
+  if (content?.isConnected) {
+    attachAssistantActions(content, text);
+  }
+}
+
+function clearPendingAssistantActions() {
+  pendingAssistantActions = null;
 }
 
 function handleEvent(event) {
@@ -436,8 +563,13 @@ function handleEvent(event) {
     return;
   }
 
+  if (event.type === "todo_update") {
+    renderTodoChecklist(event.todo_markdown || "");
+    return;
+  }
+
   if (event.type === "status") {
-    setBusy(true, event.message || STATUS_LABELS.processing);
+    setBusy(true, activeEventStatus(event, STATUS_LABELS.processing));
     return;
   }
 
@@ -450,8 +582,13 @@ function handleEvent(event) {
 
   if (event.type === "transcript_item" && event.item) {
     if (event.item.role === "user") {
-      if (!String(event.item.text || "").trim()) {
+      const userText = String(event.item.text || "");
+      const kind = String(event.item.kind || "").trim().toLowerCase();
+      if (!userText.trim()) {
         return;
+      }
+      if (kind === "steering" || kind === "queued") {
+        appendMessage("user", userText, [], { kind });
       }
       return;
     }
@@ -493,6 +630,7 @@ function handleEvent(event) {
 
   if (event.type === "clear_transcript") {
     resetStreamingState();
+    clearPendingAssistantActions();
     restoringWorkflowEvents = [];
     restoringWorkflowInputDeltas = [];
     state.suppressNextLineCompleteScroll = false;
@@ -508,8 +646,11 @@ function handleEvent(event) {
       activeSlot.workflowList = null;
       activeSlot.workflowSummary = null;
       activeSlot.workflowSteps = [];
+      activeSlot.todoNode = null;
+      activeSlot.todoMarkdown = "";
     }
     resetWorkflowPanel();
+    resetTodoChecklist();
     resetArtifacts();
     return;
   }
@@ -544,6 +685,7 @@ function handleEvent(event) {
       activeSlot.suppressNewChatHistory = true;
     }
     resetStreamingState();
+    clearPendingAssistantActions();
     restoringWorkflowEvents = [];
     restoringWorkflowInputDeltas = [];
     state.activeHistoryId = String(event.value || "").trim() || null;
@@ -560,6 +702,7 @@ function handleEvent(event) {
       setChatTitle(event.message);
     }
     resetWorkflowPanel();
+    resetTodoChecklist();
     resetArtifacts();
     const restoredSeconds = Number(event.compact_metadata?.workflow_duration_seconds || 0);
     state.workflowRestoredElapsedMs = Number.isFinite(restoredSeconds) && restoredSeconds > 0
@@ -580,9 +723,14 @@ function handleEvent(event) {
           output: item.output || "",
           is_error: Boolean(item.is_error),
         });
+        const todoMarkdown = todoMarkdownFromToolEvent(item);
+        if (todoMarkdown) {
+          renderTodoChecklist(todoMarkdown);
+        }
       }
     }
     finalizeWorkflowSummary();
+    archiveTodoChecklist();
     collapseWorkflowPanel();
     markActiveHistory();
     requestAnimationFrame(finishScrollRestore);
@@ -591,6 +739,8 @@ function handleEvent(event) {
   }
 
   if (event.type === "assistant_delta") {
+    clearPendingAssistantActions();
+    setBusy(true, activeEventStatus(event, STATUS_LABELS.processing));
     if (!state.assistantNode) {
       state.assistantNode = appendMessage("assistant", "");
       state.assistantNode.classList.add("streaming-text");
@@ -633,21 +783,25 @@ function handleEvent(event) {
       state.assistantNode.classList.remove("streaming-text");
       const finalText = event.message || state.assistantNode.dataset.rawText || "";
       setMarkdown(state.assistantNode, finalText);
+      extractAndRenderArtifacts(finalText, state.assistantNode);
       if (isFinalAssistantAnswer) {
-        extractAndRenderArtifacts(finalText, state.assistantNode);
-        attachAssistantActions(state.assistantNode, finalText);
+        queueAssistantActions(state.assistantNode, finalText);
         markWorkflowFinalAnswerDone();
+        archiveTodoChecklist();
       } else {
+        clearPendingAssistantActions();
         clearWorkflowFinalAnswerStep();
       }
       state.assistantNode = null;
     } else if (event.message) {
       const node = appendMessage("assistant", event.message);
+      extractAndRenderArtifacts(event.message, node);
       if (isFinalAssistantAnswer) {
-        extractAndRenderArtifacts(event.message, node);
-        attachAssistantActions(node, event.message);
+        queueAssistantActions(node, event.message);
         markWorkflowFinalAnswerDone();
+        archiveTodoChecklist();
       } else {
+        clearPendingAssistantActions();
         clearWorkflowFinalAnswerStep();
       }
     }
@@ -655,6 +809,7 @@ function handleEvent(event) {
   }
 
   if (event.type === "line_complete") {
+    closeInlineQuestion();
     if (state.restoreTimeoutId && state.restoringHistory) {
       window.clearTimeout(state.restoreTimeoutId);
       state.restoreTimeoutId = 0;
@@ -662,6 +817,7 @@ function handleEvent(event) {
     resetStreamingState();
     state.assistantNode = null;
     state.projectFilesLoadedForSession = "";
+    archiveTodoChecklist();
     if (state.batchingHistoryRestore && (restoringWorkflowEvents.length || restoringWorkflowInputDeltas.length)) {
       for (const workflowEvent of restoringWorkflowEvents) {
         appendWorkflowEvent(workflowEvent);
@@ -675,6 +831,7 @@ function handleEvent(event) {
     }
     if (!event.quiet) {
       finalizeWorkflowSummary();
+      attachPendingAssistantActions();
       collapseWorkflowPanel();
       if (state.restoringHistory) {
         requestAnimationFrame(finishScrollRestore);
@@ -692,7 +849,7 @@ function handleEvent(event) {
   }
 
   if (event.type === "tool_progress") {
-    setBusy(true, compactToolProgressStatus(event, STATUS_LABELS.processing));
+    setBusy(true, activeEventStatus(event, STATUS_LABELS.processing));
     if (state.batchingHistoryRestore) {
       return;
     }
@@ -701,12 +858,19 @@ function handleEvent(event) {
   }
 
   if (event.type === "tool_started" || event.type === "tool_completed") {
-    setBusy(true, STATUS_LABELS.processing);
+    if (event.type === "tool_started") {
+      clearPendingAssistantActions();
+    }
+    setBusy(true, activeEventStatus(event, STATUS_LABELS.processing));
     if (state.batchingHistoryRestore) {
       restoringWorkflowEvents.push(event);
       return;
     }
     appendWorkflowEvent(event);
+    const todoMarkdown = todoMarkdownFromToolEvent(event);
+    if (todoMarkdown) {
+      renderTodoChecklist(todoMarkdown);
+    }
     return;
   }
 
@@ -725,6 +889,7 @@ function handleEvent(event) {
   }
 
   if (event.type === "error") {
+    closeInlineQuestion();
     state.switchingWorkspace = false;
     state.batchingHistoryRestore = false;
     state.restoringHistory = false;
@@ -737,6 +902,7 @@ function handleEvent(event) {
     restoringWorkflowEvents = [];
     restoringWorkflowInputDeltas = [];
     resetStreamingState();
+    clearPendingAssistantActions();
     state.assistantNode = null;
     failWorkflowPanel(event.message || "");
     appendMessage("system", `오류: ${event.message || "알 수 없는 오류"}`);
@@ -745,6 +911,7 @@ function handleEvent(event) {
   }
 
   if (event.type === "shutdown") {
+    closeInlineQuestion();
     state.switchingWorkspace = false;
     state.batchingHistoryRestore = false;
     state.restoringHistory = false;
@@ -756,6 +923,7 @@ function handleEvent(event) {
     state.suppressNextLineCompleteScroll = false;
     restoringWorkflowEvents = [];
     restoringWorkflowInputDeltas = [];
+    clearPendingAssistantActions();
     state.ready = false;
     setStatus(STATUS_LABELS.stopped);
     updateSendState();
@@ -764,5 +932,8 @@ function handleEvent(event) {
 
   return {
     handleEvent,
+    pauseActiveStreaming,
+    restoreStreamingState,
+    streamingStateSnapshot,
   };
 }

@@ -17,7 +17,7 @@ export function TranscriptPane({
 			<Box flexDirection="column" borderStyle="round" paddingX={1} minHeight={24}>
 				{visible.map((item, index) => (
 					<Text key={`${index}-${item.role}`} color={roleColor(item.role)}>
-						{labelFor(item.role)} {item.text}
+						{labelFor(item)} {item.text}
 					</Text>
 				))}
 				{assistantBuffer ? <Text color="green">assistant&gt; {assistantBuffer}</Text> : null}
@@ -26,14 +26,16 @@ export function TranscriptPane({
 	);
 }
 
-function labelFor(role: TranscriptItem['role']): string {
+function labelFor(item: TranscriptItem): string {
+	const kind = item.kind === 'steering' ? ':steering' : item.kind === 'queued' ? ':queued' : '';
+	const role = item.role;
 	switch (role) {
 		case 'tool':
 			return 'tool>';
 		case 'tool_result':
 			return 'tool_result>';
 		default:
-			return `${role}>`;
+			return `${role}${kind}>`;
 	}
 }
 

@@ -214,6 +214,23 @@ async def test_todo_write_upsert(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_todo_write_batch_can_be_session_only(tmp_path: Path):
+    result = await TodoWriteTool().execute(
+        TodoWriteToolInput(
+            persist=False,
+            todos=[
+                {"text": "inspect files", "checked": True},
+                {"text": "patch code", "checked": False},
+            ],
+        ),
+        ToolExecutionContext(cwd=tmp_path),
+    )
+
+    assert result.output == "- [x] inspect files\n- [ ] patch code"
+    assert not (tmp_path / "TODO.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_notebook_edit_tool(tmp_path: Path):
     result = await NotebookEditTool().execute(
         NotebookEditToolInput(path="demo.ipynb", cell_index=0, new_source="print('nb ok')\n"),

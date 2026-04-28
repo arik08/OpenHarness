@@ -53,17 +53,13 @@ run_openharness_web.bat
 
 ```text
 .openharness/settings.json
-.openharness/credentials.json
-.openharness/credentials.example.json
 ```
 
-`run_openharness_web.bat`는 기본적으로 이 프로젝트-local `.openharness/` 폴더를 사용합니다. 그래서 이 폴더를 통째로 옮긴 뒤에도 사용자 홈 디렉터리에 인증 정보를 다시 만들지 않고 바로 실행할 수 있습니다.
+`run_openharness_web.bat`는 기본적으로 이 프로젝트-local `.openharness/` 폴더를 사용합니다. P-GPT 인증값은 파일에 저장하지 않고 Windows 사용자 환경변수로 등록해서 사용합니다.
 
 - `.openharness/settings.json`: 기본 provider profile을 고릅니다. 배포 기본값은 OpenAI-compatible 방식의 `p-gpt`입니다.
-- `.openharness/credentials.json`: API key 기반 provider의 사용자별 비밀 값을 저장합니다. 이 파일은 저장소에는 올리지 않습니다.
-- `.openharness/credentials.example.json`: P-GPT 인증값 예시 구조를 보여줍니다. 실제 값은 `.openharness/credentials.json`에만 저장하세요.
 - P-GPT endpoint는 built-in `p-gpt` profile에 `http://pgpt.posco.com/s0la01-gpt/v1`로 정의되어 있습니다.
-- 브라우저 설정의 `P-GPT 키`에서 API Key, 사번, 회사번호를 저장하거나 `/login API_KEY EMPLOYEE_NO [COMPANY_CODE]`를 사용할 수 있습니다.
+- P-GPT는 `PGPT_API_KEY`, `PGPT_EMPLOYEE_NO` 환경변수를 사용합니다. `run_openharness_web.bat` 실행 시 값이 없으면 입력받아 `setx`로 등록합니다.
 - 앱이 원하는 provider로 열리지 않으면 채팅창에서 `/provider` 명령을 사용하거나 `.openharness/settings.json`의 `active_profile`을 조정하세요.
 
 ## 워크스페이스 모델
@@ -87,6 +83,7 @@ MyHarness는 세 위치에서 스킬을 찾습니다.
 3. 사용자 폴더: 사용자-level OpenHarness/Codex skill 위치
 
 프로그램 폴더의 스킬은 MyHarness 기본 동작을 함께 배포하기 위한 위치입니다. 이 구조 덕분에 앱 폴더를 zip으로 묶거나 다른 PC로 옮겨도 같은 동작을 유지하기 쉽습니다.
+MyHarness에게 스킬을 새로 만들거나 저장하라고 요청하는 경우, 별도 범위를 지정하지 않았다면 기본 저장 위치는 프로그램 폴더의 `.skills/`, 즉 `(프로그램위치)\OpenHarness\.skills`입니다.
 
 채팅 입력창에서 `$`를 누르면 extension picker가 열립니다. 여기서 사용 가능한 custom skill, MCP server, plugin을 볼 수 있습니다.
 

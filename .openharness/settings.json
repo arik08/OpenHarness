@@ -1,14 +1,13 @@
 {
-  "api_key": "",
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "max_tokens": 16384,
-  "base_url": "http://pgpt.posco.com/s0la01-gpt/v1",
-  "timeout": 30.0,
+  "base_url": null,
+  "timeout": 30,
   "context_window_tokens": null,
   "auto_compact_threshold_tokens": null,
   "api_format": "openai",
-  "provider": "openai",
-  "active_profile": "p-gpt",
+  "provider": "openai_codex",
+  "active_profile": "codex",
   "profiles": {
     "p-gpt": {
       "label": "P-GPT",
@@ -47,7 +46,7 @@
       "auth_source": "openai_api_key",
       "default_model": "gpt-5.5",
       "base_url": null,
-      "last_model": null,
+      "last_model": "gpt-5.4",
       "credential_slot": null,
       "allowed_models": [],
       "context_window_tokens": null,
@@ -73,7 +72,7 @@
       "auth_source": "anthropic_api_key",
       "default_model": "claude-sonnet-4-6",
       "base_url": null,
-      "last_model": null,
+      "last_model": "",
       "credential_slot": null,
       "allowed_models": [],
       "context_window_tokens": null,
@@ -150,7 +149,8 @@
     "auto_compact_threshold_tokens": null
   },
   "learning": {
-    "enabled": true
+    "enabled": true,
+    "mode": "hide"
   },
   "sandbox": {
     "enabled": false,
@@ -172,7 +172,7 @@
     "docker": {
       "image": "openharness-sandbox:latest",
       "auto_build_image": true,
-      "cpu_limit": 0.0,
+      "cpu_limit": 0,
       "memory_limit": "",
       "extra_mounts": [],
       "extra_env": {}
@@ -189,6 +189,6 @@
   "fast_mode": false,
   "effort": "low",
   "passes": 1,
-  "verbose": false
+  "verbose": false,
+  "shell": "auto"
 }
-

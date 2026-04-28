@@ -150,18 +150,12 @@ class AuthManager:
                     os.environ.get("PGPT_EMPLOYEE_NO")
                     or os.environ.get("PGPT_SYSTEM_CODE")
                     or os.environ.get("POSCO_EMP_NO")
-                    or load_credential("pgpt", "employee_no")
-                    or load_credential("pgpt", "system_code")
                 )
                 if os.environ.get("PGPT_API_KEY") and has_employee_no:
                     configured = True
                     origin = "env"
                     state = "configured"
-                elif load_credential(storage_provider, "api_key") and has_employee_no:
-                    configured = True
-                    origin = "file"
-                    state = "configured"
-                elif os.environ.get("PGPT_API_KEY") or load_credential(storage_provider, "api_key"):
+                elif os.environ.get("PGPT_API_KEY"):
                     origin = "partial"
                     state = "missing_employee_no"
                     detail = "P-GPT requires employee number."
@@ -290,16 +284,11 @@ class AuthManager:
                     os.environ.get("PGPT_EMPLOYEE_NO")
                     or os.environ.get("PGPT_SYSTEM_CODE")
                     or os.environ.get("POSCO_EMP_NO")
-                    or load_credential("pgpt", "employee_no")
-                    or load_credential("pgpt", "system_code")
                 )
                 if os.environ.get("PGPT_API_KEY") and has_employee_no:
                     configured = True
                     source = "env"
-                elif load_credential("pgpt", "api_key") and has_employee_no:
-                    configured = True
-                    source = "file"
-                elif os.environ.get("PGPT_API_KEY") or load_credential("pgpt", "api_key"):
+                elif os.environ.get("PGPT_API_KEY"):
                     source = "partial"
 
             elif provider in ("bedrock", "vertex"):
@@ -460,14 +449,6 @@ class AuthManager:
     def store_credential(self, provider: str, key: str, value: str) -> None:
         """Store a credential for the given provider."""
         store_credential(provider, key, value)
-        # Keep the flattened active settings snapshot aligned for compatibility.
-        if key == "api_key" and provider == auth_source_provider_name(self.settings.resolve_profile()[1].auth_source):
-            try:
-                updated = self.settings.model_copy(update={"api_key": value})
-                self._settings = updated.materialize_active_profile()
-                self.save_settings()
-            except Exception as exc:
-                log.warning("Could not sync api_key to settings: %s", exc)
 
     def store_profile_credential(self, profile_name: str, key: str, value: str) -> None:
         """Store a credential using the active storage namespace for a profile."""
@@ -476,13 +457,6 @@ class AuthManager:
             raise ValueError(f"Unknown provider profile: {profile_name!r}")
         storage_provider = credential_storage_provider_name(profile_name, profile)
         store_credential(storage_provider, key, value)
-        if key == "api_key" and profile_name == self.get_active_profile():
-            try:
-                updated = self.settings.model_copy(update={"api_key": value})
-                self._settings = updated.materialize_active_profile()
-                self.save_settings()
-            except Exception as exc:
-                log.warning("Could not sync api_key to settings: %s", exc)
 
     def clear_credential(self, provider: str) -> None:
         """Remove all stored credentials for the given provider."""

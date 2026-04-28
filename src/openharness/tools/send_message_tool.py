@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from openharness.swarm.registry import get_backend_registry
 from openharness.swarm.types import TeammateMessage
@@ -17,7 +17,12 @@ logger = logging.getLogger(__name__)
 class SendMessageToolInput(BaseModel):
     """Arguments for sending a follow-up message to a task."""
 
-    task_id: str = Field(description="Target local agent task id or swarm agent_id (name@team)")
+    model_config = ConfigDict(populate_by_name=True)
+
+    task_id: str = Field(
+        validation_alias=AliasChoices("task_id", "to"),
+        description="Target local agent task id or swarm agent_id (name@team)",
+    )
     message: str = Field(description="Message to write to the task stdin")
 
 

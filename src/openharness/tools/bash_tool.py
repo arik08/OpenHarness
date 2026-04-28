@@ -93,10 +93,10 @@ class BashTool(BaseTool):
 
 
 class CmdTool(BashTool):
-    """Execute a Windows cmd.exe command with stdout/stderr capture."""
+    """Execute a Windows shell command with stdout/stderr capture."""
 
     name = "cmd"
-    description = "Run a Windows cmd.exe command in the local repository."
+    description = "Run a Windows shell command in the local repository. The configured shell defaults to PowerShell."
     input_model = CmdToolInput
 
 

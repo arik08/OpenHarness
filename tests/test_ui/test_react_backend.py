@@ -5,12 +5,19 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from openharness.api.client import ApiMessageCompleteEvent
 from openharness.api.usage import UsageSnapshot
-from openharness.engine.stream_events import AssistantTextDelta, CompactProgressEvent, ToolExecutionCompleted, ToolExecutionStarted
+from openharness.engine.stream_events import (
+    AssistantTextDelta,
+    CompactProgressEvent,
+    ToolExecutionCompleted,
+    ToolExecutionStarted,
+    ToolInputDelta,
+)
 from openharness.engine.messages import ConversationMessage, TextBlock
 from openharness.ui.backend_host import BackendHostConfig, ReactBackendHost, run_backend_host
 from openharness.ui.protocol import BackendEvent
@@ -107,6 +114,112 @@ async def test_read_requests_resolves_permission_response_without_queueing(monke
 
 
 @pytest.mark.asyncio
+async def test_read_requests_queues_steering_line_while_busy(monkeypatch):
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    host._busy = True
+    events: list[BackendEvent] = []
+
+    async def _emit(event: BackendEvent) -> None:
+        events.append(event)
+
+    host._emit = _emit  # type: ignore[method-assign]
+    payload = b'{"type":"steer_line","line":"make it shorter"}\n'
+
+    class _FakeBuffer:
+        def __init__(self):
+            self._reads = 0
+
+        def readline(self):
+            self._reads += 1
+            if self._reads == 1:
+                return payload
+            return b""
+
+    class _FakeStdin:
+        buffer = _FakeBuffer()
+
+    monkeypatch.setattr("openharness.ui.backend_host.sys.stdin", _FakeStdin())
+
+    await host._read_requests()
+
+    assert await host._steering_queue.get() == "make it shorter"
+    assert any(
+        event.type == "transcript_item"
+        and event.item
+        and event.item.role == "user"
+        and event.item.kind == "steering"
+        for event in events
+    )
+    assert any(event.type == "status" and "스티어링" in (event.message or "") for event in events)
+    queued = await host._request_queue.get()
+    assert queued.type == "shutdown"
+    assert host._request_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_read_requests_queues_line_after_busy_turn(monkeypatch):
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    host._busy = True
+    events: list[BackendEvent] = []
+
+    async def _emit(event: BackendEvent) -> None:
+        events.append(event)
+
+    host._emit = _emit  # type: ignore[method-assign]
+    payload = b'{"type":"queue_line","line":"next question"}\n'
+
+    class _FakeBuffer:
+        def __init__(self):
+            self._reads = 0
+
+        def readline(self):
+            self._reads += 1
+            if self._reads == 1:
+                return payload
+            return b""
+
+    class _FakeStdin:
+        buffer = _FakeBuffer()
+
+    monkeypatch.setattr("openharness.ui.backend_host.sys.stdin", _FakeStdin())
+
+    await host._read_requests()
+
+    assert await host._queued_line_queue.get() == "next question"
+    assert any(
+        event.type == "transcript_item"
+        and event.item
+        and event.item.role == "user"
+        and event.item.kind == "queued"
+        for event in events
+    )
+    assert any(event.type == "status" and "대기열" in (event.message or "") for event in events)
+    queued = await host._request_queue.get()
+    assert queued.type == "shutdown"
+    assert host._request_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_promote_next_queued_line_submits_after_current_turn():
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    events: list[BackendEvent] = []
+
+    async def _emit(event: BackendEvent) -> None:
+        events.append(event)
+
+    host._emit = _emit  # type: ignore[method-assign]
+    await host._queued_line_queue.put("follow up")
+
+    await host._promote_next_queued_line()
+
+    queued = await host._request_queue.get()
+    assert queued.type == "submit_line"
+    assert queued.line == "follow up"
+    assert queued.suppress_user_transcript is True
+    assert any(event.type == "status" and "전송" in (event.message or "") for event in events)
+
+
+@pytest.mark.asyncio
 async def test_backend_host_processes_command(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
@@ -173,6 +286,55 @@ async def test_backend_host_processes_model_turn(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_backend_host_enqueues_completed_async_agent_notification(monkeypatch):
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    metadata = {
+        "async_agent_tasks": [
+            {
+                "agent_id": "worker@default",
+                "task_id": "local_agent_123",
+                "description": "Inspect CI",
+                "notification_sent": False,
+            }
+        ]
+    }
+    host._bundle = SimpleNamespace(engine=SimpleNamespace(tool_metadata=metadata))
+    events: list[BackendEvent] = []
+
+    async def _emit(event: BackendEvent) -> None:
+        events.append(event)
+
+    class _FakeTaskManager:
+        def get_task(self, task_id):
+            assert task_id == "local_agent_123"
+            return SimpleNamespace(status="completed", return_code=0)
+
+        def read_task_output(self, task_id, *, max_bytes=12000):
+            assert task_id == "local_agent_123"
+            assert max_bytes == 8000
+            return "worker result <ready>"
+
+    monkeypatch.setattr("openharness.ui.backend_host.is_coordinator_mode", lambda: True)
+    monkeypatch.setattr("openharness.ui.async_agents.get_task_manager", lambda: _FakeTaskManager())
+    host._emit = _emit  # type: ignore[method-assign]
+
+    host._ensure_async_agent_monitor()
+
+    assert host._async_agent_monitor_task is not None
+    await asyncio.wait_for(host._async_agent_monitor_task, timeout=1)
+    request = await asyncio.wait_for(host._request_queue.get(), timeout=1)
+
+    assert request.type == "submit_line"
+    assert request.suppress_user_transcript is True
+    assert request.line is not None
+    assert "<task-notification>" in request.line
+    assert "worker@default" in request.line
+    assert "worker result &lt;ready&gt;" in request.line
+    assert metadata["async_agent_tasks"][0]["notification_sent"] is True
+    assert any(event.type == "status" and "결과" in (event.message or "") for event in events)
+
+
+@pytest.mark.asyncio
 async def test_backend_host_emits_title_before_answer_stream(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
@@ -202,6 +364,37 @@ async def test_backend_host_emits_title_before_answer_stream(tmp_path, monkeypat
     event_types = [event.type for event in events]
     assert event_types.index("session_title") < event_types.index("assistant_delta")
     assert next(event for event in events if event.type == "session_title").message == "피자 추천"
+
+
+@pytest.mark.asyncio
+async def test_backend_host_persists_user_edited_session_title(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    host._bundle = await build_runtime(api_client=StaticApiClient("unused"))
+    events = []
+
+    async def _emit(event):
+        events.append(event)
+
+    host._emit = _emit  # type: ignore[method-assign]
+    await start_runtime(host._bundle)
+    try:
+        host._set_saved_session_id("abc123")
+        host._bundle.engine.load_messages([
+            ConversationMessage(role="user", content=[TextBlock(text="삼성전자 보고서 만들어줘")]),
+        ])
+        await host._handle_update_session_title("내가 정한 제목")
+        snapshot = host._bundle.session_backend.load_by_id(host._bundle.cwd, "abc123")
+    finally:
+        await close_runtime(host._bundle)
+
+    assert snapshot is not None
+    assert snapshot["summary"] == "내가 정한 제목"
+    assert snapshot["tool_metadata"]["session_title_user_edited"] is True
+    assert any(event.type == "session_title" and event.message == "내가 정한 제목" for event in events)
 
 
 @pytest.mark.asyncio
@@ -322,6 +515,105 @@ async def test_backend_host_emits_tool_progress_heartbeat(tmp_path, monkeypatch)
         event.type == "tool_progress"
         and event.tool_name == "bash"
         and "명령 실행 중" in (event.message or "")
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_backend_host_emits_tool_input_delta(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    host._bundle = await build_runtime(api_client=StaticApiClient("unused"))
+    events = []
+
+    async def _emit(event):
+        events.append(event)
+
+    async def _fake_handle_line(bundle, line, print_system, render_event, clear_output):
+        del bundle, line, print_system, clear_output
+        await render_event(
+            ToolInputDelta(
+                index=0,
+                name="write_file",
+                arguments_delta='{"path":"notes.md","content":"hello',
+            )
+        )
+        await render_event(
+            ToolExecutionStarted(
+                tool_name="write_file",
+                tool_input={"path": "notes.md", "content": "hello"},
+            )
+        )
+        await render_event(
+            ToolExecutionCompleted(tool_name="write_file", output="Wrote notes.md", is_error=False)
+        )
+        return True
+
+    monkeypatch.setattr("openharness.ui.backend_host.handle_line", _fake_handle_line)
+    host._emit = _emit  # type: ignore[method-assign]
+    await start_runtime(host._bundle)
+    try:
+        should_continue = await host._process_line("write notes")
+    finally:
+        await close_runtime(host._bundle)
+
+    assert should_continue is True
+    event = next(item for item in events if item.type == "tool_input_delta")
+    assert event.tool_name == "write_file"
+    assert event.arguments_delta == '{"path":"notes.md","content":"hello'
+
+
+@pytest.mark.asyncio
+async def test_backend_host_emits_todo_update_from_todo_write(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    host._bundle = await build_runtime(api_client=StaticApiClient("unused"))
+    events = []
+
+    async def _emit(event):
+        events.append(event)
+
+    async def _fake_handle_line(bundle, line, print_system, render_event, clear_output):
+        del bundle, line, print_system, clear_output
+        await render_event(
+            ToolExecutionStarted(
+                tool_name="todo_write",
+                tool_input={
+                    "persist": False,
+                    "todos": [
+                        {"text": "read code", "checked": True},
+                        {"text": "run tests", "checked": False},
+                    ],
+                },
+            )
+        )
+        await render_event(
+            ToolExecutionCompleted(
+                tool_name="todo_write",
+                output="- [x] read code\n- [ ] run tests",
+                is_error=False,
+            )
+        )
+        return True
+
+    monkeypatch.setattr("openharness.ui.backend_host.handle_line", _fake_handle_line)
+    host._emit = _emit  # type: ignore[method-assign]
+    await start_runtime(host._bundle)
+    try:
+        should_continue = await host._process_line("do a complex task")
+    finally:
+        await close_runtime(host._bundle)
+
+    assert should_continue is True
+    assert any(
+        event.type == "todo_update"
+        and event.todo_markdown == "- [x] read code\n- [ ] run tests"
         for event in events
     )
 
@@ -556,7 +848,35 @@ async def test_backend_host_emits_provider_select_request(tmp_path, monkeypatch)
 
     event = next(item for item in events if item.type == "select_request")
     assert event.modal["command"] == "provider"
-    assert any(option["value"] == "claude-api" and option.get("active") for option in event.select_options)
+    assert any(option["value"] == "p-gpt" and option.get("active") for option in event.select_options)
+
+
+@pytest.mark.asyncio
+async def test_backend_host_emits_runtime_picker_bundle(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    host._bundle = await build_runtime(api_client=StaticApiClient("unused"))
+    events = []
+
+    async def _emit(event):
+        events.append(event)
+
+    host._emit = _emit  # type: ignore[method-assign]
+    await start_runtime(host._bundle)
+    try:
+        await host._handle_select_command("runtime-picker")
+    finally:
+        await close_runtime(host._bundle)
+
+    event = next(item for item in events if item.type == "select_request")
+    assert event.modal["command"] == "runtime-picker"
+    runtime_options = event.modal["runtime_options"]
+    active_provider = next(option["value"] for option in runtime_options["providers"] if option.get("active"))
+    assert runtime_options["models_by_provider"][active_provider]
+    assert any(option["value"] == "low" for option in runtime_options["efforts"])
 
 
 @pytest.mark.asyncio
@@ -655,3 +975,33 @@ async def test_concurrent_ask_permission_are_serialised():
     # distinct request IDs must have been emitted.
     assert len(emitted_order) == 2
     assert emitted_order[0] != emitted_order[1]
+
+
+@pytest.mark.asyncio
+async def test_ask_question_emits_structured_choices():
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    events: list[BackendEvent] = []
+
+    async def _fake_emit(event: BackendEvent) -> None:
+        events.append(event)
+        if event.type == "modal_request" and event.modal:
+            request_id = str(event.modal.get("request_id", ""))
+            future = host._question_requests[request_id]
+            future.set_result("green")
+
+    host._emit = _fake_emit  # type: ignore[method-assign]
+
+    answer = await host._ask_question(
+        "Which color?",
+        choices=[
+            {"label": "Green", "value": "green", "description": "Use the green theme"},
+            {"label": "Blue", "value": "blue"},
+        ],
+    )
+
+    assert answer == "green"
+    event = next(item for item in events if item.type == "modal_request" and item.modal)
+    assert event.modal["choices"] == [
+        {"value": "green", "label": "Green", "description": "Use the green theme"},
+        {"value": "blue", "label": "Blue", "description": ""},
+    ]

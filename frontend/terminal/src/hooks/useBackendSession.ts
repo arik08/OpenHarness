@@ -264,9 +264,8 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 				return;
 			}
 			queueTranscriptItem({role: 'status', text: message});
-			if (busy) {
-				setBusyLabel(message);
-			}
+			setBusy(true);
+			setBusyLabel(message);
 			return;
 		}
 		if (event.type === 'compact_progress') {
@@ -356,6 +355,7 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 		if (event.type === 'line_complete') {
 			// Final end-of-turn: clear everything, stop spinner.
 			clearAssistantDelta();
+			setTodoMarkdown('');
 			setBusy(false);
 			setBusyLabel(undefined);
 			return;

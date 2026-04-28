@@ -64,7 +64,6 @@ const {
   requestSelectCommand,
   renderAttachments,
   removePastedText,
-  scheduleScrollPositionSave,
   selectSlashCommand,
   sendLine,
   setBusy,
@@ -75,10 +74,8 @@ const {
   showWorkspaceModal,
   startSession,
   startTitleEdit,
-  markMessagesUserScrollIntent,
-  stopMessagesAutoFollow,
+  attachMessageAutoFollow,
   toggleRuntimePicker,
-  updateAutoFollowFromScroll,
   updateComposerTokenFromInput,
   updateSendState,
   updateSlashMenu,
@@ -333,9 +330,6 @@ function handlePlanModeShortcut(event) {
 
 els.composer.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (state.busy) {
-    return;
-  }
   try {
     await sendLine(buildComposerLine());
   } catch (error) {
@@ -356,7 +350,7 @@ els.input.addEventListener("input", () => {
 });
 
 els.send?.addEventListener("click", (event) => {
-  if (!state.busy) {
+  if (!state.busy || buildComposerLine().trim()) {
     return;
   }
   event.preventDefault();
@@ -374,6 +368,15 @@ els.input.addEventListener("keydown", (event) => {
   if ((event.key === "Backspace" || event.key === "Delete") && state.composerToken && els.input.value.length === 0) {
     event.preventDefault();
     clearComposerToken();
+    return;
+  }
+  if (event.key === "Enter" && event.ctrlKey && !event.shiftKey) {
+    event.preventDefault();
+    closeSlashMenu();
+    sendLine(buildComposerLine(), { queueAfterBusy: true }).catch((error) => {
+      appendMessage("system", `전송 실패: ${error.message}`);
+      setBusy(false, STATUS_LABELS.error);
+    });
     return;
   }
   if (state.slashMenuOpen && ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
@@ -470,20 +473,7 @@ els.composer.addEventListener("paste", (event) => {
   }
 });
 
-els.messages.addEventListener("scroll", () => {
-  updateAutoFollowFromScroll();
-  scheduleScrollPositionSave();
-});
-
-els.messages.addEventListener("wheel", (event) => {
-  markMessagesUserScrollIntent();
-  if (event.deltaY < 0) {
-    stopMessagesAutoFollow();
-  }
-}, { passive: true });
-
-els.messages.addEventListener("pointerdown", markMessagesUserScrollIntent);
-els.messages.addEventListener("touchstart", markMessagesUserScrollIntent, { passive: true });
+attachMessageAutoFollow();
 
 els.chatTitleButton?.addEventListener("click", startTitleEdit);
 
@@ -562,19 +552,10 @@ document.querySelectorAll("[data-action='new-chat']").forEach((button) => {
 });
 
 els.historyRefresh?.addEventListener("click", async () => {
-  const workspace = {
-    name: state.workspaceName || "Default",
-    path: state.workspacePath || "",
-  };
   try {
-    await ctx.restartSessionForWorkspace(workspace, {
-      clearHistory: false,
-      startBackend: true,
-      statusLabel: STATUS_LABELS.startingBackend,
-    });
-    window.location.reload();
+    await requestHistory();
   } catch (error) {
-    appendMessage("system", `백엔드 재시작 실패: ${error.message}`);
+    appendMessage("system", `대화 내역 갱신 실패: ${error.message}`);
   }
 });
 

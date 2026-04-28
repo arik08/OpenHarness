@@ -1,13 +1,14 @@
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import crypto from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, normalize, relative } from "node:path";
+import { basename, delimiter, dirname, extname, isAbsolute, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
+import { countTokens } from "gpt-tokenizer";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = normalize(join(root, "../.."));
@@ -15,12 +16,27 @@ const webRoot = normalize(root);
 const assetsRoot = normalize(join(repoRoot, "assets"));
 const vendorRoot = normalize(join(root, "node_modules"));
 const playgroundRoot = normalize(join(repoRoot, "Playground"));
+const appConfigRoot = normalize(join(repoRoot, ".openharness"));
+if (!String(process.env.OPENHARNESS_CONFIG_DIR || "").trim()) {
+  process.env.OPENHARNESS_CONFIG_DIR = appConfigRoot;
+}
+if (!String(process.env.OPENHARNESS_DATA_DIR || "").trim()) {
+  process.env.OPENHARNESS_DATA_DIR = join(appConfigRoot, "data");
+}
+if (!String(process.env.OPENHARNESS_LOGS_DIR || "").trim()) {
+  process.env.OPENHARNESS_LOGS_DIR = join(appConfigRoot, "logs");
+}
+if (!String(process.env.OPENHARNESS_HOME || "").trim()) {
+  process.env.OPENHARNESS_HOME = appConfigRoot;
+}
+configurePoscoCertificate();
 const sharedWorkspaceScopeName = "shared";
 const defaultWorkspaceName = "Default";
 const projectPreferencesRel = join(".openharness", "preferences.json");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 let workspaceScopeMode = normalizeWorkspaceScopeMode(process.env.OPENHARNESS_WORKSPACE_SCOPE);
+let shellPreference = normalizeShellPreference(process.env.OPENHARNESS_SHELL);
 const protocolPrefix = "OHJSON:";
 const sessions = new Map();
 let server = null;
@@ -65,6 +81,9 @@ const types = {
   ".ttf": "font/ttf",
 };
 const artifactPreviewMaxBytes = 8 * 1024 * 1024;
+const chatHtmlPreviewMaxBytes = 2 * 1024 * 1024;
+const chatHtmlPreviewTtlMs = 10 * 60 * 1000;
+const chatHtmlPreviews = new Map();
 const artifactTypes = {
   ".html": { kind: "html", mime: "text/html; charset=utf-8", encoding: "text" },
   ".htm": { kind: "html", mime: "text/html; charset=utf-8", encoding: "text" },
@@ -116,10 +135,41 @@ const projectFileListSkipPrefixes = [
 ];
 const shellCommandTimeoutMs = 60_000;
 const shellOutputMaxChars = 24_000;
+const tokenCountMaxChars = 200_000;
 
 function normalizeWorkspaceScopeMode(value) {
   const mode = String(value || "").trim().toLowerCase();
   return mode === "ip" || mode === "client_ip" || mode === "client-ip" ? "ip" : "shared";
+}
+
+function normalizeShellPreference(value) {
+  const normalized = String(value || "auto").trim().toLowerCase().replace(/_/g, "-");
+  if (["pwsh", "powershell", "powershell.exe", "power-shell"].includes(normalized)) {
+    return "powershell";
+  }
+  if (["gitbash", "git-bash", "bash"].includes(normalized)) {
+    return "git-bash";
+  }
+  if (["cmd", "cmd.exe", "command-prompt"].includes(normalized)) {
+    return "cmd";
+  }
+  return "auto";
+}
+
+function configurePoscoCertificate() {
+  if (process.platform !== "win32") {
+    return;
+  }
+  const certPath = "C:\\POSCO.crt";
+  if (!existsSync(certPath)) {
+    return;
+  }
+  process.env.SSL_CERT_FILE = certPath;
+  process.env.REQUESTS_CA_BUNDLE = certPath;
+  process.env.CURL_CA_BUNDLE = certPath;
+  process.env.PIP_CERT = certPath;
+  process.env.NODE_EXTRA_CA_CERTS = process.env.NODE_EXTRA_CA_CERTS || certPath;
+  process.env.npm_config_cafile = process.env.npm_config_cafile || certPath;
 }
 
 function forwardedAddressFromRequest(request) {
@@ -215,6 +265,140 @@ async function readJson(request) {
     return {};
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function pruneChatHtmlPreviews() {
+  const now = Date.now();
+  for (const [id, preview] of chatHtmlPreviews) {
+    if (preview.expiresAt <= now) {
+      chatHtmlPreviews.delete(id);
+    }
+  }
+}
+
+const chatHtmlPreviewAutosizeScript = `<script>
+(function () {
+  function visibleElementHeight() {
+    var minTop = Infinity;
+    var maxBottom = 0;
+    var elements = document.body ? document.body.querySelectorAll("*") : [];
+    for (var i = 0; i < elements.length; i += 1) {
+      var element = elements[i];
+      if (/^(script|style|link|meta)$/i.test(element.tagName)) {
+        continue;
+      }
+      var style = getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden") {
+        continue;
+      }
+      var rect = element.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) {
+        continue;
+      }
+      var fillsViewport = element.children.length > 0
+        && rect.top <= 1
+        && rect.height >= window.innerHeight - 2;
+      if (fillsViewport) {
+        continue;
+      }
+      minTop = Math.min(minTop, rect.top);
+      maxBottom = Math.max(maxBottom, rect.bottom);
+    }
+    if (!Number.isFinite(minTop) || maxBottom <= 0) {
+      return 0;
+    }
+    var bodyStyle = document.body ? getComputedStyle(document.body) : null;
+    var bottomSpace = bodyStyle
+      ? (parseFloat(bodyStyle.marginBottom) || 0) + (parseFloat(bodyStyle.paddingBottom) || 0)
+      : 0;
+    return Math.ceil(maxBottom + window.scrollY + bottomSpace);
+  }
+  function height() {
+    var body = document.body;
+    var doc = document.documentElement;
+    var visibleHeight = visibleElementHeight();
+    if (visibleHeight > 0) {
+      return visibleHeight;
+    }
+    return Math.ceil(Math.max(
+      body ? body.scrollHeight : 0,
+      body ? body.offsetHeight : 0,
+      doc ? doc.scrollHeight : 0,
+      doc ? doc.offsetHeight : 0
+    ));
+  }
+  function send() {
+    var token = "";
+    try {
+      token = new URLSearchParams(location.search).get("ohPreviewToken") || window.name;
+    } catch (error) {
+      token = window.name;
+    }
+    parent.postMessage({
+      type: "openharness-html-preview-size",
+      token: token,
+      height: height()
+    }, "*");
+  }
+  window.addEventListener("load", send);
+  window.addEventListener("resize", send);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", send);
+  } else {
+    send();
+  }
+  if (window.ResizeObserver) {
+    new ResizeObserver(send).observe(document.documentElement);
+  }
+  if (window.MutationObserver) {
+    new MutationObserver(send).observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true
+    });
+  }
+})();
+<\/script>`;
+
+function injectChatHtmlPreviewAutosize(content) {
+  const value = String(content || "");
+  if (/<\/body\s*>/i.test(value)) {
+    return value.replace(/<\/body\s*>/i, `${chatHtmlPreviewAutosizeScript}</body>`);
+  }
+  if (/<\/html\s*>/i.test(value)) {
+    return value.replace(/<\/html\s*>/i, `${chatHtmlPreviewAutosizeScript}</html>`);
+  }
+  return `${value}${chatHtmlPreviewAutosizeScript}`;
+}
+
+function wrapChatHtmlPreview(content) {
+  const value = String(content || "");
+  if (/^\s*(?:<!doctype\s+html|<html[\s>])/i.test(value)) {
+    return injectChatHtmlPreviewAutosize(value);
+  }
+  return injectChatHtmlPreviewAutosize(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>${value}</body>
+</html>`);
+}
+
+function storeChatHtmlPreview(content) {
+  const value = String(content || "");
+  if (Buffer.byteLength(value, "utf8") > chatHtmlPreviewMaxBytes) {
+    throw new Error("HTML preview is too large");
+  }
+  pruneChatHtmlPreviews();
+  const id = crypto.randomUUID();
+  chatHtmlPreviews.set(id, {
+    content: wrapChatHtmlPreview(value),
+    expiresAt: Date.now() + chatHtmlPreviewTtlMs,
+  });
+  return id;
 }
 
 function workspaceRelativeTarget(workspacePath, candidate) {
@@ -734,6 +918,91 @@ async function saveWorkspaceScopeSettings(body = {}, request = null) {
   return readWorkspaceScopeSettings(request);
 }
 
+function normalizeLearnedSkillsMode(value, fallback = "hide") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (["use", "hide", "off"].includes(raw)) {
+    return raw;
+  }
+  if (["on", "enabled", "visible"].includes(raw)) {
+    return "use";
+  }
+  if (["hidden"].includes(raw)) {
+    return "hide";
+  }
+  if (["disabled", "disable", "false"].includes(raw)) {
+    return "off";
+  }
+  return fallback;
+}
+
+async function readLearnedSkillsSettings() {
+  const settings = await readJsonFileIfExists(join(globalConfigDir(), "settings.json")) || {};
+  const learning = settings.learning && typeof settings.learning === "object" ? settings.learning : {};
+  const mode = learning.enabled === false
+    ? "off"
+    : normalizeLearnedSkillsMode(learning.mode, "hide");
+  return { mode };
+}
+
+async function saveLearnedSkillsSettings(body = {}) {
+  const mode = normalizeLearnedSkillsMode(body.mode, "hide");
+  const settingsPath = join(globalConfigDir(), "settings.json");
+  const settings = await readJsonFileIfExists(settingsPath) || {};
+  const learning = settings.learning && typeof settings.learning === "object" ? settings.learning : {};
+  settings.learning = {
+    ...learning,
+    enabled: mode !== "off",
+    mode,
+  };
+  await writeJsonFile(settingsPath, settings);
+  return readLearnedSkillsSettings();
+}
+
+async function readShellSettings() {
+  const settings = await readJsonFileIfExists(join(globalConfigDir(), "settings.json")) || {};
+  const preference = normalizeShellPreference(settings.shell || settings.web_shell || shellPreference);
+  shellPreference = preference;
+  return {
+    shell: preference,
+    options: shellOptions(),
+  };
+}
+
+async function saveShellSettings(body = {}) {
+  const preference = normalizeShellPreference(body.shell);
+  shellPreference = preference;
+  const settingsPath = join(globalConfigDir(), "settings.json");
+  const settings = await readJsonFileIfExists(settingsPath) || {};
+  settings.shell = preference;
+  await writeJsonFile(settingsPath, settings);
+  return readShellSettings();
+}
+
+function shellOptions() {
+  return [
+    {
+      value: "auto",
+      label: "자동",
+      description: "Windows에서는 PowerShell을 우선 사용하고, 없으면 Git Bash, 마지막으로 cmd를 사용합니다.",
+    },
+    {
+      value: "powershell",
+      label: "PowerShell",
+      description: "pwsh가 있으면 pwsh, 없으면 Windows PowerShell을 사용합니다.",
+    },
+    {
+      value: "git-bash",
+      label: "Git Bash",
+      description: "Git for Windows의 bash.exe를 사용합니다.",
+    },
+    {
+      value: "cmd",
+      label: "cmd",
+      description: "Windows Command Prompt(cmd.exe)를 사용합니다.",
+    },
+  ];
+}
+
 async function readPgptSettings() {
   const credentials = await readJsonFileIfExists(join(globalConfigDir(), "credentials.json")) || {};
   const entry = credentials.pgpt && typeof credentials.pgpt === "object" ? credentials.pgpt : {};
@@ -1170,6 +1439,40 @@ async function deleteWorkspaceHistoryItem(workspace, sessionId) {
   return deleted;
 }
 
+async function updateWorkspaceHistoryTitle(workspace, sessionId, title) {
+  const cleanId = String(sessionId || "").trim();
+  const cleanTitle = compactText(title, 80);
+  if (!cleanId) {
+    throw new Error("Session id is required");
+  }
+  if (!cleanTitle) {
+    throw new Error("Session title is required");
+  }
+  const sessionDir = sessionDirectoryForWorkspace(workspace);
+  const target = join(sessionDir, `session-${cleanId}.json`);
+  const payload = JSON.parse(await readFile(target, "utf8"));
+  payload.summary = cleanTitle;
+  payload.tool_metadata = {
+    ...(payload.tool_metadata && typeof payload.tool_metadata === "object" ? payload.tool_metadata : {}),
+    session_title: cleanTitle,
+    session_title_user_edited: true,
+  };
+  await writeJsonFile(target, payload);
+
+  const latestPath = join(sessionDir, "latest.json");
+  try {
+    const latest = JSON.parse(await readFile(latestPath, "utf8"));
+    if (String(latest.session_id || "") === cleanId) {
+      await writeJsonFile(latestPath, payload);
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) {
+      throw error;
+    }
+  }
+  return payload;
+}
+
 async function resolveSessionWorkspace(options = {}) {
   const scope = workspaceScopeOrDefault(options.workspaceScope);
   if (options.cwd) {
@@ -1206,21 +1509,101 @@ function trimShellOutput(value) {
   };
 }
 
-function shellCommandForPlatform(command) {
+async function shellCommandForPlatform(command) {
   if (process.platform === "win32") {
     const pythonHeredoc = pythonHeredocCommandForWindows(command);
     if (pythonHeredoc) {
       return pythonHeredoc;
     }
-    return {
-      file: "cmd.exe",
-      args: ["/d", "/s", "/c", `chcp 65001>nul & ${command}`],
-    };
+    const { shell } = await readShellSettings();
+    return windowsShellCommand(command, shell);
   }
   return {
     file: process.env.SHELL || "/bin/sh",
     args: ["-lc", command],
   };
+}
+
+function windowsShellCommand(command, shell) {
+  const preference = normalizeShellPreference(shell);
+  if (preference === "auto" || preference === "powershell") {
+    const powershell = resolveWindowsPowerShell();
+    if (powershell || preference === "powershell") {
+      return {
+        file: powershell || "powershell.exe",
+        args: [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          powershellUtf8Command(command),
+        ],
+      };
+    }
+  }
+  if (preference === "auto" || preference === "git-bash") {
+    const gitBash = resolveGitBash();
+    if (gitBash || preference === "git-bash") {
+      return {
+        file: gitBash || "bash.exe",
+        args: ["-lc", command],
+      };
+    }
+  }
+  return {
+    file: resolveCommandOnPath("cmd.exe") || "cmd.exe",
+    args: ["/d", "/s", "/c", `chcp 65001>nul & ${command}`],
+  };
+}
+
+function resolveWindowsPowerShell() {
+  return resolveCommandOnPath("pwsh.exe")
+    || resolveCommandOnPath("pwsh")
+    || resolveCommandOnPath("powershell.exe")
+    || (process.env.SystemRoot
+      ? existingPath(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+      : "");
+}
+
+function resolveGitBash() {
+  const candidates = [
+    resolveCommandOnPath("git-bash.exe"),
+    resolveCommandOnPath("bash.exe"),
+    process.env.OPENHARNESS_GIT_BASH,
+    process.env.ProgramFiles ? join(process.env.ProgramFiles, "Git", "bin", "bash.exe") : "",
+    process.env["ProgramFiles(x86)"] ? join(process.env["ProgramFiles(x86)"], "Git", "bin", "bash.exe") : "",
+    process.env.LocalAppData ? join(process.env.LocalAppData, "Programs", "Git", "bin", "bash.exe") : "",
+  ];
+  return candidates.find((candidate) => candidate && looksLikeGitBash(candidate)) || "";
+}
+
+function resolveCommandOnPath(commandName) {
+  const pathEnv = process.env.PATH || "";
+  for (const entry of pathEnv.split(delimiter)) {
+    if (!entry) {
+      continue;
+    }
+    const candidate = join(entry, commandName);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function existingPath(path) {
+  return path && existsSync(path) ? path : "";
+}
+
+function looksLikeGitBash(path) {
+  const normalized = String(path || "").replace(/\\/g, "/").toLowerCase();
+  return normalized.endsWith("/bash.exe") && normalized.includes("/git/") && existsSync(path);
+}
+
+function powershellUtf8Command(command) {
+  return "[Console]::InputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
+    + "$OutputEncoding = [Console]::OutputEncoding; "
+    + command;
 }
 
 function pythonHeredocCommandForWindows(command) {
@@ -1229,11 +1612,10 @@ function pythonHeredocCommandForWindows(command) {
     return null;
   }
   const prefixParts = match.groups.prefix.trim().split(/\s+/);
-  const launcher = /^py(?:\.exe)?$/i.test(prefixParts[0]) ? prefixParts[0] : "py";
-  const launcherArgs = /^py(?:\.exe)?$/i.test(prefixParts[0]) ? prefixParts.slice(1) : ["-3"];
+  const python = resolvePythonCommand(prefixParts[0], prefixParts.slice(1));
   return {
-    file: launcher,
-    args: [...launcherArgs, "-c", String(match.groups.body || "").replace(/\r\n/g, "\n")],
+    file: python.file,
+    args: [...python.args, "-c", String(match.groups.body || "").replace(/\r\n/g, "\n")],
   };
 }
 
@@ -1247,6 +1629,109 @@ function shellEnvironment(extra = {}) {
   };
 }
 
+function backendPythonCommand() {
+  return resolvePythonCommand("", []);
+}
+
+function resolvePythonCommand(requestedExecutable = "", requestedArgs = []) {
+  const requestedName = String(requestedExecutable || "").trim();
+  const requestedBase = basename(requestedName).toLowerCase();
+  const requestedIsPy = requestedBase === "py" || requestedBase === "py.exe";
+  const requestedIsGeneric = ["", "python", "python.exe", "python3", "python3.exe"].includes(requestedBase);
+  const requestedHasPath = requestedName.includes("\\") || requestedName.includes("/") || isAbsolute(requestedName);
+  const candidates = [];
+
+  if (requestedName && (requestedHasPath || !requestedIsGeneric)) {
+    candidates.push({
+      file: resolveExecutable(requestedName),
+      args: requestedArgs,
+      label: [requestedName, ...requestedArgs].join(" "),
+    });
+  } else if (requestedIsPy) {
+    candidates.push({
+      file: resolveCommandOnPath(requestedName) || requestedName,
+      args: requestedArgs,
+      label: [requestedName, ...requestedArgs].join(" "),
+    });
+  }
+
+  if (requestedIsGeneric) {
+    candidates.push(...defaultPythonCandidates());
+    if (requestedName && !requestedHasPath) {
+      candidates.push({
+        file: resolveExecutable(requestedName),
+        args: requestedArgs,
+        label: [requestedName, ...requestedArgs].join(" "),
+      });
+    }
+  } else if (!requestedIsPy) {
+    candidates.push(...defaultPythonCandidates());
+  }
+
+  const seen = new Set();
+  const attempts = [];
+  for (const candidate of candidates) {
+    const key = [candidate.file, ...(candidate.args || [])].join("\u0000");
+    if (!candidate.file || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    attempts.push(candidate.label || [candidate.file, ...(candidate.args || [])].join(" "));
+    if (pythonCandidateIsUsable(candidate)) {
+      return { file: candidate.file, args: candidate.args || [] };
+    }
+  }
+
+  throw new Error(`No usable Python 3.10+ found. Tried: ${attempts.join(", ") || "none"}`);
+}
+
+function resolveExecutable(commandName) {
+  return existingPath(commandName) || resolveCommandOnPath(commandName) || commandName;
+}
+
+function defaultPythonCandidates() {
+  const candidates = [];
+  const configured = String(process.env.OPENHARNESS_PYTHON || "").trim();
+  if (configured) {
+    candidates.push({ file: configured, args: [], label: "OPENHARNESS_PYTHON" });
+  }
+
+  const envPython = String(process.env.PYTHON || "").trim();
+  if (envPython) {
+    candidates.push({ file: envPython, args: [], label: "PYTHON" });
+  }
+
+  if (process.platform === "win32") {
+    candidates.push(
+      { file: resolveCommandOnPath("py.exe") || resolveCommandOnPath("py") || "py", args: ["-3"], label: "py -3" },
+      { file: resolveCommandOnPath("python.exe") || resolveCommandOnPath("python") || "python", args: [], label: "python" },
+      { file: resolveCommandOnPath("python3.exe") || resolveCommandOnPath("python3") || "python3", args: [], label: "python3" },
+    );
+  } else {
+    candidates.push(
+      { file: resolveCommandOnPath("python3") || "python3", args: [], label: "python3" },
+      { file: resolveCommandOnPath("python") || "python", args: [], label: "python" },
+    );
+  }
+  return candidates;
+}
+
+function pythonCandidateIsUsable(candidate) {
+  const check = "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)";
+  try {
+    const result = spawnSync(candidate.file, [...(candidate.args || []), "-c", check], {
+      cwd: repoRoot,
+      env: shellEnvironment(),
+      windowsHide: true,
+      stdio: "ignore",
+      timeout: 5000,
+    });
+    return !result.error && result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 async function runShellCommand(options = {}) {
   const command = String(options.command || "").trim();
   if (!command) {
@@ -1256,7 +1741,7 @@ async function runShellCommand(options = {}) {
   const workspace = options.cwd
     ? workspaceFromPath(options.cwd, scope)
     : options.session?.workspace || await ensureWorkspace(defaultWorkspaceName, scope);
-  const { file, args } = shellCommandForPlatform(command);
+  const { file, args } = await shellCommandForPlatform(command);
   return await new Promise((resolve) => {
     const child = spawn(file, args, {
       cwd: workspace.path,
@@ -1317,7 +1802,7 @@ async function streamShellCommand(options = {}, request, response) {
   const workspace = options.cwd
     ? workspaceFromPath(options.cwd, scope)
     : options.session?.workspace || await ensureWorkspace(defaultWorkspaceName, scope);
-  const { file, args } = shellCommandForPlatform(command);
+  const { file, args } = await shellCommandForPlatform(command);
 
   response.writeHead(200, {
     "Content-Type": "application/x-ndjson; charset=utf-8",
@@ -1530,10 +2015,11 @@ async function createBackendSession(options = {}) {
   if (clientId && countBusySessionsForClient(clientId) >= 3) {
     throw new Error("Concurrent response limit reached");
   }
-  const args = ["-3", "-m", "openharness", "--backend-only", "--cwd", workspace.path];
+  const python = backendPythonCommand();
+  const args = [...python.args, "-m", "openharness", "--backend-only", "--cwd", workspace.path];
   const env = {
     ...process.env,
-    PYTHONPATH: [join(repoRoot, "src"), process.env.PYTHONPATH].filter(Boolean).join(";"),
+    PYTHONPATH: [join(repoRoot, "src"), process.env.PYTHONPATH].filter(Boolean).join(delimiter),
   };
 
   if (options.permissionMode) {
@@ -1546,7 +2032,7 @@ async function createBackendSession(options = {}) {
     args.push("--system-prompt", String(options.systemPrompt));
   }
 
-  const child = spawn("py", args, {
+  const child = spawn(python.file, args, {
     cwd: repoRoot,
     env,
     windowsHide: true,
@@ -1634,6 +2120,16 @@ function updateSessionStateFromBackendEvent(session, event) {
   if (event.type === "active_session") {
     session.savedSessionId = String(event.value || "").trim();
   }
+  if (
+    event.type === "status" ||
+    event.type === "tool_started" ||
+    event.type === "tool_input_delta" ||
+    event.type === "tool_progress" ||
+    event.type === "assistant_delta" ||
+    event.type === "assistant_complete"
+  ) {
+    session.busy = true;
+  }
   if (event.type === "line_complete" || event.type === "error" || event.type === "shutdown") {
     session.busy = false;
   }
@@ -1651,6 +2147,54 @@ function liveSessionPayload(session) {
 
 async function handleApi(request, response, pathname) {
   const workspaceScope = workspaceScopeFromRequest(request);
+  if (request.method === "POST" && pathname === "/api/token-count") {
+    try {
+      const body = await readJson(request);
+      const text = String(body.text || "");
+      if (text.length > tokenCountMaxChars) {
+        throw new Error("Text is too long to count tokens");
+      }
+      json(response, 200, { tokens: countTokens(text), encoding: "o200k_base" });
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not count tokens" });
+    }
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/html-preview") {
+    try {
+      const body = await readJson(request);
+      const id = storeChatHtmlPreview(body.content);
+      json(response, 200, { id, url: `/api/html-preview/${id}` });
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not create HTML preview" });
+    }
+    return true;
+  }
+
+  if (request.method === "GET" && pathname.startsWith("/api/html-preview/")) {
+    pruneChatHtmlPreviews();
+    const id = decodeURIComponent(pathname.slice("/api/html-preview/".length));
+    const preview = chatHtmlPreviews.get(id);
+    if (!preview) {
+      response.writeHead(404, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      response.end("HTML preview not found");
+      return true;
+    }
+    preview.expiresAt = Date.now() + chatHtmlPreviewTtlMs;
+    response.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": "default-src 'self' http: https: data: blob:; script-src 'self' http: https: data: blob: 'unsafe-inline' 'unsafe-eval'; style-src 'self' http: https: 'unsafe-inline'; img-src * data: blob:; font-src * data:; media-src * data: blob:; connect-src * data: blob:; frame-src http: https: data: blob:; worker-src blob: data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+      "X-Content-Type-Options": "nosniff",
+    });
+    response.end(preview.content);
+    return true;
+  }
+
   if (request.method === "GET" && pathname === "/api/workspaces") {
     const workspaces = await listWorkspaces(workspaceScope);
     json(response, 200, { root: workspaceScope.root, scope: workspaceScope, workspaces });
@@ -1716,6 +2260,23 @@ async function handleApi(request, response, pathname) {
     return true;
   }
 
+  if (request.method === "POST" && pathname === "/api/history/title") {
+    try {
+      const body = await readJson(request);
+      const workspace = workspaceFromHistoryRequest(body, workspaceScope);
+      const snapshot = await updateWorkspaceHistoryTitle(workspace, body.sessionId, body.title);
+      json(response, 200, {
+        ok: true,
+        workspace,
+        sessionId: snapshot.session_id || body.sessionId,
+        title: snapshot.summary,
+      });
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not update history title" });
+    }
+    return true;
+  }
+
   if (request.method === "POST" && pathname === "/api/session") {
     try {
       const options = await readJson(request);
@@ -1775,6 +2336,44 @@ async function handleApi(request, response, pathname) {
       json(response, 200, await saveWorkspaceScopeSettings(body, request));
     } catch (error) {
       json(response, 400, { error: error.message || "Could not save workspace scope settings" });
+    }
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/settings/learned-skills") {
+    try {
+      json(response, 200, await readLearnedSkillsSettings());
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not read learned skill settings" });
+    }
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/settings/learned-skills") {
+    try {
+      const body = await readJson(request);
+      json(response, 200, await saveLearnedSkillsSettings(body));
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not save learned skill settings" });
+    }
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/settings/shell") {
+    try {
+      json(response, 200, await readShellSettings());
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not read shell settings" });
+    }
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/settings/shell") {
+    try {
+      const body = await readJson(request);
+      json(response, 200, await saveShellSettings(body));
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not save shell settings" });
     }
     return true;
   }
@@ -1968,12 +2567,19 @@ async function handleApi(request, response, pathname) {
     const attachments = Array.isArray(body.attachments)
       ? body.attachments.map(normalizeAttachment).filter(Boolean)
       : [];
+    const deliveryMode = String(body.mode || "").trim().toLowerCase();
     if (!line && attachments.length === 0) {
       json(response, 400, { error: "Message is empty" });
       return true;
     }
     if (session.busy) {
-      json(response, 409, { error: "Session is already busy" });
+      if (attachments.length > 0) {
+        json(response, 409, { error: "Attachments cannot be sent while the session is busy" });
+        return true;
+      }
+      const queued = deliveryMode === "queue" || deliveryMode === "queued";
+      const ok = sendBackend(session, { type: queued ? "queue_line" : "steer_line", line });
+      json(response, ok ? 200 : 409, { ok, queued, steering: !queued });
       return true;
     }
     if (session.clientId && countBusySessionsForClient(session.clientId) >= 3) {
@@ -2113,6 +2719,10 @@ if (!String(process.env.OPENHARNESS_WORKSPACE_SCOPE || "").trim()) {
   const savedScopeSettings = await readJsonFileIfExists(join(globalConfigDir(), "settings.json")) || {};
   workspaceScopeMode = normalizeWorkspaceScopeMode(savedScopeSettings.web_workspace_scope || savedScopeSettings.workspace_scope || workspaceScopeMode);
 }
+if (!String(process.env.OPENHARNESS_SHELL || "").trim()) {
+  const savedShellSettings = await readJsonFileIfExists(join(globalConfigDir(), "settings.json")) || {};
+  shellPreference = normalizeShellPreference(savedShellSettings.shell || savedShellSettings.web_shell || shellPreference);
+}
 
 server.listen(port, host, () => {
   const localUrl = `http://localhost:${port}`;
@@ -2127,4 +2737,5 @@ server.listen(port, host, () => {
     console.log(`  ${lanUrl}`);
   }
   console.log(`Workspace scope: ${workspaceScopeMode}`);
+  console.log(`Shell: ${shellPreference}`);
 });

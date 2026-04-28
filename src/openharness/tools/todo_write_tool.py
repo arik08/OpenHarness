@@ -4,17 +4,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
+
+
+class TodoWriteItemInput(BaseModel):
+    """One markdown checklist item."""
+
+    text: str = Field(description="TODO item text")
+    checked: bool = Field(default=False)
 
 
 class TodoWriteToolInput(BaseModel):
     """Arguments for TODO writes."""
 
-    item: str = Field(description="TODO item text")
+    item: str | None = Field(default=None, description="TODO item text")
     checked: bool = Field(default=False)
     path: str = Field(default="TODO.md")
+    persist: bool = Field(default=True, description="Whether to write the checklist to disk.")
+    todos: list[TodoWriteItemInput] | None = Field(
+        default=None,
+        description="Full checklist to render or persist. Use this for session task progress checklists.",
+    )
+
+    @model_validator(mode="after")
+    def require_item_or_todos(self) -> "TodoWriteToolInput":
+        if not self.item and not self.todos:
+            raise ValueError("Either item or todos must be provided")
+        return self
 
 
 class TodoWriteTool(BaseTool):
@@ -26,6 +44,17 @@ class TodoWriteTool(BaseTool):
 
     async def execute(self, arguments: TodoWriteToolInput, context: ToolExecutionContext) -> ToolResult:
         path = Path(context.cwd) / arguments.path
+
+        if arguments.todos is not None:
+            lines = [f"- [{'x' if item.checked else ' '}] {item.text}" for item in arguments.todos]
+            markdown = "\n".join(lines)
+            if not arguments.persist:
+                return ToolResult(output=markdown)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"# TODO\n{markdown}\n", encoding="utf-8")
+            return ToolResult(output=f"Updated {path}\n{markdown}")
+
+        assert arguments.item is not None
         existing = path.read_text(encoding="utf-8") if path.exists() else "# TODO\n"
 
         unchecked_line = f"- [ ] {arguments.item}"
@@ -42,5 +71,8 @@ class TodoWriteTool(BaseTool):
             # New item — append
             updated = existing.rstrip() + f"\n{target_line}\n"
 
+        if not arguments.persist:
+            return ToolResult(output=target_line)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(updated, encoding="utf-8")
         return ToolResult(output=f"Updated {path}")

@@ -20,6 +20,11 @@ _FORCED_SKILL_PROMPT_RE = re.compile(
     r"\nUser request:\n(?P<request>[\s\S]*)\Z",
     re.DOTALL,
 )
+_STEERING_PROMPT_RE = re.compile(
+    r"^The user sent this steering update while you were already working\..*"
+    r"\nUser steering update:\n(?P<request>[\s\S]*)\Z",
+    re.DOTALL,
+)
 
 
 def _compact_forced_skill_prompt(text: str) -> str:
@@ -33,10 +38,18 @@ def _compact_forced_skill_prompt(text: str) -> str:
     return " ".join(part for part in (f"${skill}", request) if part).strip()
 
 
+def _compact_steering_prompt(text: str) -> str:
+    match = _STEERING_PROMPT_RE.match(text.strip())
+    if not match:
+        return text.strip()
+    return match.group("request").strip()
+
+
 def strip_internal_message_text(text: str) -> str:
     """Remove model-facing internal notes from user-visible transcript text."""
     clean = _INTERNAL_ATTACHMENT_NOTE_RE.sub("", text).strip()
     clean = _compact_forced_skill_prompt(clean)
+    clean = _compact_steering_prompt(clean)
     return clean
 
 

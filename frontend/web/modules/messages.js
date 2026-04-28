@@ -5,6 +5,8 @@ export function createMessages(ctx) {
   let workflowWaitingTimer = 0;
   let workflowWaitingIndex = 0;
   let workflowIntent = "default";
+  let workflowPurposeGroupSerial = 0;
+  let todoListSerial = 0;
   let workflowPreviewList = null;
   const workflowPreviews = new Map();
   const workflowToolArgBuffers = new Map();
@@ -12,8 +14,30 @@ export function createMessages(ctx) {
   const WORKFLOW_EVENT_STAGGER_MS = 90;
   const WORKFLOW_WAITING_FIRST_MS = 4500;
   const WORKFLOW_WAITING_NEXT_MS = 12000;
-  const WORKFLOW_PREVIEW_CHARS_PER_TICK = 180;
-  const WORKFLOW_PREVIEW_TICK_MS = 45;
+  const WORKFLOW_PREVIEW_MAX_CHARS = 12000;
+  const WORKFLOW_PURPOSE_DETAILS = {
+    info: {
+      title: "정보 수집",
+      running: "필요한 자료와 맥락을 확인하고 있습니다.",
+      done: "필요한 정보를 확인했습니다.",
+      warning: "일부 정보는 제한되어 다른 경로로 진행했습니다.",
+      error: "정보 수집 중 문제가 발생했습니다.",
+    },
+    action: {
+      title: "작업 실행",
+      running: "필요한 변경이나 명령을 실행하고 있습니다.",
+      done: "작업 실행을 마쳤습니다.",
+      warning: "일부 작업은 제한되어 다른 방식으로 진행했습니다.",
+      error: "작업 실행 중 문제가 발생했습니다.",
+    },
+    verification: {
+      title: "결과 검증",
+      running: "결과를 확인하고 있습니다.",
+      done: "결과를 확인했습니다.",
+      warning: "일부 검증에서 주의할 점이 확인되었습니다.",
+      error: "검증 중 문제가 발생했습니다.",
+    },
+  };
   function removeWelcome(...args) { return ctx.removeWelcome(...args); }
   function setMarkdown(...args) { return ctx.setMarkdown(...args); }
   function scrollMessagesToBottom(...args) { return ctx.scrollMessagesToBottom(...args); }
@@ -24,8 +48,98 @@ export function createMessages(ctx) {
   function copyTextToClipboard(...args) { return ctx.copyTextToClipboard(...args); }
   function showImagePreview(...args) { return ctx.showImagePreview?.(...args); }
 
-function countTextCharacters(text) {
-  return Array.from(String(text || "")).length;
+function estimateTextTokens(text) {
+  const value = String(text || "");
+  if (!value) {
+    return 0;
+  }
+  let total = 0;
+  for (const segment of value.matchAll(/[\uAC00-\uD7A3]+|[A-Za-z0-9]+|\s+|./gu)) {
+    const part = segment[0] || "";
+    if (/^[\uAC00-\uD7A3]+$/u.test(part)) {
+      total += part.length;
+    } else if (/^[A-Za-z0-9]+$/u.test(part)) {
+      total += Math.ceil(part.length / 4);
+    } else if (/^\s+$/u.test(part)) {
+      total += part.includes("\n") ? 1 : 0;
+    } else {
+      total += 1;
+    }
+  }
+  return Math.max(1, total);
+}
+
+function workflowPreviewFileName(path) {
+  const normalized = String(path || "").trim().replace(/[\\/]+$/g, "");
+  const name = normalized.split(/[\\/]+/).pop();
+  return name || normalized;
+}
+
+function formatWorkflowTokenCount(tokens) {
+  const count = Math.max(0, Math.round(Number(tokens) || 0)).toLocaleString();
+  return `${count} 토큰`;
+}
+
+function workflowInputValue(input, keys) {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(input || {}, key) && input[key] !== null && input[key] !== undefined) {
+      return { found: true, value: String(input[key]) };
+    }
+  }
+  return { found: false, value: "" };
+}
+
+function splitWorkflowPreviewLines(value) {
+  const normalized = String(value || "").replace(/\r\n/g, "\n");
+  return normalized ? normalized.split("\n") : [""];
+}
+
+function formatWorkflowEditBlock(oldValue, newValue, index = 1, total = 1) {
+  const lines = [];
+  if (total > 1) {
+    lines.push(`@@ 변경 ${index} @@`);
+  }
+  for (const line of splitWorkflowPreviewLines(oldValue)) {
+    lines.push(`-- ${line}`);
+  }
+  for (const line of splitWorkflowPreviewLines(newValue)) {
+    lines.push(`++ ${line}`);
+  }
+  return lines.join("\n");
+}
+
+function formatWorkflowEditPreview(input = {}) {
+  const entries = Array.isArray(input?.edits) && input.edits.length ? input.edits : [input];
+  const blocks = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const oldValue = workflowInputValue(entry, ["old_str", "old_string", "old_text", "oldText"]);
+    const newValue = workflowInputValue(entry, ["new_str", "new_string", "new_text", "newText"]);
+    if (!oldValue.found && !newValue.found) {
+      continue;
+    }
+    blocks.push({ oldValue: oldValue.value, newValue: newValue.value });
+  }
+  return blocks
+    .map((block, index) => formatWorkflowEditBlock(block.oldValue, block.newValue, index + 1, blocks.length))
+    .join("\n");
+}
+
+function workflowPreviewSource(toolName, input = {}) {
+  const lower = String(toolName || "").toLowerCase();
+  if (lower.includes("edit")) {
+    const diff = formatWorkflowEditPreview(input);
+    if (diff) {
+      return { kind: "diff", content: diff };
+    }
+  }
+  const content = workflowInputValue(input, ["content", "new_string"]);
+  if (content.found) {
+    return { kind: "content", content: content.value };
+  }
+  return { kind: "content", content: "" };
 }
 
 function ensureWorkflowPreviewTitleParts(previewNode) {
@@ -54,7 +168,48 @@ function updateWorkflowPreviewTitle(preview, path = "") {
     return;
   }
   preview.path = path || preview.path || "";
-  parts.label.textContent = path ? `작성 중인 결과물 - ${path}` : "작성 중인 결과물";
+  const isDiff = preview.kind === "diff";
+  const prefix = isDiff
+    ? (preview.done ? "수정 완료" : "수정 미리보기")
+    : (preview.done ? "작성 완료" : "작성 중인 결과물");
+  const displayName = workflowPreviewFileName(preview.path);
+  parts.label.textContent = displayName ? `${prefix} - ${displayName}` : prefix;
+}
+
+async function refreshWorkflowPreviewTokenCount(preview, options = {}) {
+  const allowDone = Boolean(options.allowDone);
+  preview.tokenTimer = 0;
+  if (preview.kind === "diff") {
+    return;
+  }
+  const text = String(preview.tokenText || "");
+  if (!text || (!allowDone && preview.done) || !preview.node?.isConnected) {
+    return;
+  }
+  const requestId = (preview.tokenRequestId || 0) + 1;
+  preview.tokenRequestId = requestId;
+  try {
+    const response = await fetch("/api/token-count", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json();
+    if ((!allowDone && preview.done) || preview.tokenRequestId !== requestId || String(preview.tokenText || "") !== text) {
+      return;
+    }
+    preview.tokenExactText = text;
+    preview.tokenExactCount = Number(payload.tokens) || 0;
+    const parts = ensureWorkflowPreviewTitleParts(preview.node);
+    if (parts) {
+      parts.count.textContent = formatWorkflowTokenCount(preview.tokenExactCount);
+    }
+  } catch {
+    // Keep the local estimate visible if the tokenizer request is interrupted.
+  }
 }
 
 function updateWorkflowPreviewLineCount(preview, text = preview?.body?.textContent || "") {
@@ -62,8 +217,27 @@ function updateWorkflowPreviewLineCount(preview, text = preview?.body?.textConte
   if (!parts) {
     return;
   }
-  const characters = countTextCharacters(text);
-  parts.count.textContent = characters > 0 ? `${characters.toLocaleString()}글자 작성 중` : "0글자";
+  const value = String(text || "");
+  preview.tokenText = value;
+  if (!value) {
+    window.clearTimeout(preview.tokenTimer);
+    preview.tokenTimer = 0;
+    parts.count.textContent = "0 토큰";
+    return;
+  }
+  if (preview.kind === "diff") {
+    const changedLines = value
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("++ ") || line.startsWith("-- "))
+      .length;
+    parts.count.textContent = `${changedLines.toLocaleString()}줄 변경`;
+    return;
+  }
+  if (preview.tokenExactText === value) {
+    parts.count.textContent = formatWorkflowTokenCount(preview.tokenExactCount);
+    return;
+  }
+  parts.count.textContent = formatWorkflowTokenCount(estimateTextTokens(value));
 }
 
 function scrollWorkflowPreviewToBottom(preview) {
@@ -79,12 +253,70 @@ function scrollWorkflowPreviewToBottom(preview) {
   });
 }
 
+function workflowPreviewDisplayText(content) {
+  const value = String(content || "");
+  return value.length > WORKFLOW_PREVIEW_MAX_CHARS
+    ? `${value.slice(0, WORKFLOW_PREVIEW_MAX_CHARS)}\n\n...`
+    : value;
+}
+
+function renderWorkflowPreviewBody(preview, text) {
+  if (!preview?.body) {
+    return;
+  }
+  preview.body.classList.toggle("diff", preview.kind === "diff");
+  preview.body.textContent = "";
+  if (preview.kind !== "diff") {
+    preview.body.textContent = text;
+    return;
+  }
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const row = document.createElement("span");
+    row.className = "workflow-diff-line";
+    if (line.startsWith("++ ")) {
+      row.classList.add("added");
+    } else if (line.startsWith("-- ")) {
+      row.classList.add("removed");
+    } else if (line.startsWith("@@")) {
+      row.classList.add("hunk");
+    }
+    row.textContent = line || " ";
+    preview.body.append(row);
+  }
+}
+
+function setWorkflowPreviewTarget(preview, content, options = {}) {
+  if (!preview) {
+    return;
+  }
+  if (preview.done) {
+    return;
+  }
+  preview.kind = options.kind || preview.kind || "content";
+  const nextText = workflowPreviewDisplayText(content);
+  window.clearTimeout(preview.timer);
+  preview.timer = 0;
+  preview.text = nextText;
+  preview.offset = nextText.length;
+  renderWorkflowPreviewBody(preview, nextText);
+  updateWorkflowPreviewLineCount(preview, nextText);
+  scrollWorkflowPreviewToBottom(preview);
+}
+
 function workflowPreviewKey(toolName, input = {}, fallbackKey = "") {
   const path = String(input?.file_path || input?.path || "").trim();
   if (path) {
     return `path:${path}`;
   }
   return fallbackKey || `tool:${String(toolName || "tool").toLowerCase()}`;
+}
+
+function isWorkflowOutputTool(toolName) {
+  const lower = String(toolName || "").toLowerCase();
+  if (lower === "todo_write" || lower === "todowrite") {
+    return false;
+  }
+  return lower.includes("write") || lower.includes("edit");
 }
 
 function createWorkflowPreviewNode(path = "") {
@@ -94,20 +326,16 @@ function createWorkflowPreviewNode(path = "") {
   title.className = "workflow-output-title";
   const label = document.createElement("span");
   label.className = "workflow-output-label";
-  label.textContent = path ? `작성 중인 결과물 - ${path}` : "작성 중인 결과물";
+  const displayName = workflowPreviewFileName(path);
+  label.textContent = displayName ? `작성 중인 결과물 - ${displayName}` : "작성 중인 결과물";
   const count = document.createElement("span");
   count.className = "workflow-output-line-count";
-  count.textContent = "생성 대기 중";
+  count.textContent = "";
   title.append(label, count);
   const body = document.createElement("pre");
   body.className = "workflow-output-body";
   node.append(title, body);
   return { node, body };
-}
-
-function outputExtension(path = "") {
-  const match = String(path || "").toLowerCase().match(/(\.[a-z0-9]{1,8})(?:$|[?#])/);
-  return match?.[1] || "";
 }
 
 function ensureWorkflowPreview(key, path = "") {
@@ -117,16 +345,6 @@ function ensureWorkflowPreview(key, path = "") {
   }
   const cleanKey = String(key || path || `preview:${workflowPreviews.size + 1}`);
   let preview = workflowPreviews.get(cleanKey);
-  if (!preview && path) {
-    const expectedKey = `expected:${outputExtension(path)}`;
-    const expected = workflowPreviews.get(expectedKey);
-    if (expected) {
-      workflowPreviews.delete(expectedKey);
-      expected.key = cleanKey;
-      workflowPreviews.set(cleanKey, expected);
-      preview = expected;
-    }
-  }
   if (!preview) {
     const elements = createWorkflowPreviewNode(path);
     preview = {
@@ -134,9 +352,16 @@ function ensureWorkflowPreview(key, path = "") {
       node: elements.node,
       body: elements.body,
       timer: 0,
+      tokenTimer: 0,
+      tokenRequestId: 0,
+      tokenText: "",
+      tokenExactText: "",
+      tokenExactCount: 0,
+      tokenFinalRequested: false,
       text: "",
       offset: 0,
       path,
+      kind: "content",
     };
     workflowPreviews.set(cleanKey, preview);
     workflowPreviewList.append(elements.node);
@@ -144,29 +369,6 @@ function ensureWorkflowPreview(key, path = "") {
     updateWorkflowPreviewTitle(preview, path);
   }
   return preview;
-}
-
-function expectedWorkflowOutputs(promptText = "") {
-  const text = String(promptText || "").toLowerCase();
-  const outputs = [];
-  const add = (ext, label) => {
-    if (!outputs.some((item) => item.ext === ext)) {
-      outputs.push({ ext, label });
-    }
-  };
-  if (/\bmd\b|markdown|마크다운/.test(text)) add(".md", "Markdown 산출물");
-  if (/\bhtml?\b|웹\s*보고서|html\s*보고서/.test(text)) add(".html", "HTML 산출물");
-  if (/\bpptx?\b|powerpoint|파워포인트|슬라이드/.test(text)) add(".pptx", "PPTX 산출물");
-  if (/\bxlsx?\b|excel|엑셀/.test(text)) add(".xlsx", "Excel 산출물");
-  if (/\bcsv\b/.test(text)) add(".csv", "CSV 산출물");
-  if (/\bpdf\b/.test(text)) add(".pdf", "PDF 산출물");
-  return outputs;
-}
-
-function seedWorkflowExpectedPreviews(promptText = "") {
-  for (const output of expectedWorkflowOutputs(promptText)) {
-    ensureWorkflowPreview(`expected:${output.ext}`, output.label);
-  }
 }
 
 function isCommandCatalog(text) {
@@ -866,14 +1068,39 @@ function attachAssistantActions(content, rawText) {
   bubble.append(actions);
 }
 
-function appendMessage(role, text, attachments = []) {
+function messageKindBadge(kind) {
+  const normalized = String(kind || "").trim().toLowerCase();
+  if (normalized === "steering" || normalized === "steer") {
+    return { className: "steering", label: "스티어링" };
+  }
+  if (normalized === "queued" || normalized === "queue") {
+    return { className: "queued", label: "대기열" };
+  }
+  return null;
+}
+
+function appendMessage(role, text, attachments = [], options = {}) {
+  if (!Array.isArray(attachments)) {
+    options = attachments || {};
+    attachments = [];
+  }
   removeWelcome();
   const article = document.createElement("article");
   const commandCatalog = role !== "user" && isCommandCatalog(text);
+  const kindBadge = role === "user" ? messageKindBadge(options.kind || options.messageKind) : null;
   article.className = `message ${commandCatalog ? "system command-output" : role}`;
+  if (kindBadge) {
+    article.classList.add(`message-kind-${kindBadge.className}`);
+  }
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
+  if (kindBadge) {
+    const badge = document.createElement("div");
+    badge.className = "message-kind-label";
+    badge.textContent = kindBadge.label;
+    article.append(badge);
+  }
   let content;
   if (commandCatalog) {
     content = createCommandCatalogContent(text);
@@ -908,17 +1135,210 @@ function appendMessage(role, text, attachments = []) {
   return content;
 }
 
+function parseTodoItems(markdown = "") {
+  return String(markdown || "")
+    .split("\n")
+    .map((line) => line.match(/^\s*-\s+\[([ xX])\]\s+(.+)/))
+    .filter(Boolean)
+    .map((match) => ({
+      checked: String(match[1]).toLowerCase() === "x",
+      text: String(match[2] || "").trim(),
+    }))
+    .filter((item) => item.text);
+}
+
+function createTodoChecklistCard(items, {
+  archived = false,
+  collapsed = false,
+  runningIndex = -1,
+  markdown = "",
+} = {}) {
+  const card = document.createElement("section");
+  card.className = archived
+    ? "todo-card composer-todo-card check-list-card workflow-todo-card"
+    : "todo-card composer-todo-card check-list-card";
+  card.classList.toggle("collapsed", collapsed);
+
+  const done = items.filter((item) => item.checked).length;
+  const listId = `todoChecklistItems-${++todoListSerial}`;
+  const header = document.createElement("div");
+  header.className = "todo-card-header";
+  const title = document.createElement("strong");
+  title.textContent = "Check List ";
+  const count = document.createElement("span");
+  count.className = "todo-card-count";
+  count.textContent = `(${done}/${items.length})`;
+  title.append(count);
+  const actions = document.createElement("div");
+  actions.className = "todo-card-actions";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "todo-collapse-toggle";
+  toggle.setAttribute("aria-controls", listId);
+  toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  toggle.setAttribute("aria-label", collapsed ? "Check List 펼치기" : "Check List 접기");
+  toggle.addEventListener("click", () => {
+    if (archived) {
+      const nextCollapsed = !card.classList.contains("collapsed");
+      card.classList.toggle("collapsed", nextCollapsed);
+      list.hidden = nextCollapsed;
+      toggle.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+      toggle.setAttribute("aria-label", nextCollapsed ? "Check List 펼치기" : "Check List 접기");
+      return;
+    }
+    state.todoCollapsed = !state.todoCollapsed;
+    renderTodoChecklist(markdown || state.todoMarkdown);
+  });
+  if (!archived) {
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "todo-dismiss-button";
+    dismiss.setAttribute("aria-label", "Check List 삭제");
+    dismiss.addEventListener("click", () => {
+      resetTodoChecklist();
+    });
+    actions.append(toggle, dismiss);
+  } else {
+    actions.append(toggle);
+  }
+  header.append(title, actions);
+
+  const list = document.createElement("ul");
+  list.id = listId;
+  list.className = "todo-card-list";
+  list.hidden = collapsed;
+  for (const item of items) {
+    const row = document.createElement("li");
+    row.className = item.checked ? "done" : "";
+    const itemIndex = list.children.length;
+    if (itemIndex === runningIndex) {
+      row.classList.add("running");
+    }
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = item.checked;
+    checkbox.disabled = true;
+    const spinner = document.createElement("span");
+    spinner.className = "todo-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.className = "todo-label";
+    label.textContent = item.text;
+    row.append(checkbox, spinner, label);
+    list.append(row);
+  }
+
+  card.append(header, list);
+  return card;
+}
+
+function renderTodoChecklist(markdown = "") {
+  const items = parseTodoItems(markdown);
+  if (!items.length) {
+    resetTodoChecklist();
+    return;
+  }
+  removeWelcome();
+  state.todoMarkdown = markdown;
+
+  let card = state.todoNode;
+  if (!card || !card.isConnected) {
+    card = createTodoChecklistCard(items, {
+      collapsed: Boolean(state.todoCollapsed),
+      markdown,
+      runningIndex: state.busy && !state.restoringHistory
+        ? items.findIndex((item) => !item.checked)
+        : -1,
+    });
+    state.todoNode = card;
+  }
+  const dock = els.todoChecklistDock;
+  if (dock && card.parentElement !== dock) {
+    dock.textContent = "";
+    dock.append(card);
+  }
+  dock?.classList.remove("hidden");
+  const nextCard = createTodoChecklistCard(items, {
+    collapsed: Boolean(state.todoCollapsed),
+    markdown,
+    runningIndex: state.busy && !state.restoringHistory
+      ? items.findIndex((item) => !item.checked)
+      : -1,
+  });
+  card.replaceWith(nextCard);
+  state.todoNode = nextCard;
+  if (state.restoringHistory) {
+    scheduleScrollRestore();
+  } else {
+    scrollMessagesToBottom();
+  }
+}
+
+function archiveTodoChecklist() {
+  const markdown = state.todoMarkdown;
+  const items = parseTodoItems(markdown);
+  if (!items.length) {
+    resetTodoChecklist();
+    return false;
+  }
+  if (!state.workflowNode) {
+    resetTodoChecklist();
+    return false;
+  }
+  const body = state.workflowNode.querySelector(".workflow-body");
+  const list = state.workflowList;
+  if (!body || !list) {
+    resetTodoChecklist();
+    return false;
+  }
+  let slot = body.querySelector(".workflow-todo-slot");
+  if (!slot) {
+    slot = document.createElement("div");
+    slot.className = "workflow-todo-slot";
+    body.insertBefore(slot, list);
+  }
+  slot.textContent = "";
+  slot.append(createTodoChecklistCard(items, {
+    archived: true,
+    collapsed: true,
+    markdown,
+  }));
+  resetTodoChecklist();
+  state.workflowNode.open = true;
+  return true;
+}
+
+function resetTodoChecklist() {
+  state.todoMarkdown = "";
+  state.todoCollapsed = false;
+  state.todoNode?.remove();
+  state.todoNode = null;
+  els.todoChecklistDock?.classList.add("hidden");
+  if (els.todoChecklistDock) {
+    els.todoChecklistDock.textContent = "";
+  }
+}
+
+function clearTodoProgressState() {
+  state.todoNode?.querySelectorAll(".todo-card-list li.running").forEach((row) => {
+    row.classList.remove("running");
+  });
+}
+
 function resetWorkflowPanel() {
+  clearTodoProgressState();
   workflowEventQueue = [];
   window.clearTimeout(workflowEventQueueTimer);
   window.clearTimeout(workflowWaitingTimer);
   for (const preview of workflowPreviews.values()) {
     window.clearTimeout(preview.timer);
+    window.clearTimeout(preview.tokenTimer);
   }
   workflowEventQueueTimer = 0;
   workflowWaitingTimer = 0;
   workflowWaitingIndex = 0;
   workflowIntent = "default";
+  workflowPurposeGroupSerial = 0;
   workflowPreviewList = null;
   workflowPreviews.clear();
   workflowToolArgBuffers.clear();
@@ -937,6 +1357,10 @@ function resetWorkflowPanel() {
 
 function collapseWorkflowPanel() {
   if (!state.workflowNode) {
+    return;
+  }
+  if (state.workflowNode.querySelector(".workflow-todo-card")) {
+    state.workflowNode.open = true;
     return;
   }
   if (state.restoringHistory || state.batchingHistoryRestore) {
@@ -964,11 +1388,12 @@ function finalizeWorkflowSummary() {
       detail.textContent = "완료되었습니다.";
     }
   });
-  markWorkflowExecutionStepDone();
+  refreshWorkflowPurposeSteps();
   markWorkflowFinalAnswerDone("done", "응답을 마무리했습니다.");
   updateWorkflowSummary();
   flushWorkflowOutputPreview();
   stopWorkflowTimer();
+  clearTodoProgressState();
 }
 
 function failWorkflowPanel(message = "") {
@@ -992,7 +1417,6 @@ function failWorkflowPanel(message = "") {
   }
 
   markPlanningStepDone();
-  markWorkflowExecutionStepDone("error", message || "작업이 실패했습니다.");
   markWorkflowFinalAnswerDone("error", message || "응답을 마무리하지 못했습니다.");
   state.workflowList?.querySelectorAll(".workflow-step.running").forEach((row) => {
     row.classList.remove("running");
@@ -1002,8 +1426,10 @@ function failWorkflowPanel(message = "") {
       detail.textContent = message || "작업이 실패했습니다.";
     }
   });
+  refreshWorkflowPurposeSteps();
   updateWorkflowSummary();
   collapseWorkflowPanel();
+  clearTodoProgressState();
 }
 
 function detectWorkflowIntent(promptText = "") {
@@ -1073,12 +1499,13 @@ function ensureWorkflowPanel(promptText = "") {
   state.workflowSteps = [];
   state.workflowStartedAt = performance.now();
   startWorkflowTimer();
-  seedWorkflowExpectedPreviews(promptText);
   appendWorkflowStep("요청 이해", "사용자 요청을 확인했습니다.", "done");
   appendWorkflowStep(
-    "작업 계획",
-    workflowIntent === "file" ? "파일 생성 방법과 저장 위치를 정하는 중입니다." : "필요한 정보와 도구를 판단합니다.",
+    "작업 방향 정리",
+    workflowIntent === "file" ? "파일 작성 방향과 저장 방식을 정리합니다." : "필요한 맥락과 진행 방향을 정리합니다.",
     "running",
+    "",
+    { role: "planning" },
   );
   if (!state.restoringHistory) {
     startWorkflowWaitingTimer();
@@ -1193,38 +1620,26 @@ function flushWorkflowOutputPreview() {
       continue;
     }
     window.clearTimeout(preview.timer);
+    window.clearTimeout(preview.tokenTimer);
     preview.timer = 0;
-    preview.body.textContent = preview.text;
+    preview.tokenTimer = 0;
+    preview.tokenRequestId = (preview.tokenRequestId || 0) + 1;
+    preview.done = true;
+    renderWorkflowPreviewBody(preview, preview.text);
     preview.offset = preview.text.length;
+    updateWorkflowPreviewTitle(preview);
     updateWorkflowPreviewLineCount(preview, preview.text);
+    if (preview.kind !== "diff" && !preview.tokenFinalRequested) {
+      preview.tokenFinalRequested = true;
+      refreshWorkflowPreviewTokenCount(preview, { allowDone: true });
+    }
     scrollWorkflowPreviewToBottom(preview);
   }
 }
 
-function revealWorkflowOutputPreview(preview) {
-  if (!preview?.body || !preview.text) {
-    return;
-  }
-  preview.timer = 0;
-  preview.offset = Math.min(
-    preview.text.length,
-    preview.offset + WORKFLOW_PREVIEW_CHARS_PER_TICK,
-  );
-  preview.body.textContent = preview.text.slice(0, preview.offset);
-  updateWorkflowPreviewLineCount(preview, preview.body.textContent);
-  scrollWorkflowPreviewToBottom(preview);
-  if (!state.restoringHistory && state.autoFollowMessages) {
-    scrollMessagesToBottom({ smooth: true, duration: 900 });
-  }
-  if (preview.offset < preview.text.length) {
-    preview.timer = window.setTimeout(() => revealWorkflowOutputPreview(preview), WORKFLOW_PREVIEW_TICK_MS);
-  }
-}
-
 function startWorkflowOutputPreview(toolName, input = {}) {
-  const lower = String(toolName || "").toLowerCase();
-  const content = String(input?.content || input?.new_string || "");
-  if (!content || !(lower.includes("write") || lower.includes("edit"))) {
+  const source = workflowPreviewSource(toolName, input);
+  if (!source.content || !isWorkflowOutputTool(toolName)) {
     return;
   }
   ensureWorkflowPanel();
@@ -1233,32 +1648,9 @@ function startWorkflowOutputPreview(toolName, input = {}) {
   if (!preview) {
     return;
   }
+  preview.kind = source.kind;
   updateWorkflowPreviewTitle(preview, path);
-  if (preview.text && content.startsWith(preview.text.replace(/\n\n\.\.\.$/, ""))) {
-    window.clearTimeout(preview.timer);
-    preview.timer = 0;
-    preview.text = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
-    preview.offset = preview.text.length;
-    preview.body.textContent = preview.text;
-    updateWorkflowPreviewLineCount(preview, content);
-    scrollWorkflowPreviewToBottom(preview);
-    return;
-  }
-  window.clearTimeout(preview.timer);
-  preview.timer = 0;
-  preview.text = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
-  if (state.restoringHistory) {
-    preview.offset = preview.text.length;
-    preview.body.textContent = preview.text;
-    updateWorkflowPreviewLineCount(preview, content);
-    scrollWorkflowPreviewToBottom(preview);
-    return;
-  }
-  preview.offset = 0;
-  preview.body.textContent = "";
-  updateWorkflowPreviewLineCount(preview, "");
-  scrollWorkflowPreviewToBottom(preview);
-  revealWorkflowOutputPreview(preview);
+  setWorkflowPreviewTarget(preview, source.content, { kind: source.kind });
 }
 
 function decodeJsonStringFragment(value) {
@@ -1337,11 +1729,18 @@ function appendWorkflowInputDelta(event) {
   }
   const next = current + delta;
   workflowToolArgBuffers.set(key, next);
-  const content = extractPartialJsonStringValue(next, "content") || extractPartialJsonStringValue(next, "new_string");
-  if (!content) {
+  const oldString = extractPartialJsonStringValue(next, "old_str") || extractPartialJsonStringValue(next, "old_string");
+  const newString = extractPartialJsonStringValue(next, "new_str") || extractPartialJsonStringValue(next, "new_string");
+  const lower = String(event.tool_name || "").toLowerCase();
+  const diff = lower.includes("edit") && (oldString || newString)
+    ? formatWorkflowEditBlock(oldString, newString)
+    : "";
+  const content = diff || extractPartialJsonStringValue(next, "content") || extractPartialJsonStringValue(next, "new_string");
+  const kind = diff ? "diff" : "content";
+  const path = extractPartialJsonStringValue(next, "file_path") || extractPartialJsonStringValue(next, "path");
+  if (!isWorkflowOutputTool(event.tool_name) || !content) {
     return;
   }
-  const path = extractPartialJsonStringValue(next, "file_path") || extractPartialJsonStringValue(next, "path");
   const fallbackKey = `delta:${key}`;
   const previewKey = workflowPreviewKey(event.tool_name, { file_path: path }, fallbackKey);
   let preview = workflowPreviews.get(previewKey);
@@ -1359,14 +1758,9 @@ function appendWorkflowInputDelta(event) {
   if (!preview) {
     return;
   }
+  preview.kind = kind;
   updateWorkflowPreviewTitle(preview, path);
-  window.clearTimeout(preview.timer);
-  preview.timer = 0;
-  preview.text = content.length > 12000 ? `${content.slice(0, 12000)}\n\n...` : content;
-  preview.offset = preview.text.length;
-  preview.body.textContent = preview.text;
-  updateWorkflowPreviewLineCount(preview, content);
-  scrollWorkflowPreviewToBottom(preview);
+  setWorkflowPreviewTarget(preview, content, { kind });
   if (!state.restoringHistory && state.autoFollowMessages) {
     scrollMessagesToBottom({ smooth: true, duration: 900 });
   }
@@ -1386,11 +1780,11 @@ function appendWorkflowWaitingStep() {
   const fileSteps = [
     ["초안 구성 중", "문서에 들어갈 내용과 구조를 정리하고 있습니다."],
     ["파일 작성 준비 중", "Markdown 파일로 저장할 내용을 준비하고 있습니다."],
-    ["저장 대기 중", "파일 쓰기 도구가 실행되면 경로와 결과를 표시합니다."],
+    ["저장 대기 중", "파일 작업이 시작되면 경로와 결과를 표시합니다."],
   ];
   const defaultSteps = [
     ["응답 준비 중", "필요한 맥락을 정리하고 있습니다."],
-    ["실행 대기 중", "다음 도구 실행이나 답변 생성을 기다리고 있습니다."],
+    ["실행 대기 중", "다음 활동이나 답변 생성을 기다리고 있습니다."],
     ["처리 계속 중", "작업이 아직 진행 중입니다."],
   ];
   const steps = workflowIntent === "file" ? fileSteps : defaultSteps;
@@ -1415,6 +1809,12 @@ function appendWorkflowStep(titleText, detailText, status = "done", toolName = "
   if (options.role) {
     row.dataset.workflowRole = options.role;
   }
+  if (options.purpose) {
+    row.dataset.workflowPurpose = options.purpose;
+  }
+  if (options.groupId) {
+    row.dataset.workflowGroupId = options.groupId;
+  }
   if (toolName) {
     row.dataset.toolName = toolName;
   }
@@ -1437,6 +1837,170 @@ function appendWorkflowStep(titleText, detailText, status = "done", toolName = "
   state.workflowSteps.push(row);
   updateWorkflowSummary();
   return row;
+}
+
+function workflowPurposeDetails(purpose) {
+  return WORKFLOW_PURPOSE_DETAILS[purpose] || WORKFLOW_PURPOSE_DETAILS.action;
+}
+
+function workflowCommandInput(input = {}) {
+  return String(input?.command || input?.cmd || input?.script || "").trim();
+}
+
+function isVerificationCommand(command = "") {
+  const lower = command.toLowerCase();
+  return /\b(pytest|unittest|vitest|jest|playwright|tsc|eslint|ruff|mypy)\b/.test(lower)
+    || /\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|build|lint|typecheck)\b/.test(lower)
+    || /\b(?:cargo\s+test|go\s+test|dotnet\s+test)\b/.test(lower);
+}
+
+function isReadOnlyCommand(command = "") {
+  const lower = command.toLowerCase();
+  if (!lower) {
+    return false;
+  }
+  if (/[>]{1,2}/.test(lower) || /\b(remove-item|rm|del|erase|move-item|mv|copy-item|cp|set-content|add-content|out-file|new-item|mkdir)\b/.test(lower)) {
+    return false;
+  }
+  if (/\bgit\s+(?:add|commit|checkout|switch|reset|merge|rebase|push|pull|clean|restore)\b/.test(lower)) {
+    return false;
+  }
+  const readOnlyStart = /^\s*(?:\$[\w-]+\s*=\s*[^;]+;\s*)?(?:rg|grep|findstr|select-string|get-content|get-childitem|ls|dir|pwd|type|cat|wc)\b/;
+  return readOnlyStart.test(lower)
+    || /\bgit\s+(?:status|diff|show|log|branch|rev-parse)\b/.test(lower);
+}
+
+function workflowPurposeForTool(toolName = "", input = {}) {
+  const lower = String(toolName || "").toLowerCase();
+  const command = workflowCommandInput(input);
+  if (lower.includes("bash") || lower.includes("cmd") || lower.includes("shell")) {
+    if (isVerificationCommand(command)) {
+      return "verification";
+    }
+    if (isReadOnlyCommand(command)) {
+      return "info";
+    }
+    return "action";
+  }
+  if (
+    lower.includes("test")
+    || lower.includes("build")
+    || lower.includes("lint")
+    || lower.includes("pytest")
+    || lower.includes("tsc")
+    || lower.includes("playwright")
+  ) {
+    return "verification";
+  }
+  if (
+    lower.includes("write")
+    || lower.includes("edit")
+    || lower.includes("delete")
+    || lower.includes("notebook")
+  ) {
+    return "action";
+  }
+  if (
+    lower.includes("web_search")
+    || lower.includes("web_fetch")
+    || lower.includes("grep")
+    || lower.includes("glob")
+    || lower.includes("read")
+    || lower.includes("list")
+    || lower.includes("search")
+    || lower.includes("fetch")
+  ) {
+    return "info";
+  }
+  return "action";
+}
+
+function latestWorkflowPurposeStep() {
+  for (let index = state.workflowSteps.length - 1; index >= 0; index -= 1) {
+    const row = state.workflowSteps[index];
+    if (row.dataset.workflowRole === "purpose") {
+      return row;
+    }
+  }
+  return null;
+}
+
+function setWorkflowStepStatus(row, status) {
+  row.classList.remove("running", "done", "warning", "error");
+  row.classList.add(status);
+}
+
+function ensureWorkflowPurposeStep(toolName = "", input = {}) {
+  const purpose = workflowPurposeForTool(toolName, input);
+  const latestPurpose = latestWorkflowPurposeStep();
+  if (latestPurpose?.dataset.workflowPurpose === purpose) {
+    setWorkflowStepStatus(latestPurpose, "running");
+    const detail = latestPurpose.querySelector("small");
+    if (detail) {
+      detail.textContent = workflowPurposeDetails(purpose).running;
+    }
+    return latestPurpose;
+  }
+  const groupId = `purpose-${++workflowPurposeGroupSerial}`;
+  const details = workflowPurposeDetails(purpose);
+  return appendWorkflowStep(
+    details.title,
+    details.running,
+    "running",
+    "",
+    { role: "purpose", purpose, groupId },
+  );
+}
+
+function workflowChildrenForGroup(groupId) {
+  if (!groupId) {
+    return [];
+  }
+  return state.workflowSteps.filter((row) =>
+    row.dataset.workflowGroupId === groupId && row.dataset.workflowRole !== "purpose"
+  );
+}
+
+function updateWorkflowPurposeStepStatus(groupId) {
+  if (!groupId) {
+    return;
+  }
+  const purposeStep = state.workflowSteps.find((row) =>
+    row.dataset.workflowRole === "purpose" && row.dataset.workflowGroupId === groupId
+  );
+  if (!purposeStep) {
+    return;
+  }
+  const children = workflowChildrenForGroup(groupId);
+  if (!children.length) {
+    return;
+  }
+  const purpose = purposeStep.dataset.workflowPurpose || "action";
+  const details = workflowPurposeDetails(purpose);
+  const nextStatus = children.some((row) => row.classList.contains("running"))
+    ? "running"
+    : children.some((row) => row.classList.contains("error"))
+      ? "error"
+      : children.some((row) => row.classList.contains("warning"))
+        ? "warning"
+        : "done";
+  setWorkflowStepStatus(purposeStep, nextStatus);
+  const detail = purposeStep.querySelector("small");
+  if (detail) {
+    detail.textContent = details[nextStatus] || details.done;
+  }
+}
+
+function refreshWorkflowPurposeSteps() {
+  const groupIds = new Set(
+    state.workflowSteps
+      .filter((row) => row.dataset.workflowRole === "purpose")
+      .map((row) => row.dataset.workflowGroupId)
+      .filter(Boolean),
+  );
+  for (const groupId of groupIds) {
+    updateWorkflowPurposeStepStatus(groupId);
+  }
 }
 
 function appendWorkflowEvent(event) {
@@ -1471,10 +2035,11 @@ function appendWorkflowEventNow(event) {
   ensureWorkflowPanel();
   stopWorkflowWaitingTimer();
   markPlanningStepDone();
-  ensureWorkflowExecutionStep();
+  markWorkflowWaitingStepsDone("실제 작업 단계로 넘어갔습니다.");
   const isStart = event.type === "tool_started";
   const toolName = event.tool_name || "도구";
   if (isStart) {
+    clearWorkflowActivityStep();
     startWorkflowOutputPreview(toolName, event.tool_input || {});
     clearWorkflowToolArgBuffers(toolName);
     scheduleMutationWaitingStep(toolName);
@@ -1493,7 +2058,9 @@ function appendWorkflowEventNow(event) {
       if (detail) {
         detail.textContent = workflowDetail(event);
       }
+      updateWorkflowPurposeStepStatus(item.dataset.workflowGroupId);
       updateWorkflowSummary();
+      startWorkflowReviewStep();
       if (!state.restoringHistory && state.autoFollowMessages) {
         scrollMessagesToBottom();
       }
@@ -1501,8 +2068,19 @@ function appendWorkflowEventNow(event) {
     }
   }
   const status = workflowEventStatus(event);
-  const row = appendWorkflowStep(workflowTitle(event), workflowDetail(event), status, toolName);
+  const purposeStep = ensureWorkflowPurposeStep(toolName, event.tool_input || {});
+  const row = appendWorkflowStep(
+    workflowTitle(event),
+    workflowDetail(event),
+    status,
+    toolName,
+    { level: "child", groupId: purposeStep.dataset.workflowGroupId },
+  );
+  updateWorkflowPurposeStepStatus(row.dataset.workflowGroupId);
   updateWorkflowSummary();
+  if (!isStart) {
+    startWorkflowReviewStep();
+  }
   if (!state.restoringHistory && state.autoFollowMessages) {
     scrollMessagesToBottom();
   }
@@ -1526,7 +2104,8 @@ function appendWorkflowProgress(event) {
   ensureWorkflowPanel();
   stopWorkflowWaitingTimer();
   markPlanningStepDone();
-  ensureWorkflowExecutionStep();
+  markWorkflowWaitingStepsDone("실제 작업 단계로 넘어갔습니다.");
+  clearWorkflowActivityStep();
   const toolName = event.tool_name || "도구";
   const displayName = displayToolName(toolName);
   const message = String(event.message || "").trim() || `${displayName} 실행 중입니다.`;
@@ -1537,8 +2116,17 @@ function appendWorkflowProgress(event) {
     if (detail) {
       detail.textContent = message;
     }
+    updateWorkflowPurposeStepStatus(matchingRunningStep.dataset.workflowGroupId);
   } else {
-    appendWorkflowStep(`${displayName} 실행 중`, message, "running", toolName);
+    const purposeStep = ensureWorkflowPurposeStep(toolName, event.tool_input || {});
+    const row = appendWorkflowStep(
+      `${displayName} 실행 중`,
+      message,
+      "running",
+      toolName,
+      { level: "child", groupId: purposeStep.dataset.workflowGroupId },
+    );
+    updateWorkflowPurposeStepStatus(row.dataset.workflowGroupId);
   }
   updateWorkflowSummary();
   if (!state.restoringHistory && state.autoFollowMessages) {
@@ -1548,6 +2136,9 @@ function appendWorkflowProgress(event) {
 
 function isMutationTool(toolName) {
   const lower = String(toolName || "").toLowerCase();
+  if (lower === "todo_write" || lower === "todowrite") {
+    return false;
+  }
   return (
     lower.includes("bash")
     || lower.includes("cmd")
@@ -1571,14 +2162,20 @@ function scheduleMutationWaitingStep(toolName) {
     const stillRunning = [...state.workflowList.querySelectorAll(".workflow-step.running")]
       .some((item) => item.dataset.toolName === toolName);
     if (stillRunning) {
-      ensureWorkflowExecutionStep();
+      const runningItem = [...state.workflowList.querySelectorAll(".workflow-step.running")]
+        .find((item) => item.dataset.toolName === toolName);
+      const purposeStep = runningItem?.dataset.workflowGroupId
+        ? null
+        : ensureWorkflowPurposeStep(toolName);
+      const groupId = runningItem?.dataset.workflowGroupId || purposeStep?.dataset.workflowGroupId || "";
       const lower = String(toolName || "").toLowerCase();
       const isCommand = lower.includes("bash") || lower.includes("cmd") || lower.includes("shell");
       const title = isCommand ? "명령 실행 중" : "파일 변경 진행 중";
       const detail = isCommand
         ? "출력이 없어도 작업은 계속 진행 중입니다."
         : "파일 변경이 끝날 때까지 기다리고 있습니다.";
-      appendWorkflowStep(title, detail, "running", "mutation_lock");
+      const row = appendWorkflowStep(title, detail, "running", "mutation_lock", { level: "child", groupId });
+      updateWorkflowPurposeStepStatus(row.dataset.workflowGroupId);
     }
   }, 1400);
   workflowMutationWaitingTimers.set(toolName, timer);
@@ -1592,21 +2189,26 @@ function clearMutationWaitingStep(toolName) {
   }
   [...state.workflowList.querySelectorAll('.workflow-step.running[data-tool-name="mutation_lock"]')]
     .forEach((item) => {
+      const groupId = item.dataset.workflowGroupId;
       item.classList.remove("running");
       item.classList.add("done");
       const detail = item.querySelector("small");
       if (detail) {
         detail.textContent = "파일 변경을 계속 진행합니다.";
       }
+      updateWorkflowPurposeStepStatus(groupId);
     });
 }
 
 function markPlanningStepDone() {
-  const planning = state.workflowSteps.find((row) => row.querySelector("strong")?.textContent === "작업 계획");
+  const planning = state.workflowSteps.find((row) =>
+    row.dataset.workflowRole === "planning"
+    || ["작업 계획", "작업 방향 정리"].includes(row.querySelector("strong")?.textContent || "")
+  );
   if (planning && planning.classList.contains("running")) {
     planning.classList.remove("running");
     planning.classList.add("done");
-    planning.querySelector("small").textContent = "실행할 단계를 정했습니다.";
+    planning.querySelector("small").textContent = "진행 방향을 정했습니다.";
   }
 }
 
@@ -1623,40 +2225,60 @@ function markWorkflowWaitingStepsDone(message = "다음 단계로 넘어갔습�
     });
 }
 
-function ensureWorkflowExecutionStep() {
-  const existing = state.workflowSteps.find((row) => row.dataset.workflowRole === "execution");
-  if (existing) {
-    return existing;
-  }
-  return appendWorkflowStep(
-    "도구 실행",
-    "도구 실행 결과를 순서대로 기록합니다.",
-    "running",
-    "",
-    { role: "execution", level: "child" },
+function runningWorkflowActivityStep() {
+  return state.workflowSteps.find((row) =>
+    row.dataset.workflowRole === "agent_activity" && row.classList.contains("running")
   );
 }
 
-function markWorkflowExecutionStepDone(status = "done", message = "") {
-  const execution = state.workflowSteps.find((row) => row.dataset.workflowRole === "execution");
-  if (!execution) {
+function hasRunningToolStep() {
+  return state.workflowSteps.some((row) =>
+    row.dataset.toolName
+    && row.dataset.toolName !== "mutation_lock"
+    && row.classList.contains("running")
+  );
+}
+
+function startWorkflowActivityStep(title, detail) {
+  if (!state.workflowNode || !state.workflowList || state.restoringHistory) {
+    return null;
+  }
+  markWorkflowWaitingStepsDone("상위 판단 단계로 넘어갔습니다.");
+  const existing = runningWorkflowActivityStep();
+  if (existing) {
+    existing.querySelector("strong").textContent = title;
+    const description = existing.querySelector("small");
+    if (description) {
+      description.textContent = detail;
+    }
+    updateWorkflowSummary();
+    return existing;
+  }
+  const row = appendWorkflowStep(title, detail, "running", "", { role: "agent_activity" });
+  if (!state.restoringHistory && state.autoFollowMessages) {
+    scrollMessagesToBottom();
+  }
+  return row;
+}
+
+function startWorkflowReviewStep() {
+  if (hasRunningToolStep()) {
     return;
   }
-  execution.classList.remove("running", "done", "warning", "error");
-  const hasToolIssue = state.workflowSteps.some((row) =>
-    row.dataset.workflowLevel === "child"
-    && (row.classList.contains("error") || row.classList.contains("warning"))
+  startWorkflowActivityStep(
+    "다음 판단 중",
+    "도구 결과를 읽고 다음 작업이나 최종 답변을 결정하고 있습니다.",
   );
-  const nextStatus = status === "error" ? "error" : hasToolIssue ? "warning" : "done";
-  execution.classList.add(nextStatus);
-  const detail = execution.querySelector("small");
-  if (detail) {
-    detail.textContent = message || (nextStatus === "error"
-      ? "도구 실행 중 문제가 발생했습니다."
-      : nextStatus === "warning"
-        ? "일부 도구는 결과가 없거나 사용할 수 없어 다른 경로로 진행했습니다."
-      : "도구 실행이 완료되었습니다.");
+}
+
+function clearWorkflowActivityStep() {
+  const activitySteps = state.workflowSteps.filter((row) => row.dataset.workflowRole === "agent_activity");
+  if (!activitySteps.length) {
+    return;
   }
+  activitySteps.forEach((row) => row.remove());
+  state.workflowSteps = state.workflowSteps.filter((row) => row.dataset.workflowRole !== "agent_activity");
+  updateWorkflowSummary();
 }
 
 function ensureWorkflowFinalAnswerStep() {
@@ -1679,7 +2301,8 @@ function startWorkflowFinalAnswer() {
   }
   markPlanningStepDone();
   markWorkflowWaitingStepsDone("응답 생성 단계로 넘어갔습니다.");
-  markWorkflowExecutionStepDone("done");
+  clearWorkflowActivityStep();
+  refreshWorkflowPurposeSteps();
   const finalAnswer = ensureWorkflowFinalAnswerStep();
   finalAnswer.classList.remove("done", "warning", "error");
   finalAnswer.classList.add("running");
@@ -1705,7 +2328,8 @@ function markWorkflowFinalAnswerDone(status = "done", message = "") {
     return;
   }
   markPlanningStepDone();
-  markWorkflowExecutionStepDone(status === "error" ? "error" : "done");
+  clearWorkflowActivityStep();
+  refreshWorkflowPurposeSteps();
   const finalAnswer = ensureWorkflowFinalAnswerStep();
   finalAnswer.classList.remove("running", "done", "warning", "error");
   const nextStatus = status === "error" ? "error" : "done";
@@ -1945,6 +2569,9 @@ function updateTasks(tasks) {
     refreshSkillCatalogs,
     createAttachmentPreview,
     appendMessage,
+    renderTodoChecklist,
+    archiveTodoChecklist,
+    resetTodoChecklist,
     attachAssistantActions,
     resetWorkflowPanel,
     collapseWorkflowPanel,

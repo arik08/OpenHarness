@@ -20,6 +20,7 @@ function MultilineTextInput({
 	value,
 	onChange,
 	onSubmit,
+	onQueueSubmit,
 	focus = true,
 	promptPrefix,
 	promptColor,
@@ -27,6 +28,7 @@ function MultilineTextInput({
 	value: string;
 	onChange: (value: string) => void;
 	onSubmit?: (value: string) => void;
+	onQueueSubmit?: (value: string) => void;
 	focus?: boolean;
 	promptPrefix: string;
 	promptColor: string;
@@ -83,6 +85,10 @@ function MultilineTextInput({
 			}
 
 			if (key.return) {
+				if (key.ctrl) {
+					onQueueSubmit?.(value);
+					return;
+				}
 				if (key.shift) {
 					const nextValue = value.slice(0, cursorOffset) + '\n' + value.slice(cursorOffset);
 					setCursorOffset(cursorOffset + 1);
@@ -194,6 +200,7 @@ export function PromptInput({
 	input,
 	setInput,
 	onSubmit,
+	onQueueSubmit,
 	toolName,
 	suppressSubmit,
 	statusLabel,
@@ -202,6 +209,7 @@ export function PromptInput({
 	input: string;
 	setInput: (value: string) => void;
 	onSubmit: (value: string) => void;
+	onQueueSubmit?: (value: string) => void;
 	toolName?: string;
 	suppressSubmit?: boolean;
 	statusLabel?: string;
@@ -221,8 +229,9 @@ export function PromptInput({
 			<MultilineTextInput
 				value={input}
 				onChange={setInput}
-				onSubmit={suppressSubmit || busy ? noop : onSubmit}
-				focus={!busy}
+				onSubmit={suppressSubmit ? noop : onSubmit}
+				onQueueSubmit={suppressSubmit ? noop : onQueueSubmit}
+				focus
 				promptPrefix={promptPrefix}
 				promptColor={theme.colors.primary}
 			/>

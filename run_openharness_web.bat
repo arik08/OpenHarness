@@ -14,8 +14,9 @@ if "%OPENHARNESS_CONFIG_DIR%"=="" set "OPENHARNESS_CONFIG_DIR=%CD%\.openharness"
 if "%OPENHARNESS_DATA_DIR%"=="" set "OPENHARNESS_DATA_DIR=%OPENHARNESS_CONFIG_DIR%\data"
 if "%OPENHARNESS_LOGS_DIR%"=="" set "OPENHARNESS_LOGS_DIR=%OPENHARNESS_CONFIG_DIR%\logs"
 set "OPENHARNESS_HOME=%OPENHARNESS_CONFIG_DIR%"
-set "OPENHARNESS_VENV_PY=%OPENHARNESS_HOME%\venv\Scripts\python.exe"
 set "OPENHARNESS_SETTINGS=%OPENHARNESS_CONFIG_DIR%\settings.json"
+
+call :configure_posco_cert
 
 echo.
 echo ============================================================
@@ -55,15 +56,6 @@ if errorlevel 1 (
   exit /b 1
 )
 
-where py >nul 2>nul
-if errorlevel 1 if not exist "%OPENHARNESS_VENV_PY%" (
-  echo [ERROR] Python launcher py.exe was not found on PATH.
-  echo Install Python, or run Installer.bat first.
-  echo.
-  pause
-  exit /b 1
-)
-
 echo [INFO] Preparing project-local runtime directories...
 if not exist "%OPENHARNESS_CONFIG_DIR%" mkdir "%OPENHARNESS_CONFIG_DIR%"
 if not exist "%OPENHARNESS_DATA_DIR%" mkdir "%OPENHARNESS_DATA_DIR%"
@@ -81,23 +73,21 @@ call :ensure_pgpt_env
 
 echo [INFO] Checking Python package dependencies...
 set "PYTHONPATH=%CD%\src;%PYTHONPATH%"
-if not exist "%OPENHARNESS_VENV_PY%" (
-  echo [INFO] Creating project-local Python virtual environment...
-  py -3 -m venv "%OPENHARNESS_HOME%\venv"
-  if errorlevel 1 (
-    echo.
-    echo [ERROR] Python virtual environment creation failed.
-    echo Run Installer.bat and try again.
-    pause
-    exit /b 1
-  )
+call :find_bootstrap_python
+if errorlevel 1 (
+  echo [ERROR] No usable Python 3.10+ was found.
+  echo Tried OPENHARNESS_PYTHON, PYTHON, py -3, python, and python3.
+  echo Install Python 3.10+ or run Installer.bat after setting OPENHARNESS_PYTHON.
+  echo.
+  pause
+  exit /b 1
 )
-set "OPENHARNESS_PYTHON=%OPENHARNESS_VENV_PY%"
+echo [INFO] Using Python: %OPENHARNESS_BOOTSTRAP_PYTHON% %OPENHARNESS_BOOTSTRAP_PYTHON_ARGS%
 
-%OPENHARNESS_PYTHON% -c "import importlib.util, sys; required=['openharness','anthropic','openai','rich','prompt_toolkit','textual','typer','pydantic','httpx','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi']; missing=[name for name in required if importlib.util.find_spec(name) is None]; sys.exit(1 if missing else 0)" >nul 2>nul
+call "%OPENHARNESS_BOOTSTRAP_PYTHON%" %OPENHARNESS_BOOTSTRAP_PYTHON_ARGS% -c "import importlib.util, sys; required=['openharness','anthropic','openai','rich','prompt_toolkit','textual','typer','pydantic','httpx','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi']; missing=[name for name in required if importlib.util.find_spec(name) is None]; sys.exit(1 if missing else 0)" >nul 2>nul
 if errorlevel 1 (
   echo [INFO] Missing Python dependencies detected. Installing now...
-  %OPENHARNESS_PYTHON% -m pip install -e .
+  call "%OPENHARNESS_BOOTSTRAP_PYTHON%" %OPENHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install -e .
   if errorlevel 1 (
     echo.
     echo [ERROR] Python dependency installation failed.
@@ -105,7 +95,7 @@ if errorlevel 1 (
     pause
     exit /b 1
   )
-  %OPENHARNESS_PYTHON% -c "import importlib.util, sys; required=['openharness','anthropic','openai','rich','prompt_toolkit','textual','typer','pydantic','httpx','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi']; missing=[name for name in required if importlib.util.find_spec(name) is None]; sys.exit(1 if missing else 0)" >nul 2>nul
+  call "%OPENHARNESS_BOOTSTRAP_PYTHON%" %OPENHARNESS_BOOTSTRAP_PYTHON_ARGS% -c "import importlib.util, sys; required=['openharness','anthropic','openai','rich','prompt_toolkit','textual','typer','pydantic','httpx','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi']; missing=[name for name in required if importlib.util.find_spec(name) is None]; sys.exit(1 if missing else 0)" >nul 2>nul
   if errorlevel 1 (
     echo.
     echo [ERROR] Python dependencies are still not importable after installation.
@@ -180,6 +170,45 @@ echo.
 echo [INFO] Server stopped with exit code %EXIT_CODE%.
 pause
 exit /b %EXIT_CODE%
+
+:find_bootstrap_python
+set "OPENHARNESS_BOOTSTRAP_PYTHON="
+set "OPENHARNESS_BOOTSTRAP_PYTHON_ARGS="
+if not "%OPENHARNESS_PYTHON%"=="" (
+  call :try_bootstrap_python "%OPENHARNESS_PYTHON%" ""
+  if not errorlevel 1 exit /b 0
+)
+if not "%PYTHON%"=="" (
+  call :try_bootstrap_python "%PYTHON%" ""
+  if not errorlevel 1 exit /b 0
+)
+call :try_bootstrap_python "py" "-3"
+if not errorlevel 1 exit /b 0
+call :try_bootstrap_python "python" ""
+if not errorlevel 1 exit /b 0
+call :try_bootstrap_python "python3" ""
+if not errorlevel 1 exit /b 0
+exit /b 1
+
+:try_bootstrap_python
+set "PY_CANDIDATE=%~1"
+set "PY_CANDIDATE_ARGS=%~2"
+call "%PY_CANDIDATE%" %PY_CANDIDATE_ARGS% -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+if errorlevel 1 exit /b 1
+set "OPENHARNESS_BOOTSTRAP_PYTHON=%PY_CANDIDATE%"
+set "OPENHARNESS_BOOTSTRAP_PYTHON_ARGS=%PY_CANDIDATE_ARGS%"
+exit /b 0
+
+:configure_posco_cert
+if not exist "C:\POSCO.crt" exit /b 0
+set "SSL_CERT_FILE=C:\POSCO.crt"
+set "REQUESTS_CA_BUNDLE=C:\POSCO.crt"
+set "CURL_CA_BUNDLE=C:\POSCO.crt"
+set "PIP_CERT=C:\POSCO.crt"
+set "NODE_EXTRA_CA_CERTS=C:\POSCO.crt"
+set "npm_config_cafile=C:\POSCO.crt"
+echo [INFO] POSCO certificate detected: C:\POSCO.crt
+exit /b 0
 
 :ensure_pgpt_env
 set "PGPT_ENV_MISSING="

@@ -25,6 +25,8 @@ class FrontendRequest(BaseModel):
 
     type: Literal[
         "submit_line",
+        "steer_line",
+        "queue_line",
         "permission_response",
         "question_response",
         "list_sessions",
@@ -34,6 +36,7 @@ class FrontendRequest(BaseModel):
         "set_mcp_enabled",
         "set_plugin_enabled",
         "set_system_prompt",
+        "update_session_title",
         "select_command",
         "apply_select_command",
         "cancel_current",
@@ -47,6 +50,7 @@ class FrontendRequest(BaseModel):
     allowed: bool | None = None
     answer: str | None = None
     attachments: list[FrontendAttachment] = Field(default_factory=list)
+    suppress_user_transcript: bool = False
 
 
 class TranscriptItem(BaseModel):
@@ -54,6 +58,7 @@ class TranscriptItem(BaseModel):
 
     role: Literal["system", "user", "assistant", "tool", "tool_result", "log"]
     text: str
+    kind: Literal["steering", "queued"] | None = None
     tool_name: str | None = None
     tool_input: dict[str, Any] | None = None
     is_error: bool | None = None
@@ -239,6 +244,8 @@ def _state_payload(state: AppState) -> dict[str, Any]:
         "model": state.model,
         "cwd": state.cwd,
         "provider": state.provider,
+        "active_profile": state.active_profile,
+        "provider_label": state.provider_label,
         "auth_status": state.auth_status,
         "base_url": state.base_url,
         "permission_mode": _format_permission_mode(state.permission_mode),

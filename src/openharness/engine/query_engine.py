@@ -9,7 +9,7 @@ from openharness.api.client import SupportsStreamingMessages
 from openharness.engine.cost_tracker import CostTracker
 from openharness.coordinator.coordinator_mode import get_coordinator_user_context
 from openharness.engine.messages import ConversationMessage, TextBlock, ToolResultBlock
-from openharness.engine.query import AskUserPrompt, PermissionPrompt, QueryContext, remember_user_goal, run_query
+from openharness.engine.query import AskUserPrompt, PermissionPrompt, QueryContext, SteeringProvider, remember_user_goal, run_query
 from openharness.engine.stream_events import AssistantTurnComplete, StreamEvent
 from openharness.hooks import HookEvent, HookExecutor
 from openharness.permissions.checker import PermissionChecker
@@ -122,6 +122,10 @@ class QueryEngine:
         """Update the active permission checker for future turns."""
         self._permission_checker = checker
 
+    def set_auto_skill_learning_enabled(self, enabled: bool) -> None:
+        """Update whether verified repeated failures may create learned skills."""
+        self._auto_skill_learning_enabled = bool(enabled)
+
     def _build_coordinator_context_message(self) -> ConversationMessage | None:
         """Build a synthetic user message carrying coordinator runtime context."""
         context = get_coordinator_user_context()
@@ -152,7 +156,12 @@ class QueryEngine:
             return bool(msg.tool_uses)
         return False
 
-    async def submit_message(self, prompt: str | ConversationMessage) -> AsyncIterator[StreamEvent]:
+    async def submit_message(
+        self,
+        prompt: str | ConversationMessage,
+        *,
+        steering_provider: SteeringProvider | None = None,
+    ) -> AsyncIterator[StreamEvent]:
         """Append a user message and execute the query loop."""
         user_message = (
             prompt
@@ -184,6 +193,7 @@ class QueryEngine:
             max_turns=self._max_turns,
             permission_prompt=self._permission_prompt,
             ask_user_prompt=self._ask_user_prompt,
+            steering_provider=steering_provider,
             hook_executor=self._hook_executor,
             tool_metadata=self._tool_metadata,
             auto_skill_learning_enabled=self._auto_skill_learning_enabled,
@@ -199,7 +209,12 @@ class QueryEngine:
                 self._cost_tracker.add(usage)
             yield event
 
-    async def continue_pending(self, *, max_turns: int | None = None) -> AsyncIterator[StreamEvent]:
+    async def continue_pending(
+        self,
+        *,
+        max_turns: int | None = None,
+        steering_provider: SteeringProvider | None = None,
+    ) -> AsyncIterator[StreamEvent]:
         """Continue an interrupted tool loop without appending a new user message."""
         context = QueryContext(
             api_client=self._api_client,
@@ -215,6 +230,7 @@ class QueryEngine:
             max_turns=max_turns if max_turns is not None else self._max_turns,
             permission_prompt=self._permission_prompt,
             ask_user_prompt=self._ask_user_prompt,
+            steering_provider=steering_provider,
             hook_executor=self._hook_executor,
             tool_metadata=self._tool_metadata,
             auto_skill_learning_enabled=self._auto_skill_learning_enabled,

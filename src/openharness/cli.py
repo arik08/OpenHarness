@@ -414,6 +414,7 @@ def _build_dry_run_preview(
     from openharness.plugins import load_plugins
     from openharness.prompts.context import build_runtime_system_prompt
     from openharness.skills import load_skill_registry
+    from openharness.skills.display import display_skill_description
     from openharness.tools import create_default_tool_registry
     from openharness.ui.runtime import _resolve_api_client_from_settings
 
@@ -563,7 +564,7 @@ def _build_dry_run_preview(
         "skills": [
             {
                 "name": skill.name,
-                "description": skill.description,
+                "description": display_skill_description(skill),
                 "source": skill.source,
             }
             for skill in skills

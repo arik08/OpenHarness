@@ -79,6 +79,7 @@ def test_three_failures_in_same_category_create_candidate():
 
 
 def test_secret_and_user_path_are_redacted(tmp_path: Path):
+    leaked_api_key = "sk-" + "x" * 26
     metadata: dict[str, object] = {
         "recent_verified_work": ["Verified with token=super-secret-value at C:\\Users\\Myeongcheol\\repo"]
     }
@@ -87,7 +88,7 @@ def test_secret_and_user_path_are_redacted(tmp_path: Path):
             metadata,
             tool_name="bash",
             tool_input={"command": "curl -H token=super-secret-value C:\\Users\\Myeongcheol\\repo"},
-            tool_output="failed with sk-abcdefghijklmnopqrstuvwxyz",
+            tool_output=f"failed with {leaked_api_key}",
         )
 
     candidate = analyze_learning_candidate(metadata)
@@ -97,7 +98,7 @@ def test_secret_and_user_path_are_redacted(tmp_path: Path):
     combined += (result.skill_path.parent / "references" / "learned-patterns.md").read_text(encoding="utf-8")
 
     assert "super-secret-value" not in combined
-    assert "sk-abcdefghijklmnopqrstuvwxyz" not in combined
+    assert leaked_api_key not in combined
     assert "Myeongcheol" not in combined
     assert "[REDACTED_SECRET]" in combined
 
@@ -119,3 +120,4 @@ def test_existing_candidate_is_not_duplicated(tmp_path: Path):
 
     assert first.action == "created"
     assert second.action == "unchanged"
+

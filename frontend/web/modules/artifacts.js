@@ -338,11 +338,24 @@ function collectArtifactCandidates(text) {
     });
 }
 
+function dedupeArtifactsByResolvedPath(artifacts) {
+  const seen = new Set();
+  return artifacts.filter((artifact) => {
+    const key = normalizeArtifactPath(artifact?.path).toLowerCase();
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 function renderArtifactCards(container, artifacts) {
-  if (!container || !artifacts.length) {
+  const uniqueArtifacts = dedupeArtifactsByResolvedPath(artifacts);
+  if (!container || !uniqueArtifacts.length) {
     return;
   }
-  const keys = new Set(artifacts.map((artifact) => normalizeArtifactPath(artifact.path).toLowerCase()));
+  const keys = new Set(uniqueArtifacts.map((artifact) => normalizeArtifactPath(artifact.path).toLowerCase()));
   for (const existing of els.messages?.querySelectorAll(".artifact-card") || []) {
     const existingKey = String(existing.dataset.artifactPath || "").toLowerCase();
     if (keys.has(existingKey) && !container.contains(existing)) {
@@ -358,7 +371,7 @@ function renderArtifactCards(container, artifacts) {
   }
   const wrap = document.createElement("div");
   wrap.className = "artifact-cards";
-  for (const artifact of artifacts) {
+  for (const artifact of uniqueArtifacts) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "artifact-card";
@@ -412,7 +425,7 @@ async function resolveExistingArtifacts(artifacts) {
       }
     }),
   );
-  return resolved.filter(Boolean);
+  return dedupeArtifactsByResolvedPath(resolved.filter(Boolean));
 }
 
 function setArtifactPanel(open) {
@@ -678,11 +691,45 @@ async function saveArtifactCopy(artifact, folderPath = "") {
   return payload.saved || {};
 }
 
+function isLocalBrowserHost() {
+  const host = String(window.location.hostname || "").trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+async function fetchArtifactBlob(artifact) {
+  const query = projectFileQuery({ path: artifact.path });
+  const response = await fetch(`/api/artifact/download?${query.toString()}`);
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    let message = body || `HTTP ${response.status}`;
+    try {
+      message = JSON.parse(body).error || message;
+    } catch {
+      // Keep the raw response text when the server does not return JSON.
+    }
+    throw new Error(message);
+  }
+  return response.blob();
+}
+
+async function saveArtifactWithBrowserDownload(artifact, suggestedName) {
+  const blob = await fetchArtifactBlob(artifact);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = suggestedName || artifact.name || artifactName(artifact.path);
+  link.style.display = "none";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 async function downloadProjectFile(artifact, control) {
   const suggestedName = artifact.name || artifactName(artifact.path);
   const downloadSettings = state.appSettings || {};
   setArtifactDownloadStatus("다운로드 준비 중...");
-  if (downloadSettings.downloadMode === "folder" && downloadSettings.downloadFolderPath) {
+  if (downloadSettings.downloadMode === "folder" && downloadSettings.downloadFolderPath && isLocalBrowserHost()) {
     const saved = await saveArtifactCopy(artifact, downloadSettings.downloadFolderPath);
     const savedPath = saved.path || downloadSettings.downloadFolderPath;
     setArtifactDownloadStatus(`저장됨: ${savedPath}`);
@@ -714,19 +761,7 @@ async function downloadProjectFile(artifact, control) {
   }
 
   if (fileHandle) {
-    const query = projectFileQuery({ path: artifact.path });
-    const response = await fetch(`/api/artifact/download?${query.toString()}`);
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      let message = body || `HTTP ${response.status}`;
-      try {
-        message = JSON.parse(body).error || message;
-      } catch {
-        // Keep the raw response text when the server does not return JSON.
-      }
-      throw new Error(message);
-    }
-    const blob = await response.blob();
+    const blob = await fetchArtifactBlob(artifact);
     const writable = await fileHandle.createWritable();
     await writable.write(blob);
     await writable.close();
@@ -742,11 +777,10 @@ async function downloadProjectFile(artifact, control) {
     return;
   }
 
-  const saved = await saveArtifactCopy(artifact);
-  const savedPath = saved.path || suggestedName;
-  setArtifactDownloadStatus(`저장됨: ${savedPath}`);
+  await saveArtifactWithBrowserDownload(artifact, suggestedName);
+  setArtifactDownloadStatus("브라우저 다운로드 시작됨");
   if (control) {
-    control.dataset.tooltip = `저장됨: ${savedPath}`;
+    control.dataset.tooltip = "브라우저 다운로드 시작됨";
     window.setTimeout(() => {
       if (control.isConnected) {
         control.dataset.tooltip = "다운로드";

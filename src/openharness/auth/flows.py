@@ -25,12 +25,12 @@ class AuthFlow(ABC):
 
 
 # ---------------------------------------------------------------------------
-# ApiKeyFlow — directly prompt for and store an API key
+# ApiKeyFlow — directly prompt for an API key
 # ---------------------------------------------------------------------------
 
 
 class ApiKeyFlow(AuthFlow):
-    """Prompt the user for an API key and persist it via :mod:`openharness.auth.storage`."""
+    """Prompt the user for an API key and return it to the caller."""
 
     def __init__(self, provider: str, prompt_text: str | None = None) -> None:
         self.provider = provider
