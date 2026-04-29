@@ -36,6 +36,12 @@ Playground/
 react_tui_smoke.txt
 .playwright-mcp/
 
+# Local UI/browser check artifacts
+.tmp-chrome-check/
+openharness-*.err.log
+openharness-*.out.log
+openharness-*.png
+
 # OS
 .DS_Store
 Thumbs.db

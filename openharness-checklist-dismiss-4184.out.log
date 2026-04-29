@@ -1,7 +1,0 @@
-Listening on all network interfaces.
-
-MyHarness web is ready:
-  http://localhost:4184
-  http://192.168.0.8:4184
-Workspace scope: shared
-Shell: auto

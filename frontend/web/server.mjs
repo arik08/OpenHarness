@@ -40,9 +40,6 @@ let shellPreference = normalizeShellPreference(process.env.OPENHARNESS_SHELL);
 const protocolPrefix = "OHJSON:";
 const sessions = new Map();
 let server = null;
-let serverIdleTimer = null;
-let hasCreatedBackendSession = false;
-const serverIdleShutdownMs = 5000;
 const reservedWorkspaceNames = new Set([
   "CON",
   "PRN",
@@ -1961,42 +1958,6 @@ function shutdownAllSessions(reason = "server shutdown") {
   }
 }
 
-function cancelServerIdleShutdown() {
-  if (serverIdleTimer) {
-    clearTimeout(serverIdleTimer);
-    serverIdleTimer = null;
-  }
-}
-
-function scheduleServerIdleShutdown() {
-  if (!hasCreatedBackendSession || sessions.size > 0 || serverIdleTimer) {
-    return;
-  }
-  serverIdleTimer = setTimeout(() => {
-    serverIdleTimer = null;
-    if (sessions.size === 0) {
-      stopServer("idle");
-    }
-  }, serverIdleShutdownMs);
-  serverIdleTimer.unref?.();
-}
-
-function scheduleClientlessShutdown(session) {
-  if (!session || session.shuttingDown || session.clients.size > 0) {
-    return;
-  }
-  if (session.clientCloseTimer) {
-    clearTimeout(session.clientCloseTimer);
-  }
-  session.clientCloseTimer = setTimeout(() => {
-    session.clientCloseTimer = null;
-    if (session.clients.size === 0) {
-      shutdownSession(session, "browser disconnected");
-    }
-  }, 2500);
-  session.clientCloseTimer.unref?.();
-}
-
 function getLanUrl() {
   for (const addresses of Object.values(networkInterfaces())) {
     for (const address of addresses || []) {
@@ -2053,9 +2014,6 @@ async function createBackendSession(options = {}) {
     forceKillTimer: null,
   };
   sessions.set(id, session);
-  hasCreatedBackendSession = true;
-  cancelServerIdleShutdown();
-  scheduleClientlessShutdown(session);
 
   emit(session, {
     type: "web_session",
@@ -2097,7 +2055,6 @@ async function createBackendSession(options = {}) {
     }
     emit(session, { type: "shutdown", code, message: `Backend exited with code ${code ?? 0}` });
     sessions.delete(id);
-    scheduleServerIdleShutdown();
   });
 
   return session;
@@ -2410,7 +2367,6 @@ async function handleApi(request, response, pathname) {
     }
     request.on("close", () => {
       session.clients.delete(response);
-      scheduleClientlessShutdown(session);
     });
     return true;
   }
