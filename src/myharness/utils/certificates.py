@@ -17,6 +17,7 @@ _BUNDLE_FILE_NAME = "posco-ca-bundle.pem"
 _PYTHON_CA_ENV_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "PIP_CERT")
 _NODE_CA_ENV_VAR = "NODE_EXTRA_CA_CERTS"
 _NPM_CA_ENV_VAR = "npm_config_cafile"
+_OPENSSL_CIPHER_STRING = "DEFAULT@SECLEVEL=1"
 _configured_bundle: str | None = None
 
 
@@ -57,10 +58,18 @@ def _configure_certificate(cert_path: Path) -> str | None:
 def ssl_context_for_bundle(bundle_path: str | os.PathLike[str]) -> ssl.SSLContext:
     """Create an SSL context for POSCO's CA bundle without OpenSSL strict mode."""
     context = ssl.create_default_context()
+    _lower_openssl_security_level(context)
     if hasattr(ssl, "VERIFY_X509_STRICT"):
         context.verify_flags &= ~ssl.VERIFY_X509_STRICT
     context.load_verify_locations(cafile=str(bundle_path))
     return context
+
+
+def _lower_openssl_security_level(context: ssl.SSLContext) -> None:
+    try:
+        context.set_ciphers(_OPENSSL_CIPHER_STRING)
+    except ssl.SSLError as exc:
+        log.debug("Could not lower OpenSSL security level for POSCO certificate support: %s", exc)
 
 
 def _write_combined_bundle(cert_path: Path) -> Path:

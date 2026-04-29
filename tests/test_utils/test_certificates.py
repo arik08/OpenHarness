@@ -56,5 +56,7 @@ def test_httpx_verify_argument_uses_configured_ca_bundle(monkeypatch) -> None:
     verify = certificates.httpx_verify_argument()
 
     assert isinstance(verify, ssl.SSLContext)
+    if hasattr(verify, "security_level"):
+        assert verify.security_level == 1
     if hasattr(ssl, "VERIFY_X509_STRICT"):
         assert not verify.verify_flags & ssl.VERIFY_X509_STRICT

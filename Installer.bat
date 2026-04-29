@@ -34,6 +34,14 @@ if errorlevel 1 (
 )
 echo [INFO] Using Python bootstrap: %MYHARNESS_BOOTSTRAP_PYTHON% %MYHARNESS_BOOTSTRAP_PYTHON_ARGS%
 
+call :upgrade_posco_bundle
+if errorlevel 1 (
+  echo.
+  echo [ERROR] POSCO CA bundle setup failed.
+  pause
+  exit /b 1
+)
+
 where node >nul 2>nul
 if errorlevel 1 (
   echo [ERROR] Node.js was not found on PATH.
@@ -105,14 +113,6 @@ call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip ins
 if errorlevel 1 (
   echo.
   echo [ERROR] pytest installation failed.
-  pause
-  exit /b 1
-)
-
-call :upgrade_posco_bundle
-if errorlevel 1 (
-  echo.
-  echo [ERROR] POSCO CA bundle setup failed.
   pause
   exit /b 1
 )

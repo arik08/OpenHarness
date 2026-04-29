@@ -10,6 +10,7 @@ from pathlib import Path
 
 DEFAULT_POSCO_CERT = Path("C:/POSCO_CA.crt")
 BUNDLE_RELATIVE_PATH = Path("certs/posco-ca-bundle.pem")
+OPENSSL_CIPHER_STRING = "DEFAULT@SECLEVEL=1"
 
 
 def main() -> int:
@@ -38,6 +39,7 @@ def main() -> int:
     os.replace(temp_path, bundle_path)
 
     context = ssl.create_default_context()
+    _lower_openssl_security_level(context)
     if hasattr(ssl, "VERIFY_X509_STRICT"):
         context.verify_flags &= ~ssl.VERIFY_X509_STRICT
     context.load_verify_locations(cafile=str(bundle_path))
@@ -67,8 +69,18 @@ def _certifi_ca_bundle() -> str | None:
     try:
         import certifi
     except ImportError:
-        return None
+        try:
+            from pip._vendor import certifi  # type: ignore[import-not-found]
+        except ImportError:
+            return None
     return certifi.where()
+
+
+def _lower_openssl_security_level(context: ssl.SSLContext) -> None:
+    try:
+        context.set_ciphers(OPENSSL_CIPHER_STRING)
+    except ssl.SSLError:
+        pass
 
 
 def _safe_resolve(path: Path) -> Path:

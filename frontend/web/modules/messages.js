@@ -132,14 +132,14 @@ function workflowPreviewSource(toolName, input = {}) {
   if (lower.includes("edit")) {
     const diff = formatWorkflowEditPreview(input);
     if (diff) {
-      return { kind: "diff", content: diff };
+      return { kind: "diff", content: diff, found: true };
     }
   }
-  const content = workflowInputValue(input, ["content", "new_string"]);
+  const content = workflowInputValue(input, ["content", "new_string", "new_source"]);
   if (content.found) {
-    return { kind: "content", content: content.value };
+    return { kind: "content", content: content.value, found: true };
   }
-  return { kind: "content", content: "" };
+  return { kind: "content", content: "", found: false };
 }
 
 function ensureWorkflowPreviewTitleParts(previewNode) {
@@ -297,6 +297,7 @@ function setWorkflowPreviewTarget(preview, content, options = {}) {
   window.clearTimeout(preview.timer);
   preview.timer = 0;
   preview.text = nextText;
+  preview.hasOutputPreview = true;
   preview.offset = nextText.length;
   renderWorkflowPreviewBody(preview, nextText);
   updateWorkflowPreviewLineCount(preview, nextText);
@@ -1375,7 +1376,10 @@ function collapseWorkflowPanel() {
   if (!state.workflowNode) {
     return;
   }
-  if (state.workflowNode.querySelector(".workflow-todo-card")) {
+  if (
+    state.workflowNode.querySelector(".workflow-todo-card")
+    || state.workflowNode.querySelector(".workflow-output-preview")
+  ) {
     state.workflowNode.open = true;
     return;
   }
@@ -1387,6 +1391,7 @@ function collapseWorkflowPanel() {
 }
 
 function finalizeWorkflowSummary() {
+  drainWorkflowEventQueue();
   stopWorkflowWaitingTimer();
   for (const timer of workflowMutationWaitingTimers.values()) {
     window.clearTimeout(timer);
@@ -1413,6 +1418,7 @@ function finalizeWorkflowSummary() {
 }
 
 function failWorkflowPanel(message = "") {
+  drainWorkflowEventQueue();
   stopWorkflowWaitingTimer();
   for (const timer of workflowMutationWaitingTimers.values()) {
     window.clearTimeout(timer);
@@ -1633,7 +1639,7 @@ function stopWorkflowWaitingTimer() {
 
 function flushWorkflowOutputPreview() {
   for (const preview of workflowPreviews.values()) {
-    if (!preview.text) {
+    if (!preview.hasOutputPreview) {
       continue;
     }
     window.clearTimeout(preview.timer);
@@ -1656,7 +1662,7 @@ function flushWorkflowOutputPreview() {
 
 function startWorkflowOutputPreview(toolName, input = {}) {
   const source = workflowPreviewSource(toolName, input);
-  if (!source.content || !isWorkflowOutputTool(toolName)) {
+  if (!source.found || !isWorkflowOutputTool(toolName)) {
     return;
   }
   ensureWorkflowPanel();
@@ -1698,22 +1704,22 @@ function decodeJsonStringFragment(value) {
   return result;
 }
 
-function extractPartialJsonStringValue(source, key) {
+function extractPartialJsonStringField(source, key) {
   const marker = `"${key}"`;
   const keyIndex = source.indexOf(marker);
   if (keyIndex < 0) {
-    return "";
+    return { found: false, value: "" };
   }
   const colonIndex = source.indexOf(":", keyIndex + marker.length);
   if (colonIndex < 0) {
-    return "";
+    return { found: false, value: "" };
   }
   let quoteIndex = colonIndex + 1;
   while (quoteIndex < source.length && /\s/.test(source[quoteIndex])) {
     quoteIndex += 1;
   }
   if (source[quoteIndex] !== "\"") {
-    return "";
+    return { found: false, value: "" };
   }
   let cursor = quoteIndex + 1;
   let escaped = false;
@@ -1730,7 +1736,21 @@ function extractPartialJsonStringValue(source, key) {
     }
     cursor += 1;
   }
-  return decodeJsonStringFragment(raw);
+  return { found: true, value: decodeJsonStringFragment(raw) };
+}
+
+function extractPartialJsonStringValue(source, key) {
+  return extractPartialJsonStringField(source, key).value;
+}
+
+function firstPartialJsonStringField(source, keys) {
+  for (const key of keys) {
+    const field = extractPartialJsonStringField(source, key);
+    if (field.found) {
+      return field;
+    }
+  }
+  return { found: false, value: "" };
 }
 
 function appendWorkflowInputDelta(event) {
@@ -1746,16 +1766,19 @@ function appendWorkflowInputDelta(event) {
   }
   const next = current + delta;
   workflowToolArgBuffers.set(key, next);
-  const oldString = extractPartialJsonStringValue(next, "old_str") || extractPartialJsonStringValue(next, "old_string");
-  const newString = extractPartialJsonStringValue(next, "new_str") || extractPartialJsonStringValue(next, "new_string");
+  const oldField = firstPartialJsonStringField(next, ["old_str", "old_string"]);
+  const newField = firstPartialJsonStringField(next, ["new_str", "new_string"]);
+  const oldString = oldField.value;
+  const newString = newField.value;
   const lower = String(event.tool_name || "").toLowerCase();
-  const diff = lower.includes("edit") && (oldString || newString)
+  const diff = lower.includes("edit") && (oldField.found || newField.found)
     ? formatWorkflowEditBlock(oldString, newString)
     : "";
-  const content = diff || extractPartialJsonStringValue(next, "content") || extractPartialJsonStringValue(next, "new_string");
+  const contentField = firstPartialJsonStringField(next, ["content", "new_string", "new_source"]);
+  const content = diff || contentField.value;
   const kind = diff ? "diff" : "content";
   const path = extractPartialJsonStringValue(next, "file_path") || extractPartialJsonStringValue(next, "path");
-  if (!isWorkflowOutputTool(event.tool_name) || !content) {
+  if (!isWorkflowOutputTool(event.tool_name) || (!diff && !contentField.found)) {
     return;
   }
   const fallbackKey = `delta:${key}`;
@@ -2034,6 +2057,16 @@ function scheduleWorkflowEventQueue() {
     return;
   }
   workflowEventQueueTimer = window.setTimeout(processNextWorkflowEvent, WORKFLOW_EVENT_STAGGER_MS);
+}
+
+function drainWorkflowEventQueue() {
+  if (workflowEventQueueTimer) {
+    window.clearTimeout(workflowEventQueueTimer);
+    workflowEventQueueTimer = 0;
+  }
+  while (workflowEventQueue.length) {
+    appendWorkflowEventNow(workflowEventQueue.shift());
+  }
 }
 
 function processNextWorkflowEvent() {
