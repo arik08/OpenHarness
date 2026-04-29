@@ -57,6 +57,24 @@ async def test_task_create_and_output_tool(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_task_create_tool_reports_process_start_errors(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    context = ToolExecutionContext(cwd=tmp_path / "missing")
+
+    result = await TaskCreateTool().execute(
+        TaskCreateToolInput(
+            type="local_bash",
+            description="bad cwd",
+            command="printf 'never starts'",
+        ),
+        context,
+    )
+
+    assert result.is_error is True
+    assert result.output
+
+
+@pytest.mark.asyncio
 async def test_team_create_tool(tmp_path: Path):
     result = await TeamCreateTool().execute(
         TeamCreateToolInput(name="demo", description="test"),

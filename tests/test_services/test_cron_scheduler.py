@@ -12,8 +12,11 @@ from myharness.services.cron_scheduler import (
     _jobs_due,
     append_history,
     execute_job,
+    get_history_path,
     load_history,
     run_scheduler_loop,
+    start_daemon,
+    stop_scheduler,
 )
 
 
@@ -58,6 +61,28 @@ class TestHistory:
         assert len(entries) == 3
         # Should be the last 3
         assert entries[0]["name"] == "j7"
+
+    def test_zero_limit_returns_no_history(self) -> None:
+        append_history({"name": "j1", "status": "success"})
+
+        assert load_history(limit=0) == []
+
+    def test_non_object_json_lines_are_skipped(self) -> None:
+        path = get_history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(
+                [
+                    '"not-an-entry"',
+                    '["also", "not", "an", "entry"]',
+                    '{"name": "j1", "status": "success"}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert load_history() == [{"name": "j1", "status": "success"}]
 
 
 class TestJobsDue:
@@ -169,3 +194,57 @@ class TestSchedulerLoop:
         entries = load_history(job_name="test-once")
         assert len(entries) == 1
         assert entries[0]["status"] == "success"
+
+
+class TestSchedulerDaemon:
+    def test_start_daemon_uses_subprocess_when_fork_is_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+        import subprocess
+
+        from myharness.services import cron_scheduler
+
+        monkeypatch.delattr(os, "fork", raising=False)
+        process = Mock(pid=4321)
+        popen = Mock(return_value=process)
+        monkeypatch.setattr(subprocess, "Popen", popen)
+
+        assert start_daemon() == 4321
+        args, kwargs = popen.call_args
+        assert args[0][1] == "-c"
+        assert args[0][2] == (
+            "from myharness.services.cron_scheduler import _run_daemon; _run_daemon()"
+        )
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.DEVNULL
+        assert str(Path(cron_scheduler.__file__).resolve().parents[2]) in kwargs["env"][
+            "PYTHONPATH"
+        ].split(os.pathsep)
+
+    def test_stop_scheduler_without_sigkill_uses_platform_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+        import signal
+
+        from myharness.services import cron_scheduler
+
+        pid_path = cron_scheduler.get_pid_path()
+        pid_path.write_text("4321\n", encoding="utf-8")
+        monkeypatch.delattr(signal, "SIGKILL", raising=False)
+        monkeypatch.setattr(cron_scheduler.time, "sleep", lambda _: None)
+        kill_calls: list[tuple[int, int]] = []
+
+        def fake_kill(pid: int, sig: int) -> None:
+            kill_calls.append((pid, sig))
+
+        run = Mock()
+        monkeypatch.setattr(os, "kill", fake_kill)
+        monkeypatch.setattr(cron_scheduler.subprocess, "run", run)
+
+        assert stop_scheduler() is True
+        assert (4321, signal.SIGTERM) in kill_calls
+        run.assert_called_once()
+        assert not pid_path.exists()

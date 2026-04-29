@@ -9,10 +9,12 @@ log.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -53,6 +55,8 @@ def append_history(entry: dict[str, Any]) -> None:
 
 def load_history(*, limit: int = 50, job_name: str | None = None) -> list[dict[str, Any]]:
     """Load the most recent execution history entries."""
+    if limit <= 0:
+        return []
     path = get_history_path()
     if not path.exists():
         return []
@@ -64,6 +68,8 @@ def load_history(*, limit: int = 50, job_name: str | None = None) -> list[dict[s
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
             continue
         if job_name and entry.get("name") != job_name:
             continue
@@ -89,14 +95,19 @@ def read_pid() -> int | None:
         pid = int(path.read_text(encoding="utf-8").strip())
     except (ValueError, OSError):
         return None
-    # Check if process is alive
-    try:
-        os.kill(pid, 0)
-    except OSError:
+    if not _pid_is_alive(pid):
         logger.debug("Removed stale scheduler PID file (pid=%d)", pid)
         path.unlink(missing_ok=True)
         return None
     return pid
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def write_pid() -> None:
@@ -128,24 +139,66 @@ def stop_scheduler() -> bool:
         return False
     # Wait briefly for process to exit
     for _ in range(10):
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if not _pid_is_alive(pid):
             remove_pid()
             return True
         time.sleep(0.2)
     # Force kill
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
+    _force_kill(pid)
     remove_pid()
     return True
+
+
+def _force_kill(pid: int) -> None:
+    sigkill = getattr(signal, "SIGKILL", None)
+    if sigkill is not None:
+        try:
+            os.kill(pid, sigkill)
+            return
+        except OSError:
+            return
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
 # Job execution
 # ---------------------------------------------------------------------------
+
+def _job_history_entry(
+    *,
+    name: str,
+    command: str,
+    started_at: datetime,
+    returncode: int,
+    status: str,
+    stdout: str = "",
+    stderr: str = "",
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "command": command,
+        "started_at": started_at.isoformat(),
+        "ended_at": datetime.now(timezone.utc).isoformat(),
+        "returncode": returncode,
+        "status": status,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+
+
+def _save_job_result(name: str, entry: dict[str, Any], *, success: bool) -> dict[str, Any]:
+    mark_job_run(name, success=success)
+    append_history(entry)
+    return entry
+
 
 async def execute_job(job: dict[str, Any]) -> dict[str, Any]:
     """Run a single cron job and return a history entry."""
@@ -172,63 +225,48 @@ async def execute_job(job: dict[str, Any]) -> dict[str, Any]:
             await process.wait()
         except Exception:
             pass
-        entry = {
-            "name": name,
-            "command": command,
-            "started_at": started_at.isoformat(),
-            "ended_at": datetime.now(timezone.utc).isoformat(),
-            "returncode": -1,
-            "status": "timeout",
-            "stdout": "",
-            "stderr": "Job timed out after 300s",
-        }
-        mark_job_run(name, success=False)
-        append_history(entry)
-        return entry
+        entry = _job_history_entry(
+            name=name,
+            command=command,
+            started_at=started_at,
+            returncode=-1,
+            status="timeout",
+            stderr="Job timed out after 300s",
+        )
+        return _save_job_result(name, entry, success=False)
     except SandboxUnavailableError as exc:
-        entry = {
-            "name": name,
-            "command": command,
-            "started_at": started_at.isoformat(),
-            "ended_at": datetime.now(timezone.utc).isoformat(),
-            "returncode": -1,
-            "status": "error",
-            "stdout": "",
-            "stderr": str(exc),
-        }
-        mark_job_run(name, success=False)
-        append_history(entry)
-        return entry
+        entry = _job_history_entry(
+            name=name,
+            command=command,
+            started_at=started_at,
+            returncode=-1,
+            status="error",
+            stderr=str(exc),
+        )
+        return _save_job_result(name, entry, success=False)
     except Exception as exc:
-        entry = {
-            "name": name,
-            "command": command,
-            "started_at": started_at.isoformat(),
-            "ended_at": datetime.now(timezone.utc).isoformat(),
-            "returncode": -1,
-            "status": "error",
-            "stdout": "",
-            "stderr": str(exc),
-        }
-        mark_job_run(name, success=False)
-        append_history(entry)
-        return entry
+        entry = _job_history_entry(
+            name=name,
+            command=command,
+            started_at=started_at,
+            returncode=-1,
+            status="error",
+            stderr=str(exc),
+        )
+        return _save_job_result(name, entry, success=False)
 
     success = process.returncode == 0
-    entry = {
-        "name": name,
-        "command": command,
-        "started_at": started_at.isoformat(),
-        "ended_at": datetime.now(timezone.utc).isoformat(),
-        "returncode": process.returncode,
-        "status": "success" if success else "failed",
-        "stdout": (stdout.decode("utf-8", errors="replace")[-2000:] if stdout else ""),
-        "stderr": (stderr.decode("utf-8", errors="replace")[-2000:] if stderr else ""),
-    }
-    mark_job_run(name, success=success)
-    append_history(entry)
+    entry = _job_history_entry(
+        name=name,
+        command=command,
+        started_at=started_at,
+        returncode=process.returncode,
+        status="success" if success else "failed",
+        stdout=stdout.decode("utf-8", errors="replace")[-2000:] if stdout else "",
+        stderr=stderr.decode("utf-8", errors="replace")[-2000:] if stderr else "",
+    )
     logger.info("Job %r finished: %s (rc=%s)", name, entry["status"], process.returncode)
-    return entry
+    return _save_job_result(name, entry, success=success)
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +306,8 @@ async def run_scheduler_loop(*, once: bool = False) -> None:
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _on_signal)
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(sig, _on_signal)
 
     write_pid()
     logger.info("Cron scheduler started (pid=%d, tick=%ds)", os.getpid(), TICK_INTERVAL_SECONDS)
@@ -317,11 +356,41 @@ def _run_daemon() -> None:
     asyncio.run(run_scheduler_loop())
 
 
+def _daemon_env() -> dict[str, str]:
+    env = os.environ.copy()
+    src_root = str(Path(__file__).resolve().parents[2])
+    pythonpath = env.get("PYTHONPATH", "")
+    entries = [entry for entry in pythonpath.split(os.pathsep) if entry]
+    if src_root not in entries:
+        entries.insert(0, src_root)
+    env["PYTHONPATH"] = os.pathsep.join(entries)
+    return env
+
+
 def start_daemon() -> int:
     """Fork and start the scheduler daemon.  Returns the child PID."""
     existing = read_pid()
     if existing is not None:
         raise RuntimeError(f"Scheduler already running (pid={existing})")
+
+    if not hasattr(os, "fork"):
+        creationflags = 0
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from myharness.services.cron_scheduler import _run_daemon; _run_daemon()",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creationflags,
+            env=_daemon_env(),
+        )
+        return process.pid
 
     pid = os.fork()
     if pid > 0:

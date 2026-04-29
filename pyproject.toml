@@ -83,10 +83,20 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = [
+    ".mcp",
+    ".myharness",
+    ".playwright-mcp",
+    ".plugins",
+    ".skills",
+    ".tmp-chrome-check",
+    "Playground",
+]
 
 [tool.mypy]
 python_version = "3.11"

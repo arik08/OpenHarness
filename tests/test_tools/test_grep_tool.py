@@ -23,6 +23,16 @@ class _ValueErrorThenEofStdout:
         return b""
 
 
+class _LinesStdout:
+    def __init__(self, lines):
+        self._lines = list(lines)
+
+    async def readline(self):
+        if self._lines:
+            return self._lines.pop(0)
+        return b""
+
+
 class _FakeProcess:
     def __init__(self, stdout=None):
         self.stdout = stdout or _FakeStdout()
@@ -92,3 +102,28 @@ async def test_grep_tool_uses_large_stream_limit_and_skips_valueerror(monkeypatc
     assert result.is_error is False
     assert result.output == "(no matches)"
     assert seen_kwargs["limit"] == 8 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_grep_file_normalizes_crlf_rg_output(monkeypatch, tmp_path: Path):
+    target = tmp_path / "notes.txt"
+    target.write_text("foo\n", encoding="utf-8")
+    tool = GrepTool()
+    monkeypatch.setattr("myharness.tools.grep_tool.shutil.which", lambda _: "/usr/bin/rg")
+    fake_process = _FakeProcess(stdout=_LinesStdout([b"1:foo\r\n"]))
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        fake_process.returncode = 0
+        return fake_process
+
+    monkeypatch.setattr(
+        "myharness.tools.grep_tool.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    result = await tool.execute(
+        GrepToolInput(pattern="foo", root=str(target)),
+        type("Ctx", (), {"cwd": tmp_path})(),
+    )
+
+    assert result.output == "notes.txt:1:foo"

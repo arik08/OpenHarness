@@ -29,18 +29,18 @@ class TaskCreateTool(BaseTool):
 
     async def execute(self, arguments: TaskCreateToolInput, context: ToolExecutionContext) -> ToolResult:
         manager = get_task_manager()
-        if arguments.type == "local_bash":
-            if not arguments.command:
-                return ToolResult(output="command is required for local_bash tasks", is_error=True)
-            task = await manager.create_shell_task(
-                command=arguments.command,
-                description=arguments.description,
-                cwd=context.cwd,
-            )
-        elif arguments.type == "local_agent":
-            if not arguments.prompt:
-                return ToolResult(output="prompt is required for local_agent tasks", is_error=True)
-            try:
+        try:
+            if arguments.type == "local_bash":
+                if not arguments.command:
+                    return ToolResult(output="command is required for local_bash tasks", is_error=True)
+                task = await manager.create_shell_task(
+                    command=arguments.command,
+                    description=arguments.description,
+                    cwd=context.cwd,
+                )
+            elif arguments.type == "local_agent":
+                if not arguments.prompt:
+                    return ToolResult(output="prompt is required for local_agent tasks", is_error=True)
                 task = await manager.create_agent_task(
                     prompt=arguments.prompt,
                     description=arguments.description,
@@ -48,9 +48,9 @@ class TaskCreateTool(BaseTool):
                     model=arguments.model,
                     api_key=os.environ.get("ANTHROPIC_API_KEY"),
                 )
-            except ValueError as exc:
-                return ToolResult(output=str(exc), is_error=True)
-        else:
-            return ToolResult(output=f"unsupported task type: {arguments.type}", is_error=True)
+            else:
+                return ToolResult(output=f"unsupported task type: {arguments.type}", is_error=True)
+        except (OSError, ValueError) as exc:
+            return ToolResult(output=str(exc), is_error=True)
 
         return ToolResult(output=f"Created task {task.id} ({task.type})")

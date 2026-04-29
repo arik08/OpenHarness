@@ -28,7 +28,9 @@ def load_cron_jobs() -> list[dict[str, Any]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return []
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
 
 
 def save_cron_jobs(jobs: list[dict[str, Any]]) -> None:
@@ -56,6 +58,7 @@ def upsert_cron_job(job: dict[str, Any]) -> None:
     Automatically sets ``enabled`` to True and computes ``next_run`` when the
     schedule is a valid cron expression.
     """
+    job = dict(job)
     job.setdefault("enabled", True)
     job.setdefault("created_at", datetime.now(timezone.utc).isoformat())
 

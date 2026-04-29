@@ -101,6 +101,84 @@ async def test_stop_task(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_read_task_output_returns_empty_string_when_log_file_is_missing(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    manager = BackgroundTaskManager()
+
+    task = await manager.create_shell_task(
+        command=_python_stdout_command("short lived"),
+        description="missing output",
+        cwd=tmp_path,
+    )
+    await asyncio.wait_for(manager._waiters[task.id], timeout=5)  # type: ignore[attr-defined]
+    task.output_file.unlink()
+
+    assert manager.read_task_output(task.id) == ""
+
+
+@pytest.mark.asyncio
+async def test_read_task_output_returns_empty_string_for_non_positive_max_bytes(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    manager = BackgroundTaskManager()
+
+    task = await manager.create_shell_task(
+        command=_python_stdout_command("visible output"),
+        description="zero tail",
+        cwd=tmp_path,
+    )
+    await asyncio.wait_for(manager._waiters[task.id], timeout=5)  # type: ignore[attr-defined]
+
+    assert manager.read_task_output(task.id, max_bytes=0) == ""
+    assert manager.read_task_output(task.id, max_bytes=-1) == ""
+
+
+@pytest.mark.asyncio
+async def test_create_shell_task_marks_record_failed_when_process_start_fails(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    manager = BackgroundTaskManager()
+
+    with pytest.raises(OSError):
+        await manager.create_shell_task(
+            command=_python_stdout_command("never starts"),
+            description="bad cwd",
+            cwd=tmp_path / "missing",
+        )
+
+    tasks = manager.list_tasks()
+    assert len(tasks) == 1
+    assert tasks[0].status == "failed"
+    assert tasks[0].ended_at is not None
+    assert tasks[0].metadata["start_error"]
+
+
+@pytest.mark.asyncio
+async def test_start_failure_notifies_completion_listener(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    manager = BackgroundTaskManager()
+    seen: list[tuple[str, str]] = []
+
+    def _listener(task):
+        seen.append((task.description, task.status))
+
+    manager.register_completion_listener(_listener)
+
+    with pytest.raises(OSError):
+        await manager.create_shell_task(
+            command=_python_stdout_command("never starts"),
+            description="bad cwd",
+            cwd=tmp_path / "missing",
+        )
+
+    assert seen == [("bad cwd", "failed")]
+
+
+@pytest.mark.asyncio
 async def test_completion_listener_fires_when_task_finishes(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
     manager = BackgroundTaskManager()
@@ -122,3 +200,30 @@ async def test_completion_listener_fires_when_task_finishes(tmp_path: Path, monk
     await asyncio.wait_for(done.wait(), timeout=5)
 
     assert seen == [(task.id, "completed", 0)]
+
+
+@pytest.mark.asyncio
+async def test_completion_listener_sees_killed_status_for_stopped_task(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    manager = BackgroundTaskManager()
+    seen: list[tuple[str, str]] = []
+    done = asyncio.Event()
+
+    def _listener(task):
+        seen.append((task.id, task.status))
+        done.set()
+
+    manager.register_completion_listener(_listener)
+
+    task = await manager.create_shell_task(
+        command="sleep 30",
+        description="listener stop",
+        cwd=tmp_path,
+    )
+
+    await manager.stop_task(task.id)
+    await asyncio.wait_for(done.wait(), timeout=5)
+
+    assert seen == [(task.id, "killed")]

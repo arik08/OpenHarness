@@ -380,6 +380,7 @@ function streamingStateSnapshot() {
     liveNode: streamingLiveNode,
     renderedTextLength: streamingRenderedTextLength,
     displayStarted: streamingDisplayStarted,
+    pendingAssistantActions,
   };
 }
 
@@ -401,6 +402,7 @@ function restoreStreamingState(snapshot = {}) {
   clearStreamingTimers();
   streamingTextBuffer = String(snapshot.textBuffer || "");
   streamingLiveNode = snapshot.liveNode || null;
+  pendingAssistantActions = snapshot.pendingAssistantActions || null;
   streamingRenderedTextLength = Number.isFinite(snapshot.renderedTextLength)
     ? snapshot.renderedTextLength
     : countRenderedStreamingText(state.assistantNode);
@@ -499,6 +501,30 @@ function attachPendingAssistantActions() {
 
 function clearPendingAssistantActions() {
   pendingAssistantActions = null;
+}
+
+function isFinalRestoredAssistantAnswer(historyEvents, index) {
+  const current = historyEvents[index];
+  if (!String(current?.text || "").trim()) {
+    return false;
+  }
+  for (const next of historyEvents.slice(index + 1)) {
+    if (next?.type === "user") {
+      return true;
+    }
+    if (next?.type === "assistant" && String(next.text || "").trim()) {
+      return false;
+    }
+    if (
+      next?.type === "tool_started"
+      || next?.type === "tool_completed"
+      || next?.type === "tool_progress"
+      || next?.type === "tool_input_delta"
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function handleEvent(event) {
@@ -611,6 +637,7 @@ function handleEvent(event) {
       }
       const node = appendMessage("assistant", event.item.text || "");
       extractAndRenderArtifacts(event.item.text || "", node);
+      queueAssistantActions(node, event.item.text || "");
       return;
     }
     if (event.item.role === "system" && String(event.item.text || "").startsWith("> ")) {
@@ -710,7 +737,8 @@ function handleEvent(event) {
       : 0;
     els.messages.textContent = "";
     let restoredUserTurnCount = 0;
-    for (const item of event.history_events || []) {
+    const historyEvents = Array.isArray(event.history_events) ? event.history_events : [];
+    for (const [index, item] of historyEvents.entries()) {
       if (item.type === "user") {
         if (restoredUserTurnCount > 0 && state.workflowNode) {
           finalizeWorkflowSummary();
@@ -723,6 +751,9 @@ function handleEvent(event) {
       } else if (item.type === "assistant") {
         const node = appendMessage("assistant", item.text || "");
         extractAndRenderArtifacts(item.text || "", node);
+        if (isFinalRestoredAssistantAnswer(historyEvents, index)) {
+          attachAssistantActions(node, item.text || "");
+        }
       } else if (item.type === "tool_started" || item.type === "tool_completed") {
         appendWorkflowEvent({
           type: item.type,

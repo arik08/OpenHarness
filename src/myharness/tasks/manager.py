@@ -62,7 +62,11 @@ class BackgroundTaskManager:
         self._tasks[task_id] = record
         self._output_locks[task_id] = asyncio.Lock()
         self._input_locks[task_id] = asyncio.Lock()
-        await self._start_process(task_id)
+        try:
+            await self._start_process(task_id)
+        except OSError as exc:
+            await self._mark_start_failed(record, exc)
+            raise
         return record
 
     async def create_agent_task(
@@ -175,10 +179,22 @@ class BackgroundTaskManager:
     def read_task_output(self, task_id: str, *, max_bytes: int = 12000) -> str:
         """Return the tail of a task's output file."""
         task = self._require_task(task_id)
-        content = task.output_file.read_text(encoding="utf-8", errors="replace")
+        if max_bytes <= 0:
+            return ""
+        try:
+            content = task.output_file.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            return ""
         if len(content) > max_bytes:
             return content[-max_bytes:]
         return content
+
+    async def _mark_start_failed(self, task: TaskRecord, exc: OSError) -> None:
+        task.status = "failed"
+        task.ended_at = time.time()
+        task.metadata["start_error"] = str(exc)
+        task.output_file.write_text(f"Failed to start task: {exc}\n", encoding="utf-8")
+        await self._notify_completion_listeners(task)
 
     def register_completion_listener(self, listener: CompletionListener) -> Callable[[], None]:
         """Register a callback fired whenever a task reaches a terminal state."""

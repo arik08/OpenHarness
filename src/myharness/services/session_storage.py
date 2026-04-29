@@ -337,12 +337,64 @@ def _sanitize_snapshot_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _load_snapshot_file(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return _sanitize_snapshot_payload(payload)
+    except ValueError:
+        return None
+
+
 def load_session_snapshot(cwd: str | Path) -> dict[str, Any] | None:
     """Load the most recent session snapshot for the project."""
     path = get_project_session_dir(cwd) / "latest.json"
     if not path.exists():
         return None
-    return _sanitize_snapshot_payload(json.loads(path.read_text(encoding="utf-8")))
+    return _load_snapshot_file(path)
+
+
+def _first_user_summary_from_snapshot(data: dict[str, Any]) -> str:
+    messages = data.get("messages", [])
+    if not isinstance(messages, list):
+        return ""
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return _raw_message_summary(msg)
+    return ""
+
+
+def _snapshot_display_summary(data: dict[str, Any], *, default: str = "") -> str:
+    summary = strip_internal_message_text(data.get("summary", ""))
+    first_user_summary = _first_user_summary_from_snapshot(data)
+    summary = display_summary_for_first_user(summary, first_user_summary)
+    if first_user_summary.endswith("[image]"):
+        summary = _with_image_marker(summary or first_user_summary, True)
+    if summary.startswith("The user explicitly selected the `") and first_user_summary:
+        summary = first_user_summary
+    return summary or first_user_summary[:80] or default
+
+
+def _snapshot_list_item(
+    data: dict[str, Any],
+    *,
+    session_id: str,
+    path: Path,
+    summary_default: str = "",
+) -> dict[str, Any]:
+    messages = data.get("messages", [])
+    message_count = len(messages) if isinstance(messages, list) else 0
+    return {
+        "session_id": session_id,
+        "summary": _snapshot_display_summary(data, default=summary_default),
+        "message_count": data.get("message_count", message_count),
+        "model": data.get("model", ""),
+        "created_at": data.get("created_at", path.stat().st_mtime),
+    }
 
 
 def list_session_snapshots(cwd: str | Path, limit: int | None = 20) -> list[dict[str, Any]]:
@@ -352,66 +404,36 @@ def list_session_snapshots(cwd: str | Path, limit: int | None = 20) -> list[dict
     seen_ids: set[str] = set()
 
     # Named session files
-    for path in sorted(session_dir.glob("session-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            sid = data.get("session_id", path.stem.replace("session-", ""))
-            seen_ids.add(sid)
-            summary = strip_internal_message_text(data.get("summary", ""))
-            first_user_summary = ""
-            for msg in data.get("messages", []):
-                if isinstance(msg, dict) and msg.get("role") == "user":
-                    first_user_summary = _raw_message_summary(msg)
-                    break
-            summary = display_summary_for_first_user(summary, first_user_summary)
-            if first_user_summary.endswith("[image]"):
-                summary = _with_image_marker(summary or first_user_summary, True)
-            if summary.startswith("The user explicitly selected the `") and first_user_summary:
-                summary = first_user_summary
-            if not summary:
-                # Extract from first user message
-                summary = first_user_summary[:80]
-            sessions.append({
-                "session_id": sid,
-                "summary": summary,
-                "message_count": data.get("message_count", len(data.get("messages", []))),
-                "model": data.get("model", ""),
-                "created_at": data.get("created_at", path.stat().st_mtime),
-            })
-        except (json.JSONDecodeError, OSError):
+    session_paths = sorted(
+        session_dir.glob("session-*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for path in session_paths:
+        data = _load_snapshot_file(path)
+        if data is None:
             continue
+        sid = str(data.get("session_id", path.stem.replace("session-", "")))
+        seen_ids.add(sid)
+        sessions.append(_snapshot_list_item(data, session_id=sid, path=path))
         if limit is not None and len(sessions) >= limit:
             break
 
     # Also include latest.json if it has no corresponding session file
     latest_path = session_dir / "latest.json"
     if latest_path.exists() and (limit is None or len(sessions) < limit):
-        try:
-            data = json.loads(latest_path.read_text(encoding="utf-8"))
-            sid = data.get("session_id", "latest")
+        data = _load_snapshot_file(latest_path)
+        if data is not None:
+            sid = str(data.get("session_id", "latest"))
             if sid not in seen_ids:
-                summary = strip_internal_message_text(data.get("summary", ""))
-                first_user_summary = ""
-                for msg in data.get("messages", []):
-                    if isinstance(msg, dict) and msg.get("role") == "user":
-                        first_user_summary = _raw_message_summary(msg)
-                        break
-                summary = display_summary_for_first_user(summary, first_user_summary)
-                if first_user_summary.endswith("[image]"):
-                    summary = _with_image_marker(summary or first_user_summary, True)
-                if summary.startswith("The user explicitly selected the `") and first_user_summary:
-                    summary = first_user_summary
-                if not summary:
-                    summary = first_user_summary[:80]
-                sessions.append({
-                    "session_id": sid,
-                    "summary": summary or "(latest session)",
-                    "message_count": data.get("message_count", len(data.get("messages", []))),
-                    "model": data.get("model", ""),
-                    "created_at": data.get("created_at", latest_path.stat().st_mtime),
-                })
-        except (json.JSONDecodeError, OSError):
-            pass
+                sessions.append(
+                    _snapshot_list_item(
+                        data,
+                        session_id=sid,
+                        path=latest_path,
+                        summary_default="(latest session)",
+                    )
+                )
 
     # Sort by created_at descending
     sessions.sort(key=lambda s: s.get("created_at", 0), reverse=True)
@@ -424,12 +446,12 @@ def load_session_by_id(cwd: str | Path, session_id: str) -> dict[str, Any] | Non
     # Try named session first
     path = session_dir / f"session-{session_id}.json"
     if path.exists():
-        return _sanitize_snapshot_payload(json.loads(path.read_text(encoding="utf-8")))
+        return _load_snapshot_file(path)
     # Fallback to latest.json if session_id matches
     latest = session_dir / "latest.json"
     if latest.exists():
-        data = _sanitize_snapshot_payload(json.loads(latest.read_text(encoding="utf-8")))
-        if data.get("session_id") == session_id or session_id == "latest":
+        data = _load_snapshot_file(latest)
+        if data is not None and (data.get("session_id") == session_id or session_id == "latest"):
             return data
     return None
 
@@ -446,11 +468,8 @@ def delete_session_by_id(cwd: str | Path, session_id: str) -> bool:
 
     latest_path = session_dir / "latest.json"
     if latest_path.exists():
-        try:
-            data = json.loads(latest_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            data = {}
-        if data.get("session_id") == session_id:
+        data = _load_snapshot_file(latest_path)
+        if data is not None and data.get("session_id") == session_id:
             latest_path.unlink()
             deleted = True
 

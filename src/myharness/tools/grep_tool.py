@@ -6,6 +6,7 @@ import asyncio
 import re
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from pydantic import BaseModel, Field
 
@@ -178,48 +179,13 @@ async def _rg_grep(
     # `--` ensures patterns like `-foo` aren't parsed as flags.
     cmd.extend(["--", pattern, "."])
 
-    from myharness.sandbox.session import get_docker_sandbox
-
-    session = get_docker_sandbox()
-    if session is not None and session.is_running:
-        process = await session.exec_command(
-            cmd,
-            cwd=root,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    else:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=8 * 1024 * 1024,  # 8 MB per line — avoids LimitOverrunError on long lines
-        )
-
-    matches: list[str] = []
-    try:
-        await asyncio.wait_for(
-            _collect_rg_matches(process, matches, limit=limit),
-            timeout=timeout_seconds,
-        )
-    except asyncio.TimeoutError:
-        matches.append(_timeout_marker(timeout_seconds))
-        await _terminate_process(process)
-    except asyncio.CancelledError:
-        await _terminate_process(process)
-        raise
-    finally:
-        if len(matches) >= limit and process.returncode is None:
-            await _terminate_process(process)
-        elif process.returncode is None:
-            await process.wait()
-
-    # rg exits 0 when matches are found, 1 when none are found.
-    # Any other return code indicates an error; fall back to Python.
-    if process.returncode in {0, 1, -15, -9}:
-        return matches
-    return None
+    return await _run_rg(
+        cmd,
+        cwd=root,
+        limit=limit,
+        timeout_seconds=timeout_seconds,
+        format_match=_normalize_rg_match,
+    )
 
 
 async def _rg_grep_file(
@@ -246,34 +212,32 @@ async def _rg_grep_file(
         cmd.append("-i")
     cmd.extend(["--", pattern, path.name])
 
-    from myharness.sandbox.session import get_docker_sandbox
+    return await _run_rg(
+        cmd,
+        cwd=path.parent,
+        limit=limit,
+        timeout_seconds=timeout_seconds,
+        format_match=lambda line: f"{_format_path(path, display_base)}:{line}",
+    )
 
-    session = get_docker_sandbox()
-    if session is not None and session.is_running:
-        process = await session.exec_command(
-            cmd,
-            cwd=path.parent,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    else:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(path.parent),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=8 * 1024 * 1024,  # 8 MB per line — avoids LimitOverrunError on long lines
-        )
 
+async def _run_rg(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    limit: int,
+    timeout_seconds: int,
+    format_match: Callable[[str], str | None],
+) -> list[str] | None:
+    process = await _start_rg_process(cmd, cwd=cwd)
     matches: list[str] = []
     try:
         await asyncio.wait_for(
-            _collect_rg_file_matches(
+            _collect_rg_matches(
                 process,
                 matches,
                 limit=limit,
-                path=path,
-                display_base=display_base,
+                format_match=format_match,
             ),
             timeout=timeout_seconds,
         )
@@ -289,9 +253,32 @@ async def _rg_grep_file(
         elif process.returncode is None:
             await process.wait()
 
+    # rg exits 0 when matches are found, 1 when none are found.
+    # Any other return code indicates an error; fall back to Python.
     if process.returncode in {0, 1, -15, -9}:
         return matches
     return None
+
+
+async def _start_rg_process(cmd: list[str], *, cwd: Path):
+    from myharness.sandbox.session import get_docker_sandbox
+
+    session = get_docker_sandbox()
+    if session is not None and session.is_running:
+        return await session.exec_command(
+            cmd,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    return await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        limit=8 * 1024 * 1024,  # 8 MB per line avoids LimitOverrunError on long lines.
+    )
 
 
 def _timeout_marker(timeout_seconds: int) -> str:
@@ -303,6 +290,7 @@ async def _collect_rg_matches(
     matches: list[str],
     *,
     limit: int,
+    format_match: Callable[[str], str | None],
 ) -> None:
     assert process.stdout is not None
     while len(matches) < limit:
@@ -313,32 +301,12 @@ async def _collect_rg_matches(
             continue
         if not raw:
             break
-        line = _normalize_rg_match(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
-        if line:
-            matches.append(line)
-
-
-async def _collect_rg_file_matches(
-    process: asyncio.subprocess.Process,
-    matches: list[str],
-    *,
-    limit: int,
-    path: Path,
-    display_base: Path,
-) -> None:
-    assert process.stdout is not None
-    while len(matches) < limit:
-        try:
-            raw = await process.stdout.readline()
-        except ValueError:
-            # Line exceeded the stream buffer limit; skip it and continue.
-            continue
-        if not raw:
-            break
-        line = raw.decode("utf-8", errors="replace").rstrip("\n")
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
         if not line:
             continue
-        matches.append(f"{_format_path(path, display_base)}:{line}")
+        formatted = format_match(line)
+        if formatted:
+            matches.append(formatted)
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:

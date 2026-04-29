@@ -63,6 +63,13 @@ class TestCRUD:
         assert "next_run" in jobs[0]
         assert "created_at" in jobs[0]
 
+    def test_upsert_does_not_mutate_input(self) -> None:
+        job = {"name": "test-job", "schedule": "*/5 * * * *", "command": "echo hi"}
+
+        upsert_cron_job(job)
+
+        assert job == {"name": "test-job", "schedule": "*/5 * * * *", "command": "echo hi"}
+
     def test_upsert_replaces(self) -> None:
         upsert_cron_job({"name": "j1", "schedule": "* * * * *", "command": "echo 1"})
         upsert_cron_job({"name": "j1", "schedule": "0 * * * *", "command": "echo 2"})
@@ -152,3 +159,27 @@ class TestCorruptData:
             lambda: bad_file,
         )
         assert load_cron_jobs() == []
+
+    def test_mixed_list_filters_non_object_entries(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        bad_file = tmp_path / "data" / "cron_jobs.json"
+        bad_file.parent.mkdir(parents=True, exist_ok=True)
+        bad_file.write_text(
+            json.dumps(
+                [
+                    {"name": "good", "schedule": "* * * * *", "command": "echo ok"},
+                    "not-a-job",
+                    ["also", "not", "a", "job"],
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "myharness.services.cron.get_cron_registry_path",
+            lambda: bad_file,
+        )
+
+        assert load_cron_jobs() == [
+            {"name": "good", "schedule": "* * * * *", "command": "echo ok"}
+        ]

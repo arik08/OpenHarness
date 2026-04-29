@@ -8,10 +8,13 @@ from pathlib import Path
 from myharness.api.usage import UsageSnapshot
 from myharness.engine.messages import ConversationMessage, TextBlock
 from myharness.services.session_storage import (
+    delete_session_by_id,
     display_summary_for_first_user,
     export_session_markdown,
     fallback_session_title_from_user_text,
     get_project_session_dir,
+    list_session_snapshots,
+    load_session_by_id,
     load_session_snapshot,
     save_session_snapshot,
     title_echoes_first_user,
@@ -120,6 +123,94 @@ def test_load_session_snapshot_sanitizes_legacy_empty_assistant_messages(tmp_pat
     assert snapshot["messages"][1]["content"][0]["text"] == "world"
 
 
+def test_load_session_snapshot_returns_none_for_corrupt_json(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "repo"
+    project.mkdir()
+    target_dir = get_project_session_dir(project)
+    (target_dir / "latest.json").write_text("{not valid json", encoding="utf-8")
+
+    assert load_session_snapshot(project) is None
+
+
+def test_load_session_snapshot_returns_none_for_non_object_json(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "repo"
+    project.mkdir()
+    target_dir = get_project_session_dir(project)
+    (target_dir / "latest.json").write_text("[]", encoding="utf-8")
+
+    assert load_session_snapshot(project) is None
+
+
+def test_load_session_snapshot_returns_none_for_invalid_message_payload(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "repo"
+    project.mkdir()
+    target_dir = get_project_session_dir(project)
+    payload = {
+        "session_id": "broken",
+        "cwd": str(project),
+        "model": "claude-test",
+        "system_prompt": "system",
+        "messages": [{"role": "not-a-role", "content": [{"type": "text", "text": "hello"}]}],
+        "usage": {},
+        "tool_metadata": {},
+        "created_at": 1.0,
+        "summary": "broken",
+        "message_count": 1,
+    }
+    (target_dir / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    assert load_session_snapshot(project) is None
+
+
+def test_load_session_by_id_returns_none_for_corrupt_json(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "repo"
+    project.mkdir()
+    target_dir = get_project_session_dir(project)
+    (target_dir / "session-broken.json").write_text("{not valid json", encoding="utf-8")
+
+    assert load_session_by_id(project, "broken") is None
+
+
+def test_list_session_snapshots_skips_invalid_message_payload(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "repo"
+    project.mkdir()
+    target_dir = get_project_session_dir(project)
+    payload = {
+        "session_id": "broken",
+        "cwd": str(project),
+        "model": "claude-test",
+        "system_prompt": "system",
+        "messages": [{"role": "not-a-role", "content": [{"type": "text", "text": "hello"}]}],
+        "usage": {},
+        "tool_metadata": {},
+        "created_at": 1.0,
+        "summary": "broken",
+        "message_count": 1,
+    }
+    (target_dir / "session-broken.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    assert list_session_snapshots(project) == []
+
+
+def test_delete_session_by_id_ignores_non_object_latest_json(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "repo"
+    project.mkdir()
+    target_dir = get_project_session_dir(project)
+    latest = target_dir / "latest.json"
+    latest.write_text("[]", encoding="utf-8")
+
+    assert delete_session_by_id(project, "anything") is False
+    assert latest.exists()
+
+
 def test_korean_report_prompt_fallback_title_is_not_prompt_echo():
     prompt = (
         "삼성전자 메모리 경쟁사를 정의하고, 그 회사들의 최근 1주일 내 근황을 정리하여 "
@@ -150,3 +241,26 @@ def test_korean_first_clause_title_counts_as_prompt_echo():
 
 def test_korean_recommendation_prompt_fallback_title():
     assert fallback_session_title_from_user_text("서울 피자 맛집 추천해줘") == "서울 피자 맛집 추천"
+
+
+def test_list_session_snapshots_uses_clean_display_summary(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "repo"
+    project.mkdir()
+    prompt = (
+        "삼성전자 메모리 경쟁사를 정의하고, 그 회사들의 최근 1주일 내 근황을 정리하여 "
+        "md 보고서 만들고, 그걸로 html 보고서 만들어줘"
+    )
+
+    save_session_snapshot(
+        cwd=project,
+        model="claude-test",
+        system_prompt="system",
+        messages=[ConversationMessage(role="user", content=[TextBlock(text=prompt)])],
+        usage=UsageSnapshot(input_tokens=1, output_tokens=2),
+        tool_metadata={"session_title": prompt[:80]},
+    )
+
+    sessions = list_session_snapshots(project)
+
+    assert sessions[0]["summary"] == "삼성전자 메모리 경쟁사 보고서"
