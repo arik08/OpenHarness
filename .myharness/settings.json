@@ -190,7 +190,7 @@
   "vim_mode": false,
   "voice_mode": false,
   "fast_mode": false,
-  "effort": "low",
+  "effort": "none",
   "shell": "auto",
   "passes": 1,
   "verbose": false
