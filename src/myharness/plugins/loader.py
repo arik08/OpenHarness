@@ -395,7 +395,13 @@ def _load_plugin_commands(path: Path, manifest: PluginManifest) -> list[PluginCo
                 )
                 if command is not None:
                     commands.append(command)
-    return commands
+    return [command for command in commands if not _is_deprecated_plugin_command(command)]
+
+
+def _is_deprecated_plugin_command(command: PluginCommandDefinition) -> bool:
+    """Return whether a plugin command is a deprecated compatibility redirect."""
+    description = (command.description or "").strip().lower()
+    return description.startswith("deprecated")
 
 
 def _load_commands_from_directory(

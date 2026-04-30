@@ -628,11 +628,11 @@ async def test_help_lists_skills_mcp_and_plugins_even_when_empty(tmp_path: Path,
     assert help_command is not None
     result = await help_command.handler(help_args, context)
 
-    assert "Available skills:" in result.message
-    assert "MCP servers:" in result.message
-    assert "(no MCP servers configured)" in result.message
-    assert "Plugins:" in result.message
-    assert "(no plugins discovered)" in result.message
+    assert "사용 가능한 스킬:" in result.message
+    assert "MCP 서버:" in result.message
+    assert "(설정된 MCP 서버가 없습니다)" in result.message
+    assert "플러그인:" in result.message
+    assert "superpowers" in result.message
     assert "/mcp toggle NAME" in result.message
     assert "/plugin toggle NAME" in result.message
 

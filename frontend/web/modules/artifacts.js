@@ -1331,7 +1331,8 @@ function renderProjectFiles(files) {
         <small></small>
       </span>
     `;
-    openButton.querySelector("strong").textContent = artifact.path;
+    openButton.dataset.tooltip = artifact.path;
+    openButton.querySelector("strong").textContent = artifact.name || artifact.path;
     openButton.querySelector("small").textContent = `${artifact.label} · ${formatBytes(artifact.size)}`;
     openButton.addEventListener("click", () => openArtifact(artifact));
 

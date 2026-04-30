@@ -37,6 +37,7 @@ if (!String(process.env.MYHARNESS_HOME || "").trim()) {
   process.env.MYHARNESS_HOME = appConfigRoot;
 }
 const runtimeLogPath = join(process.env.MYHARNESS_LOGS_DIR, "myharness-web-runtime.log");
+const webUsageStatsPath = join(process.env.MYHARNESS_DATA_DIR || join(appConfigRoot, "data"), "web-usage-stats.json");
 configurePoscoCertificate();
 const sharedWorkspaceScopeName = "shared";
 const defaultWorkspaceName = "Default";
@@ -233,6 +234,17 @@ function normalizeClientAddress(value) {
 function safeWorkspaceScopeName(value) {
   const name = normalizeClientAddress(value).replace(/[^A-Za-z0-9._-]/g, "_").replace(/_+/g, "_");
   return name || "127.0.0.1";
+}
+
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function isPageVisitPath(pathname) {
+  return pathname === "/" || pathname === "/index.html";
 }
 
 function workspaceScopeFromRequest(request) {
@@ -1137,6 +1149,47 @@ async function writeJsonFile(path, payload) {
   await writeFile(path, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
+function normalizeWebUsageStats(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const byIp = source.byIp && typeof source.byIp === "object" ? source.byIp : {};
+  return {
+    version: 1,
+    totalVisits: Number(source.totalVisits || 0),
+    byIp,
+  };
+}
+
+async function readWebUsageStats() {
+  return normalizeWebUsageStats(await readJsonFileIfExists(webUsageStatsPath));
+}
+
+async function recordWebVisit(request) {
+  const ip = normalizeClientAddress(forwardedAddressFromRequest(request));
+  const now = Date.now();
+  const today = localDateKey(new Date(now));
+  const stats = await readWebUsageStats();
+  const ipStats = stats.byIp[ip] && typeof stats.byIp[ip] === "object"
+    ? stats.byIp[ip]
+    : { ip, firstSeenAt: now, lastSeenAt: null, visitCount: 0, daily: {} };
+  const daily = ipStats.daily && typeof ipStats.daily === "object" ? ipStats.daily : {};
+  const dayStats = daily[today] && typeof daily[today] === "object"
+    ? daily[today]
+    : { visits: 0, firstSeenAt: now, lastSeenAt: null };
+
+  stats.totalVisits += 1;
+  ipStats.ip = ip;
+  ipStats.firstSeenAt = Number(ipStats.firstSeenAt || now);
+  ipStats.lastSeenAt = now;
+  ipStats.visitCount = Number(ipStats.visitCount || 0) + 1;
+  dayStats.visits = Number(dayStats.visits || 0) + 1;
+  dayStats.firstSeenAt = Number(dayStats.firstSeenAt || now);
+  dayStats.lastSeenAt = now;
+  daily[today] = dayStats;
+  ipStats.daily = daily;
+  stats.byIp[ip] = ipStats;
+  await writeJsonFile(webUsageStatsPath, stats);
+}
+
 async function readWorkspaceScopeSettings(request = null) {
   const settings = await readJsonFileIfExists(join(globalConfigDir(), "settings.json")) || {};
   const mode = normalizeWorkspaceScopeMode(settings.web_workspace_scope || settings.workspace_scope || workspaceScopeMode);
@@ -1654,6 +1707,177 @@ async function listAllWorkspaceHistory(scope = defaultWorkspaceScope()) {
     .flat()
     .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))
     .map(({ createdAt, ...item }) => item);
+}
+
+function createEmptyUserStats(clientId = "", clientAddress = "") {
+  return {
+    viewerIp: clientAddress,
+    totalVisitCount: 0,
+    todayVisitCount: 0,
+    dailyActiveIpCount: 0,
+    currentIpVisitCount: 0,
+    currentIpTodayVisitCount: 0,
+    workspaceCount: 0,
+    conversationCount: 0,
+    messageCount: 0,
+    userMessageCount: 0,
+    assistantMessageCount: 0,
+    toolUseCount: 0,
+    activeSessionCount: [...sessions.values()].filter((session) =>
+      !session.shuttingDown && (!clientId || session.clientId === clientId)
+    ).length,
+    activeIpSessionCount: [...sessions.values()].filter((session) =>
+      !session.shuttingDown && (!clientAddress || session.clientAddress === clientAddress)
+    ).length,
+    firstConversationAt: null,
+    latestConversationAt: null,
+    ipBreakdown: [],
+    dailyBreakdown: [],
+    currentWorkspaceName: "",
+    currentWorkspaceConversationCount: 0,
+    workspaceBreakdown: [],
+  };
+}
+
+function countMessageStats(messages) {
+  const stats = {
+    messageCount: 0,
+    userMessageCount: 0,
+    assistantMessageCount: 0,
+    toolUseCount: 0,
+  };
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+    stats.messageCount += 1;
+    if (message.role === "user") {
+      stats.userMessageCount += 1;
+    }
+    if (message.role === "assistant") {
+      stats.assistantMessageCount += 1;
+    }
+    if (Array.isArray(message.content)) {
+      stats.toolUseCount += message.content.filter((block) => block?.type === "tool_use").length;
+    }
+  }
+  return stats;
+}
+
+async function readSessionStatsItem(path) {
+  const data = JSON.parse(await readFile(path, "utf8"));
+  const info = await stat(path);
+  const createdAt = historyOrderTimestamp(data, info);
+  return {
+    ...countMessageStats(data.messages),
+    createdAt,
+  };
+}
+
+async function listWorkspaceSessionStatFiles(workspace) {
+  const sessionDir = sessionDirectoryForWorkspace(workspace);
+  let entries = [];
+  try {
+    entries = await readdir(sessionDir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.isFile() && /^session-.+\.json$/i.test(entry.name))
+    .map((entry) => join(sessionDir, entry.name));
+}
+
+function appendWebUsageStats(stats, webUsage, clientAddress = "") {
+  const today = localDateKey();
+  const dailyMap = new Map();
+  const ipItems = Object.values(webUsage.byIp || {}).map((entry) => {
+    const daily = entry?.daily && typeof entry.daily === "object" ? entry.daily : {};
+    const todayStats = daily[today] && typeof daily[today] === "object" ? daily[today] : {};
+    for (const [date, day] of Object.entries(daily)) {
+      const current = dailyMap.get(date) || { date, visitCount: 0, activeIpCount: 0 };
+      current.visitCount += Number(day?.visits || 0);
+      current.activeIpCount += Number(day?.visits || 0) > 0 ? 1 : 0;
+      dailyMap.set(date, current);
+    }
+    return {
+      ip: String(entry?.ip || ""),
+      visitCount: Number(entry?.visitCount || 0),
+      todayVisitCount: Number(todayStats.visits || 0),
+      firstSeenAt: Number(entry?.firstSeenAt || 0) || null,
+      lastSeenAt: Number(entry?.lastSeenAt || 0) || null,
+      activeSessionCount: [...sessions.values()].filter((session) =>
+        !session.shuttingDown && session.clientAddress === entry?.ip
+      ).length,
+    };
+  }).filter((entry) => entry.ip);
+
+  stats.totalVisitCount = Number(webUsage.totalVisits || 0);
+  stats.todayVisitCount = [...dailyMap.values()]
+    .find((entry) => entry.date === today)?.visitCount || 0;
+  stats.dailyActiveIpCount = [...dailyMap.values()]
+    .find((entry) => entry.date === today)?.activeIpCount || 0;
+  stats.ipBreakdown = ipItems.sort((left, right) => {
+    const byLastSeen = Number(right.lastSeenAt || 0) - Number(left.lastSeenAt || 0);
+    return byLastSeen || right.visitCount - left.visitCount || left.ip.localeCompare(right.ip);
+  });
+  stats.dailyBreakdown = [...dailyMap.values()]
+    .sort((left, right) => right.date.localeCompare(left.date))
+    .slice(0, 14);
+
+  const currentIpStats = stats.ipBreakdown.find((entry) => entry.ip === clientAddress);
+  stats.currentIpVisitCount = currentIpStats?.visitCount || 0;
+  stats.currentIpTodayVisitCount = currentIpStats?.todayVisitCount || 0;
+}
+
+async function collectUserStats(scope = defaultWorkspaceScope(), currentWorkspace = null, clientId = "", clientAddress = "") {
+  const stats = createEmptyUserStats(clientId, clientAddress);
+  appendWebUsageStats(stats, await readWebUsageStats(), clientAddress);
+  const workspaces = await listWorkspaces(scope);
+  stats.workspaceCount = workspaces.length;
+  stats.currentWorkspaceName = currentWorkspace?.name || "";
+
+  for (const workspace of workspaces) {
+    const files = await listWorkspaceSessionStatFiles(workspace);
+    const workspaceStats = {
+      name: workspace.name,
+      path: workspace.path,
+      conversationCount: 0,
+      messageCount: 0,
+      latestConversationAt: null,
+    };
+    for (const file of files) {
+      try {
+        const item = await readSessionStatsItem(file);
+        workspaceStats.conversationCount += 1;
+        workspaceStats.messageCount += item.messageCount;
+        stats.conversationCount += 1;
+        stats.messageCount += item.messageCount;
+        stats.userMessageCount += item.userMessageCount;
+        stats.assistantMessageCount += item.assistantMessageCount;
+        stats.toolUseCount += item.toolUseCount;
+        if (item.createdAt) {
+          workspaceStats.latestConversationAt = Math.max(workspaceStats.latestConversationAt || 0, item.createdAt);
+          stats.firstConversationAt = stats.firstConversationAt ? Math.min(stats.firstConversationAt, item.createdAt) : item.createdAt;
+          stats.latestConversationAt = Math.max(stats.latestConversationAt || 0, item.createdAt);
+        }
+      } catch {
+        // Ignore corrupt or partially written snapshots.
+      }
+    }
+    if (currentWorkspace?.path && workspace.path === currentWorkspace.path) {
+      stats.currentWorkspaceConversationCount = workspaceStats.conversationCount;
+    }
+    stats.workspaceBreakdown.push(workspaceStats);
+  }
+
+  stats.workspaceBreakdown.sort((left, right) => {
+    const byConversationCount = right.conversationCount - left.conversationCount;
+    return byConversationCount || left.name.localeCompare(right.name);
+  });
+  return stats;
 }
 
 function workspaceFromHistoryRequest(paramsOrBody = {}, scope = defaultWorkspaceScope()) {
@@ -2381,6 +2605,7 @@ async function createBackendSession(options = {}) {
   const id = crypto.randomUUID();
   const workspace = await resolveSessionWorkspace(options);
   const clientId = String(options.clientId || "").trim();
+  const clientAddress = normalizeClientAddress(options.clientAddress || "");
   if (clientId && countBusySessionsForClient(clientId) >= 3) {
     throw new Error("Concurrent response limit reached");
   }
@@ -2416,6 +2641,7 @@ async function createBackendSession(options = {}) {
     createdAt: Date.now(),
     workspace,
     clientId,
+    clientAddress,
     busy: false,
     savedSessionId: "",
     shuttingDown: false,
@@ -2520,6 +2746,7 @@ function liveSessionPayload(session) {
 
 async function handleApi(request, response, pathname) {
   const workspaceScope = workspaceScopeFromRequest(request);
+  const clientAddress = normalizeClientAddress(forwardedAddressFromRequest(request));
   if (request.method === "POST" && pathname === "/api/token-count") {
     try {
       const body = await readJson(request);
@@ -2654,6 +2881,7 @@ async function handleApi(request, response, pathname) {
     try {
       const options = await readJson(request);
       options.workspaceScope = workspaceScope;
+      options.clientAddress = clientAddress;
       const session = await createBackendSession(options);
       json(response, 200, { sessionId: session.id, workspace: session.workspace });
     } catch (error) {
@@ -2670,6 +2898,7 @@ async function handleApi(request, response, pathname) {
       const options = {
         permissionMode: body.permissionMode || await defaultPermissionMode(),
         clientId: oldSession?.clientId || String(body.clientId || "").trim(),
+        clientAddress: oldSession?.clientAddress || clientAddress,
         cwd: oldSession?.workspace?.path || body.cwd,
         systemPrompt: body.systemPrompt,
         workspaceScope,
@@ -2717,6 +2946,20 @@ async function handleApi(request, response, pathname) {
       .map(liveSessionPayload)
       .sort((left, right) => left.createdAt - right.createdAt);
     json(response, 200, { sessions: liveSessions });
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/user-stats") {
+    try {
+      const params = new URL(request.url, `http://localhost:${port}`).searchParams;
+      const currentWorkspace = workspaceFromHistoryRequest({
+        workspacePath: params.get("workspacePath"),
+        workspaceName: params.get("workspaceName"),
+      }, workspaceScope);
+      json(response, 200, await collectUserStats(workspaceScope, currentWorkspace, params.get("clientId") || "", clientAddress));
+    } catch (error) {
+      json(response, 400, { error: error.message || "Could not load user stats" });
+    }
     return true;
   }
 
@@ -3152,6 +3395,13 @@ async function handleApi(request, response, pathname) {
 
 server = createServer(async (request, response) => {
   const pathname = new URL(request.url || "/", `http://localhost:${port}`).pathname;
+  if (request.method === "GET" && isPageVisitPath(pathname)) {
+    try {
+      await recordWebVisit(request);
+    } catch (error) {
+      writeRuntimeLog("web_visit_record_failed", { error: errorPayload(error) });
+    }
+  }
   if (pathname.startsWith("/api/") && (await handleApi(request, response, pathname))) {
     return;
   }

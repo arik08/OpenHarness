@@ -203,6 +203,154 @@ function settingSection(title, helperText, ...fields) {
   return section;
 }
 
+function formatNumber(value) {
+  return new Intl.NumberFormat("ko-KR").format(Number(value || 0));
+}
+
+function formatStatsDate(value) {
+  const timestamp = Number(value || 0);
+  if (!timestamp) {
+    return "-";
+  }
+  const date = new Date(timestamp * (timestamp < 10_000_000_000 ? 1000 : 1));
+  return new Intl.DateTimeFormat("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function statsMetric(label, value, helper = "") {
+  const item = document.createElement("div");
+  item.className = "user-stats-metric";
+  const strong = document.createElement("strong");
+  strong.textContent = value;
+  const span = document.createElement("span");
+  span.textContent = label;
+  item.append(strong, span);
+  if (helper) {
+    const small = document.createElement("small");
+    small.textContent = helper;
+    item.append(small);
+  }
+  return item;
+}
+
+async function showUserStatsModal() {
+  els.modalHost.classList.remove("hidden");
+  els.modalHost.textContent = "";
+  setAppSettingsDismissAction();
+
+  const card = document.createElement("div");
+  card.className = "modal-card settings-card user-stats-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.append(modalCloseButton(showSettingsModal));
+
+  const title = document.createElement("h2");
+  title.textContent = "IP별 사용 통계";
+  const body = document.createElement("p");
+  body.textContent = "웹 접속 기록을 IP별로 집계합니다. 집과 회사처럼 IP가 바뀌면 각각 별도 항목으로 표시됩니다.";
+  const loading = document.createElement("p");
+  loading.className = "settings-helper";
+  loading.textContent = "통계를 불러오는 중입니다...";
+  card.append(title, body, loading);
+  els.modalHost.append(card);
+
+  try {
+    const params = new URLSearchParams({
+      clientId: state.clientId || "",
+      workspaceName: state.workspaceName || "",
+      workspacePath: state.workspacePath || "",
+    });
+    const stats = await getJson(`/api/user-stats?${params.toString()}`);
+    loading.remove();
+
+    const metrics = document.createElement("div");
+    metrics.className = "user-stats-grid";
+    metrics.append(
+      statsMetric("오늘 DAU", formatNumber(stats.dailyActiveIpCount), "오늘 접속한 고유 IP"),
+      statsMetric("오늘 접속횟수", formatNumber(stats.todayVisitCount), "새로고침 포함 페이지 진입"),
+      statsMetric("누적 접속횟수", formatNumber(stats.totalVisitCount), "서버에 기록된 전체 진입"),
+      statsMetric("내 현재 IP", stats.viewerIp || "-", `${formatNumber(stats.currentIpTodayVisitCount)} visits today`),
+      statsMetric("저장된 대화", formatNumber(stats.conversationCount), "전체 프로젝트 기준"),
+      statsMetric("활성 세션", formatNumber(stats.activeSessionCount), `현재 IP: ${formatNumber(stats.activeIpSessionCount)}`),
+    );
+
+    const current = document.createElement("div");
+    current.className = "user-stats-current";
+    current.append(
+      statsMetric(
+        "현재 프로젝트 대화",
+        formatNumber(stats.currentWorkspaceConversationCount),
+        stats.currentWorkspaceName || state.workspaceName || "현재 프로젝트",
+      ),
+    );
+
+    const breakdown = document.createElement("div");
+    breakdown.className = "user-stats-breakdown";
+    const breakdownTitle = document.createElement("h3");
+    breakdownTitle.textContent = "IP별 접속";
+    const list = document.createElement("div");
+    list.className = "user-stats-workspace-list";
+    const items = Array.isArray(stats.ipBreakdown) ? stats.ipBreakdown.slice(0, 12) : [];
+    if (!items.length) {
+      const empty = document.createElement("p");
+      empty.className = "settings-helper";
+      empty.textContent = "아직 기록된 접속이 없습니다.";
+      list.append(empty);
+    }
+    for (const item of items) {
+      const row = document.createElement("div");
+      row.className = "user-stats-workspace-row";
+      const name = document.createElement("strong");
+      name.textContent = item.ip || "-";
+      const detail = document.createElement("small");
+      detail.textContent = `${formatNumber(item.visitCount)} visits · today ${formatNumber(item.todayVisitCount)} · active sessions ${formatNumber(item.activeSessionCount)}`;
+      const date = document.createElement("span");
+      date.textContent = formatStatsDate(item.lastSeenAt);
+      row.append(name, detail, date);
+      list.append(row);
+    }
+    breakdown.append(breakdownTitle, list);
+
+    const dailyBreakdown = document.createElement("div");
+    dailyBreakdown.className = "user-stats-breakdown";
+    const dailyTitle = document.createElement("h3");
+    dailyTitle.textContent = "일자별 DAU";
+    const dailyList = document.createElement("div");
+    dailyList.className = "user-stats-workspace-list";
+    const dailyItems = Array.isArray(stats.dailyBreakdown) ? stats.dailyBreakdown.slice(0, 14) : [];
+    if (!dailyItems.length) {
+      const empty = document.createElement("p");
+      empty.className = "settings-helper";
+      empty.textContent = "아직 일자별 기록이 없습니다.";
+      dailyList.append(empty);
+    }
+    for (const item of dailyItems) {
+      const row = document.createElement("div");
+      row.className = "user-stats-workspace-row";
+      const date = document.createElement("strong");
+      date.textContent = item.date || "-";
+      const detail = document.createElement("small");
+      detail.textContent = `${formatNumber(item.activeIpCount)} active IPs`;
+      const visits = document.createElement("span");
+      visits.textContent = `${formatNumber(item.visitCount)} visits`;
+      row.append(date, detail, visits);
+      dailyList.append(row);
+    }
+    dailyBreakdown.append(dailyTitle, dailyList);
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    actions.append(modalButton("뒤로", false, showSettingsModal));
+    card.append(metrics, current, breakdown, dailyBreakdown, actions);
+  } catch (error) {
+    loading.textContent = `IP별 사용 통계를 불러오지 못했습니다: ${error.message}`;
+  }
+}
+
 function showSettingsModal() {
   closeRuntimePicker();
   els.modalHost.classList.remove("hidden");
@@ -229,6 +377,7 @@ function showSettingsModal() {
     settingsButton("파일 저장경로", downloadModeLabel(), showDownloadSettingsModal),
     settingsButton("명령어 셀 (CLI)", shellPreferenceLabel(), showShellSettingsModal, "shell"),
     settingsButton("Yolo 모드", yoloModeLabel(), showYoloModeSettingsModal, "yolo-mode"),
+    settingsButton("IP별 사용 통계", "DAU / 접속횟수 / IP별 집계", showUserStatsModal),
     settingsButton("터미널 세션 재시작", state.sessionId ? "현재 세션 강제 재연결" : "새 세션 시작", showRestartSessionModal),
     settingsButton("작업공간 범위", workspaceScopeLabel(), showWorkspaceScopeSettingsModal),
     settingsButton("자동학습 스킬 표시", learnedSkillsLabel(), showLearnedSkillsSettingsModal, "learned-skills"),

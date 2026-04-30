@@ -123,6 +123,28 @@ def test_load_plugins_from_project_dir(tmp_path: Path, monkeypatch):
     assert "demo" in plugin.mcp_servers
 
 
+def test_deprecated_plugin_commands_are_hidden(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MYHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    project = tmp_path / "repo"
+    plugins_root = project / ".myharness" / "plugins"
+    plugins_root.mkdir(parents=True)
+    _write_plugin(plugins_root)
+
+    command_dir = plugins_root / "example-plugin" / "commands"
+    (command_dir / "old-command.md").write_text(
+        "---\n"
+        "description: Deprecated - use the replacement skill instead\n"
+        "---\n\n"
+        "Tell the user to use the replacement skill.\n",
+        encoding="utf-8",
+    )
+
+    plugins = load_plugins(Settings(allow_project_plugins=True), project)
+
+    plugin = next(plugin for plugin in plugins if plugin.manifest.name == "example")
+    assert {command.name for command in plugin.commands} == {"example:ops:restart"}
+
+
 def test_plugin_skills_and_hooks_are_merged(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MYHARNESS_CONFIG_DIR", str(tmp_path / "config"))
     project = tmp_path / "repo"

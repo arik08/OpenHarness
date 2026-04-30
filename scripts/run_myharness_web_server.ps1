@@ -30,6 +30,22 @@ function Write-LauncherLog {
     }
 }
 
+function Clear-ConsoleInputBuffer {
+    $discarded = 0
+
+    try {
+        while ([Console]::KeyAvailable) {
+            [Console]::ReadKey($true) | Out-Null
+            $discarded += 1
+        }
+    }
+    catch {
+        # Some hosts do not expose an interactive console. Key polling is best effort.
+    }
+
+    return $discarded
+}
+
 function Stop-ProcessTree {
     param([Parameter(Mandatory = $true)][int]$ProcessId)
 
@@ -85,17 +101,19 @@ while (-not $script:StopRequested) {
                 if ([Console]::KeyAvailable) {
                     $key = [Console]::ReadKey($true)
                     if ($key.Key -eq [ConsoleKey]::R) {
+                        $discardedKeys = Clear-ConsoleInputBuffer
                         Write-Host ""
                         Write-Host "[INFO] Restart requested. Stopping server..."
-                        Write-LauncherLog "restart_requested" @{ reason = "keyboard_r"; child_pid = $process.Id }
+                        Write-LauncherLog "restart_requested" @{ reason = "keyboard_r"; child_pid = $process.Id; discarded_keys = $discardedKeys }
                         $restartRequested = $true
                         Stop-ServerProcess -Process $process
                         break
                     }
                     if ($key.Key -eq [ConsoleKey]::Q) {
+                        $discardedKeys = Clear-ConsoleInputBuffer
                         Write-Host ""
                         Write-Host "[INFO] Stop requested. Stopping server..."
-                        Write-LauncherLog "stop_requested" @{ reason = "keyboard_q"; child_pid = $process.Id }
+                        Write-LauncherLog "stop_requested" @{ reason = "keyboard_q"; child_pid = $process.Id; discarded_keys = $discardedKeys }
                         $script:StopRequested = $true
                         Stop-ServerProcess -Process $process
                         break
@@ -123,6 +141,7 @@ while (-not $script:StopRequested) {
     }
 
     if ($restartRequested) {
+        Clear-ConsoleInputBuffer | Out-Null
         Write-Host "[INFO] Restarting server..."
         continue
     }

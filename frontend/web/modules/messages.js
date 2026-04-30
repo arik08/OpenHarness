@@ -437,6 +437,10 @@ function splitNamedCatalog(text, marker) {
   return source.slice(index, end === undefined ? undefined : end).trim();
 }
 
+function hasNamedCatalog(text, ...markers) {
+  return markers.some((marker) => Boolean(splitNamedCatalog(text, marker)));
+}
+
 function parseSkillCatalog(text) {
   const marker = String(text || "").includes("사용 가능한 스킬:")
     ? "사용 가능한 스킬:"
@@ -591,7 +595,7 @@ function refreshSkillCatalogs() {
 
 function createSkillCatalog(text) {
   const skills = parseSkillCatalog(text);
-  if (!skills.length && !splitNamedCatalog(text, "Available skills:")) {
+  if (!skills.length && !hasNamedCatalog(text, "Available skills:", "사용 가능한 스킬:")) {
     return null;
   }
   const details = document.createElement("details");
@@ -751,7 +755,7 @@ function createCommandCatalogContent(text) {
   if (skillCatalog) {
     wrap.append(skillCatalog);
   }
-  if (splitNamedCatalog(text, "MCP servers:")) {
+  if (hasNamedCatalog(text, "MCP servers:", "MCP 서버:")) {
     wrap.append(createExtensionCatalog({
       label: "MCP",
       items: parseMcpCatalog(text),
@@ -759,7 +763,7 @@ function createCommandCatalogContent(text) {
       requestType: "set_mcp_enabled",
     }));
   }
-  if (splitNamedCatalog(text, "Plugins:")) {
+  if (hasNamedCatalog(text, "Plugins:", "플러그인:")) {
     wrap.append(createExtensionCatalog({
       label: "Plugins",
       items: parsePluginCatalog(text),

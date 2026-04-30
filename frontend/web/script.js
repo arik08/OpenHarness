@@ -500,15 +500,19 @@ attachMessageAutoFollow();
 
 els.chatTitleButton?.addEventListener("click", startTitleEdit);
 
-els.messages?.addEventListener("click", (event) => {
+function handleChatPanelClickForArtifactPanel(event) {
   if (!state.artifactPanelOpen) {
     return;
   }
-  if (event.target.closest("button, a, input, textarea, select, [role='button']")) {
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest("button, a, input, select, [role='button']")) {
     return;
   }
   closeArtifactPanel({ skipHistory: true });
-});
+}
+
+const chatPanel = els.composer?.closest(".chat-panel") || els.messages?.closest(".chat-panel");
+chatPanel?.addEventListener("click", handleChatPanelClickForArtifactPanel);
 
 els.modalHost.addEventListener("click", (event) => {
   if (event.target === els.modalHost && els.modalHost.dataset.dismissible === "true") {
