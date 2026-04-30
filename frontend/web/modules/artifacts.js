@@ -625,9 +625,9 @@ function setArtifactFullscreen(enabled) {
   els.artifactPanelFullscreen.setAttribute("aria-pressed", enabled ? "true" : "false");
   els.artifactPanelFullscreen.setAttribute(
     "aria-label",
-    enabled ? "전체화면 해제" : "전체화면으로 보기",
+    enabled ? "산출물 미리보기 축소" : "산출물 미리보기 확대",
   );
-  els.artifactPanelFullscreen.dataset.tooltip = enabled ? "전체화면 해제" : "전체화면";
+  els.artifactPanelFullscreen.dataset.tooltip = enabled ? "미리보기 축소" : "미리보기 확대";
   els.artifactPanelFullscreen.innerHTML = enabled
     ? `
       <svg aria-hidden="true" viewBox="0 0 24 24">

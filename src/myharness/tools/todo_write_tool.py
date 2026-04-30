@@ -25,7 +25,11 @@ class TodoWriteToolInput(BaseModel):
     persist: bool = Field(default=True, description="Whether to write the checklist to disk.")
     todos: list[TodoWriteItemInput] | None = Field(
         default=None,
-        description="Full checklist to render or persist. Use this for session task progress checklists.",
+        description=(
+            "Full checklist to render or persist. Use this for session task progress checklists; "
+            "when updating progress, pass the full current checklist and check only items that "
+            "have actually completed since the prior update."
+        ),
     )
 
     @model_validator(mode="after")
@@ -39,7 +43,11 @@ class TodoWriteTool(BaseTool):
     """Add or update an item in a TODO markdown file."""
 
     name = "todo_write"
-    description = "Add a new TODO item or mark an existing one as done in a markdown checklist file."
+    description = (
+        "Add a new TODO item or update a markdown checklist. For session progress, update the "
+        "full checklist immediately after each step completes instead of marking several steps "
+        "done only at the end."
+    )
     input_model = TodoWriteToolInput
 
     async def execute(self, arguments: TodoWriteToolInput, context: ToolExecutionContext) -> ToolResult:

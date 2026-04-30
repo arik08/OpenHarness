@@ -7,6 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from myharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
+from myharness.tools.path_display import display_tool_path
 
 
 class FileWriteToolInput(BaseModel):
@@ -49,7 +50,7 @@ class FileWriteTool(BaseTool):
         if arguments.create_directories:
             path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(arguments.content, encoding="utf-8")
-        return ToolResult(output=f"Wrote {path}")
+        return ToolResult(output=f"Wrote {display_tool_path(path, context.cwd)}")
 
 
 def _resolve_path(base: Path, candidate: str) -> Path:
@@ -57,3 +58,4 @@ def _resolve_path(base: Path, candidate: str) -> Path:
     if not path.is_absolute():
         path = base / path
     return path.resolve()
+

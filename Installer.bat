@@ -118,7 +118,7 @@ if errorlevel 1 (
 )
 
 echo [INFO] Verifying Python runtime...
-call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -c "import importlib.util, sys; required=['myharness','anthropic','openai','rich','prompt_toolkit','textual','typer','pydantic','httpx','feedparser','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi','pptx','pytest']; missing=[name for name in required if importlib.util.find_spec(name) is None]; print('Missing: ' + ', '.join(missing)) if missing else None; sys.exit(1 if missing else 0)"
+call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -c "import importlib.util, sys; required=['myharness','anthropic','openai','tiktoken','rich','prompt_toolkit','textual','typer','pydantic','httpx','feedparser','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi','pptx','pytest']; missing=[name for name in required if importlib.util.find_spec(name) is None]; print('Missing: ' + ', '.join(missing)) if missing else None; sys.exit(1 if missing else 0)"
 if errorlevel 1 (
   echo.
   echo [ERROR] Python dependency verification failed.

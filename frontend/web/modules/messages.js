@@ -1216,29 +1216,42 @@ function createTodoChecklistCard(items, {
   }
   header.append(title, actions);
 
+  const appendRows = (target, { includeRunning = true } = {}) => {
+    for (const item of items) {
+      const row = document.createElement("li");
+      row.className = item.checked ? "done" : "";
+      const itemIndex = target.children.length;
+      if (includeRunning && itemIndex === runningIndex) {
+        row.classList.add("running");
+      }
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = item.checked;
+      checkbox.disabled = true;
+      const spinner = document.createElement("span");
+      spinner.className = "todo-spinner";
+      spinner.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.className = "todo-label";
+      label.textContent = item.checked ? `(완료) ${item.text}` : item.text;
+      row.append(checkbox, spinner, label);
+      target.append(row);
+    }
+  };
+
   const list = document.createElement("ul");
   list.id = listId;
   list.className = "todo-card-list";
   list.hidden = collapsed;
-  for (const item of items) {
-    const row = document.createElement("li");
-    row.className = item.checked ? "done" : "";
-    const itemIndex = list.children.length;
-    if (itemIndex === runningIndex) {
-      row.classList.add("running");
-    }
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = item.checked;
-    checkbox.disabled = true;
-    const spinner = document.createElement("span");
-    spinner.className = "todo-spinner";
-    spinner.setAttribute("aria-hidden", "true");
-    const label = document.createElement("span");
-    label.className = "todo-label";
-    label.textContent = item.checked ? `(완료) ${item.text}` : item.text;
-    row.append(checkbox, spinner, label);
-    list.append(row);
+  appendRows(list);
+
+  if (collapsed) {
+    const sizer = document.createElement("ul");
+    sizer.className = "todo-card-list todo-card-sizer";
+    sizer.setAttribute("aria-hidden", "true");
+    appendRows(sizer, { includeRunning: false });
+    card.append(header, list, sizer);
+    return card;
   }
 
   card.append(header, list);

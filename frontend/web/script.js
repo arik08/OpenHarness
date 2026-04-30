@@ -159,7 +159,7 @@ function fullscreenButtons() {
 
 function updateFullscreenButtons() {
   const active = Boolean(document.fullscreenElement);
-  const label = active ? "전체화면 해제" : "전체화면";
+  const label = active ? "브라우저 전체화면 해제" : "브라우저 전체화면";
   fullscreenButtons().forEach((button) => {
     button.setAttribute("aria-label", label);
     button.dataset.tooltip = label;
@@ -571,7 +571,7 @@ document.querySelectorAll("[data-action='toggle-theme']").forEach((button) => {
 
 document.querySelectorAll("[data-action='toggle-fullscreen']").forEach((button) => {
   button.addEventListener("click", () => {
-    toggleFullscreen().catch((error) => appendMessage("system", `전체화면 전환 실패: ${error.message}`));
+    toggleFullscreen().catch((error) => appendMessage("system", `브라우저 전체화면 전환 실패: ${error.message}`));
   });
 });
 document.addEventListener("fullscreenchange", updateFullscreenButtons);

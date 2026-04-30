@@ -51,6 +51,7 @@ async def test_file_write_read_and_edit(tmp_path: Path):
         context,
     )
     assert write_result.is_error is False
+    assert write_result.output == "Wrote notes.txt"
     assert (tmp_path / "notes.txt").exists()
 
     read_result = await FileReadTool().execute(
@@ -66,6 +67,46 @@ async def test_file_write_read_and_edit(tmp_path: Path):
     )
     assert edit_result.is_error is False
     assert "TWO" in (tmp_path / "notes.txt").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_file_write_result_hides_local_path_before_playground(tmp_path: Path):
+    workspace = tmp_path / "repo" / "Playground" / "shared" / "Default"
+    context = ToolExecutionContext(cwd=workspace)
+
+    write_result = await FileWriteTool().execute(
+        FileWriteToolInput(path="outputs/report.md", content="# Report\n"),
+        context,
+    )
+
+    assert write_result.is_error is False
+    assert write_result.output == "Wrote Playground/shared/Default/outputs/report.md"
+    assert str(tmp_path) not in write_result.output
+
+
+@pytest.mark.asyncio
+async def test_file_tool_results_hide_absolute_paths_outside_workspace(tmp_path: Path):
+    workspace = tmp_path / "repo" / "Playground" / "shared" / "Default"
+    outside = tmp_path / "external" / "notes.txt"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("alpha\n", encoding="utf-8")
+    context = ToolExecutionContext(cwd=workspace)
+
+    read_missing = await FileReadTool().execute(
+        FileReadToolInput(path=str(tmp_path / "external" / "missing.txt")),
+        context,
+    )
+    assert read_missing.is_error is True
+    assert read_missing.output == "File not found: missing.txt"
+    assert str(tmp_path) not in read_missing.output
+
+    edit_result = await FileEditTool().execute(
+        FileEditToolInput(path=str(outside), old_str="alpha", new_str="beta"),
+        context,
+    )
+    assert edit_result.is_error is False
+    assert edit_result.output == "Updated notes.txt (1 replacement(s))"
+    assert str(tmp_path) not in edit_result.output
 
 
 @pytest.mark.asyncio
@@ -258,6 +299,13 @@ async def test_todo_write_batch_can_be_session_only(tmp_path: Path):
 
     assert result.output == "- [x] inspect files\n- [ ] patch code"
     assert not (tmp_path / "TODO.md").exists()
+
+
+def test_todo_write_schema_guides_incremental_progress_updates():
+    schema = TodoWriteTool.input_model.model_json_schema()
+    assert "immediately after each step completes" in TodoWriteTool.description
+    assert "full current checklist" in schema["properties"]["todos"]["description"]
+    assert "actually completed since the prior update" in schema["properties"]["todos"]["description"]
 
 
 @pytest.mark.asyncio

@@ -328,6 +328,35 @@ function createHtmlPreview(code) {
   return preview;
 }
 
+function createPendingHtmlPreview(code) {
+  const source = String(code.textContent || "");
+  if (!source.trim()) {
+    return null;
+  }
+  const preview = document.createElement("div");
+  preview.className = "workflow-output-preview html-stream-preview";
+  const title = document.createElement("div");
+  title.className = "workflow-output-title";
+  const label = document.createElement("span");
+  label.className = "workflow-output-label";
+  label.textContent = "작성 중 - HTML preview";
+  const count = document.createElement("span");
+  count.className = "workflow-output-line-count";
+  count.textContent = `${source.length.toLocaleString()}자`;
+  const body = document.createElement("pre");
+  body.className = "workflow-output-body";
+  body.textContent = source;
+  title.append(label, count);
+  preview.append(title, body);
+  body.scrollTop = body.scrollHeight;
+  window.requestAnimationFrame(() => {
+    if (body.isConnected) {
+      body.scrollTop = body.scrollHeight;
+    }
+  });
+  return preview;
+}
+
 function enhanceCodeBlocks(element, options = {}) {
   const isStreaming = element.classList.contains("streaming-text");
   const completeStreamingHtmlSources = isStreaming
@@ -341,11 +370,19 @@ function enhanceCodeBlocks(element, options = {}) {
     if (!code) {
       return;
     }
-    if (
-      isHtmlPreviewCodeBlock(code)
-      && (!isStreaming || completeStreamingHtmlSources.has(normalizeHtmlPreviewSource(code.textContent)))
-    ) {
+    const isHtmlPreview = isHtmlPreviewCodeBlock(code);
+    const isCompleteStreamingHtml = isHtmlPreview
+      && isStreaming
+      && completeStreamingHtmlSources.has(normalizeHtmlPreviewSource(code.textContent));
+    if (isHtmlPreview && (!isStreaming || isCompleteStreamingHtml)) {
       const preview = createHtmlPreview(code);
+      if (preview) {
+        pre.replaceWith(preview);
+        return;
+      }
+    }
+    if (isHtmlPreview && isStreaming && !isCompleteStreamingHtml) {
+      const preview = createPendingHtmlPreview(code);
       if (preview) {
         pre.replaceWith(preview);
         return;

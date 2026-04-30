@@ -74,6 +74,23 @@ TOKEN_ESTIMATION_PADDING = 4 / 3
 
 # Default context windows per model family
 _DEFAULT_CONTEXT_WINDOW = 200_000
+_OPENAI_CONTEXT_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("gpt-5.5", 1_050_000),
+    ("gpt-5.4-mini", 400_000),
+    ("gpt-5.4-nano", 400_000),
+    ("gpt-5.4", 1_050_000),
+    ("gpt-5.3-codex-spark", 128_000),
+    ("gpt-5.3-codex", 400_000),
+    ("gpt-5.2-codex", 400_000),
+    ("gpt-5.2", 400_000),
+    ("gpt-5-codex", 400_000),
+    ("gpt-5-mini", 400_000),
+    ("gpt-5-nano", 400_000),
+    ("gpt-5", 400_000),
+    ("gpt-4.1", 1_047_576),
+    ("o3", 200_000),
+    ("o4-mini", 200_000),
+)
 PTL_RETRY_MARKER = "[earlier conversation truncated for compaction retry]"
 ERROR_MESSAGE_INCOMPLETE_RESPONSE = "Compaction interrupted before a complete summary was returned."
 
@@ -110,24 +127,24 @@ class CompactionResult:
 # Token estimation
 # ---------------------------------------------------------------------------
 
-def estimate_message_tokens(messages: list[ConversationMessage]) -> int:
+def estimate_message_tokens(messages: list[ConversationMessage], *, model: str | None = None) -> int:
     """Estimate total tokens for a conversation, including the 4/3 padding."""
     total = 0
     for msg in messages:
         for block in msg.content:
             if isinstance(block, TextBlock):
-                total += estimate_tokens(block.text)
+                total += estimate_tokens(block.text, model=model)
             elif isinstance(block, ToolResultBlock):
-                total += estimate_tokens(block.content)
+                total += estimate_tokens(block.content, model=model)
             elif isinstance(block, ToolUseBlock):
-                total += estimate_tokens(block.name)
-                total += estimate_tokens(str(block.input))
+                total += estimate_tokens(block.name, model=model)
+                total += estimate_tokens(str(block.input), model=model)
     return int(total * TOKEN_ESTIMATION_PADDING)
 
 
-def estimate_conversation_tokens(messages: list[ConversationMessage]) -> int:
+def estimate_conversation_tokens(messages: list[ConversationMessage], *, model: str | None = None) -> int:
     """Alias kept for backward compatibility."""
-    return estimate_message_tokens(messages)
+    return estimate_message_tokens(messages, model=model)
 
 
 def _sanitize_metadata(value: Any) -> Any:
@@ -997,6 +1014,9 @@ def get_context_window(model: str, *, context_window_tokens: int | None = None) 
     if context_window_tokens is not None and context_window_tokens > 0:
         return int(context_window_tokens)
     m = model.lower()
+    for prefix, window in _OPENAI_CONTEXT_WINDOWS:
+        if m == prefix or m.startswith(f"{prefix}-"):
+            return window
     if "opus" in m:
         return 200_000
     if "sonnet" in m:
@@ -1033,7 +1053,7 @@ def should_autocompact(
     """Return True when the conversation should be auto-compacted."""
     if state.consecutive_failures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES:
         return False
-    token_count = estimate_message_tokens(messages)
+    token_count = estimate_message_tokens(messages, model=model)
     threshold = get_autocompact_threshold(
         model,
         context_window_tokens=context_window_tokens,

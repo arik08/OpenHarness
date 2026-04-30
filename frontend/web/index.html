@@ -19,12 +19,14 @@
           <a class="brand" href="#" aria-label="MyHarness 채팅 홈">
             <span class="brand-name">MyHarness</span>
           </a>
-          <button class="fullscreen-command" type="button" data-action="toggle-fullscreen" aria-label="전체화면" data-tooltip="전체화면">
+          <button class="fullscreen-command" type="button" data-action="toggle-fullscreen" aria-label="브라우저 전체화면" data-tooltip="브라우저 전체화면">
             <svg aria-hidden="true" viewBox="0 0 24 24">
-              <path d="M8 3H5a2 2 0 0 0-2 2v3"></path>
-              <path d="M16 3h3a2 2 0 0 1 2 2v3"></path>
-              <path d="M21 16v3a2 2 0 0 1-2 2h-3"></path>
-              <path d="M8 21H5a2 2 0 0 1-2-2v-3"></path>
+              <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+              <path d="M3 8h18"></path>
+              <path d="M8 13H6v-2"></path>
+              <path d="M16 13h2v-2"></path>
+              <path d="M8 15H6v2"></path>
+              <path d="M16 15h2v2"></path>
             </svg>
           </button>
           <button class="settings-command" type="button" data-action="open-settings" aria-label="설정" data-tooltip="설정">
@@ -182,7 +184,7 @@
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
               </svg>
             </button>
-            <button class="artifact-action" type="button" id="artifactPanelFullscreen" aria-label="전체화면으로 보기" data-tooltip="전체화면">
+            <button class="artifact-action" type="button" id="artifactPanelFullscreen" aria-label="산출물 미리보기 확대" data-tooltip="미리보기 확대">
               <svg aria-hidden="true" viewBox="0 0 24 24">
                 <path d="M8 3H5a2 2 0 0 0-2 2v3"></path>
                 <path d="M16 3h3a2 2 0 0 1 2 2v3"></path>

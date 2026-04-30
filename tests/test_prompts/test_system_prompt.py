@@ -98,6 +98,8 @@ def test_build_system_prompt_plans_substantial_tasks_first():
 
     assert "For substantial tasks, share progress as a short markdown checklist" in prompt
     assert "`todo_write` with a full `todos` list and `persist=false`" in prompt
+    assert "immediately after each checklist item is actually completed" in prompt
+    assert "Do not wait until the end to mark multiple items done at once" in prompt
     assert "3+ files" in prompt
     assert "broad refactors" in prompt
     assert "Do not add a checklist for tiny, obvious, or purely informational tasks" in prompt

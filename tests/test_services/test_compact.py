@@ -23,6 +23,7 @@ from myharness.services.compact import (
     AutoCompactState,
     auto_compact_if_needed,
     get_autocompact_threshold,
+    get_context_window,
     should_autocompact,
     try_context_collapse,
     try_session_memory_compaction,
@@ -32,7 +33,8 @@ from myharness.services.compact import (
 def test_token_estimation_helpers():
     assert estimate_tokens("") == 0
     assert estimate_tokens("abcd") == 1
-    assert estimate_message_tokens(["abcd", "abcdefgh"]) == 3
+    assert estimate_tokens("안녕하세요", model="gpt-5.5") == 2
+    assert estimate_message_tokens(["abcd", "abcdefgh"]) == 2
 
 
 def test_compact_and_summarize_messages():
@@ -446,6 +448,18 @@ def test_get_autocompact_threshold_respects_manual_override():
         "claude-sonnet-4-6",
         auto_compact_threshold_tokens=12345,
     ) == 12345
+
+
+def test_get_context_window_uses_current_openai_model_limits():
+    assert get_context_window("gpt-5.5") == 1_050_000
+    assert get_context_window("gpt-5.5-pro") == 1_050_000
+    assert get_context_window("gpt-5.4") == 1_050_000
+    assert get_context_window("gpt-5.4-2026-03-17") == 1_050_000
+    assert get_context_window("gpt-5.4-mini") == 400_000
+    assert get_context_window("gpt-5.4-nano") == 400_000
+    assert get_context_window("gpt-5.3-codex-spark") == 128_000
+    assert get_context_window("gpt-5.3-codex") == 400_000
+    assert get_context_window("gpt-4.1") == 1_047_576
 
 
 def test_should_autocompact_uses_custom_context_window():

@@ -7,6 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 
 from myharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
+from myharness.tools.path_display import display_tool_path
 
 
 class FileReplacement(BaseModel):
@@ -72,7 +73,7 @@ class FileEditTool(BaseTool):
                 return ToolResult(output=f"Sandbox: {reason}", is_error=True)
 
         if not path.exists():
-            return ToolResult(output=f"File not found: {path}", is_error=True)
+            return ToolResult(output=f"File not found: {display_tool_path(path, context.cwd)}", is_error=True)
 
         original = path.read_text(encoding="utf-8")
         replacements = arguments.edits
@@ -101,7 +102,9 @@ class FileEditTool(BaseTool):
                 updated = updated.replace(edit.old_str, edit.new_str, 1)
 
         path.write_text(updated, encoding="utf-8")
-        return ToolResult(output=f"Updated {path} ({applied_count} replacement(s))")
+        return ToolResult(
+            output=f"Updated {display_tool_path(path, context.cwd)} ({applied_count} replacement(s))"
+        )
 
 
 def _resolve_path(base: Path, candidate: str) -> Path:

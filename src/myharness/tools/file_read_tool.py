@@ -7,6 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from myharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
+from myharness.tools.path_display import display_tool_path
 
 
 class FileReadToolInput(BaseModel):
@@ -45,13 +46,16 @@ class FileReadTool(BaseTool):
                 return ToolResult(output=f"Sandbox: {reason}", is_error=True)
 
         if not path.exists():
-            return ToolResult(output=f"File not found: {path}", is_error=True)
+            return ToolResult(output=f"File not found: {display_tool_path(path, context.cwd)}", is_error=True)
         if path.is_dir():
-            return ToolResult(output=f"Cannot read directory: {path}", is_error=True)
+            return ToolResult(output=f"Cannot read directory: {display_tool_path(path, context.cwd)}", is_error=True)
 
         raw = path.read_bytes()
         if b"\x00" in raw:
-            return ToolResult(output=f"Binary file cannot be read as text: {path}", is_error=True)
+            return ToolResult(
+                output=f"Binary file cannot be read as text: {display_tool_path(path, context.cwd)}",
+                is_error=True,
+            )
 
         text = raw.decode("utf-8", errors="replace")
         lines = text.splitlines()
@@ -61,7 +65,9 @@ class FileReadTool(BaseTool):
             for index, line in enumerate(selected)
         ]
         if not numbered:
-            return ToolResult(output=f"(no content in selected range for {path})")
+            return ToolResult(
+                output=f"(no content in selected range for {display_tool_path(path, context.cwd)})"
+            )
         return ToolResult(output="\n".join(numbered))
 
 
