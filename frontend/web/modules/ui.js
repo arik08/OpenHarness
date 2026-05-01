@@ -10,6 +10,7 @@ let pendingBusyLabel = "";
 let composerMetricsObserver = null;
 const BUSY_VISUAL_DELAY_MS = 280;
 const NEAR_BOTTOM_PX = 96;
+const STREAMING_REJOIN_BOTTOM_PX = 260;
 
 export function createUI(ctx) {
   const { state, els, STATUS_LABELS } = ctx;
@@ -96,7 +97,10 @@ function forgetScrollPosition(sessionId) {
 
 function isNearMessageBottom(container = els.messages) {
   const remaining = container.scrollHeight - container.clientHeight - container.scrollTop;
-  return remaining <= NEAR_BOTTOM_PX;
+  const threshold = state.assistantNode
+    ? Math.max(NEAR_BOTTOM_PX, STREAMING_REJOIN_BOTTOM_PX)
+    : NEAR_BOTTOM_PX;
+  return remaining <= threshold;
 }
 
 function stopMessagesAutoFollow(container = els.messages) {
@@ -115,6 +119,20 @@ function markMessagesUserScrollIntent() {
   userScrollIntentUntil = Date.now() + 900;
 }
 
+function resumeMessagesAutoFollow(container = els.messages) {
+  state.autoFollowMessages = true;
+  if (container !== els.messages || !state.assistantNode) {
+    return;
+  }
+  container.classList.add("streaming-follow");
+  scrollMessagesToBottom({
+    smooth: true,
+    duration: state.appSettings?.streamScrollDurationMs ?? 2000,
+    followTail: true,
+    continuous: true,
+  });
+}
+
 function updateAutoFollowFromScroll(container = els.messages) {
   if (state.restoringHistory || state.ignoreScrollSave) {
     return;
@@ -124,7 +142,9 @@ function updateAutoFollowFromScroll(container = els.messages) {
   const movedUp = Number.isFinite(previousTop) && currentTop < previousTop - 2;
   const userScrolling = Date.now() <= userScrollIntentUntil;
   const nearBottom = isNearMessageBottom(container);
-  if (userScrolling && !nearBottom) {
+  if (nearBottom) {
+    resumeMessagesAutoFollow(container);
+  } else if (userScrolling) {
     stopMessagesAutoFollow(container);
   } else if (movedUp) {
     if (userScrolling || Date.now() >= state.autoScrollUntil) {
@@ -133,7 +153,7 @@ function updateAutoFollowFromScroll(container = els.messages) {
   } else if (Date.now() < state.autoScrollUntil) {
     state.autoFollowMessages = true;
   } else {
-    state.autoFollowMessages = nearBottom;
+    state.autoFollowMessages = false;
   }
   container.dataset.lastScrollTop = String(currentTop);
 }

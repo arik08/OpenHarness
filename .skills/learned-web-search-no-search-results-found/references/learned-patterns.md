@@ -103,3 +103,38 @@
 - Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
 - Do next time: Start by applying the verified corrective path: Fetched remote content from https://github.com/anthropics/skills/tree/main/skills/pptx
 - Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 3a82a63430607281
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://github.com/Abdulbasit110/meeting-minutes-agent
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence d61cff4a244e3a27
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://github.com/aiden0z/pptx-renderer
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 0eb0fea1e192b924
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Inspected file C:\Users\[USER]\Desktop\Documents\Programing\MyHarness\.skills\design-md\SKILL.md (lines 1-1200)
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence ffa4d50ba3d9f48f
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Ran command Remove-Item -Recurse -Force .skills/pptx-deck-planner, .skills/pptx-slide-builder, .skills/pptx-visual-review -ErrorAction SilentlyContinue; git status --short [(no output)]
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 62e08a734cfb3376
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Expanded glob pattern .skills/*/SKILL.md
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.

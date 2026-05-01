@@ -768,6 +768,50 @@ async def test_backend_host_uses_effective_model_from_env_override(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_backend_host_plan_toggle_survives_state_sync(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MYHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    host._bundle = await build_runtime(
+        api_client=StaticApiClient("unused"),
+        permission_mode="full_auto",
+    )
+    events = []
+
+    async def _emit(event):
+        events.append(event)
+
+    host._emit = _emit  # type: ignore[method-assign]
+    await start_runtime(host._bundle)
+    try:
+        await host._process_line("/plan")
+
+        assert host._bundle.app_state.get().permission_mode == "plan"
+        assert host._bundle.app_state.get().plan_previous_permission_mode == "full_auto"
+        assert any(
+            event.type == "state_snapshot"
+            and event.state
+            and event.state.get("permission_mode") == "Plan Mode"
+            for event in events
+        )
+
+        await host._process_line("/plan")
+
+        assert host._bundle.app_state.get().permission_mode == "full_auto"
+        assert host._bundle.app_state.get().plan_previous_permission_mode == ""
+        assert any(
+            event.type == "state_snapshot"
+            and event.state
+            and event.state.get("permission_mode") == "Auto"
+            for event in events
+        )
+    finally:
+        await close_runtime(host._bundle)
+
+
+@pytest.mark.asyncio
 async def test_build_runtime_leaves_interactive_sessions_unbounded_by_default(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MYHARNESS_CONFIG_DIR", str(tmp_path / "config"))

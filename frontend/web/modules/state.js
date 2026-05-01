@@ -148,6 +148,7 @@ export const state = {
   providerLabel: "",
   permissionMode: "-",
   planModePinned: null,
+  lastNonPlanPermissionMode: "",
   yoloModeEnabled: true,
   systemPrompt: localStorage.getItem("myharness:systemPrompt") || "",
   learnedSkillsMode: "hide",
@@ -358,11 +359,22 @@ export function updateState(snapshot = {}) {
   state.provider = snapshot.active_profile || snapshot.provider || "-";
   state.providerLabel = snapshot.provider_label || state.providerLabel || "";
   const snapshotPermissionMode = snapshot.permission_mode || "-";
-  state.permissionMode = state.planModePinned === null
-    ? snapshotPermissionMode
-    : state.planModePinned
-      ? "Plan Mode"
-      : "Default";
+  if (snapshotPermissionMode !== "-") {
+    const snapshotIsPlan = isPlanPermissionMode(snapshotPermissionMode);
+    if (state.planModePinned !== null && state.planModePinned !== snapshotIsPlan) {
+      state.permissionMode = state.planModePinned ? "Plan Mode" : fallbackNonPlanPermissionMode();
+    } else {
+      state.planModePinned = null;
+      state.permissionMode = snapshotPermissionMode;
+    }
+    if (!snapshotIsPlan) {
+      state.lastNonPlanPermissionMode = snapshotPermissionMode;
+    }
+  } else if (state.planModePinned === true) {
+    state.permissionMode = "Plan Mode";
+  } else if (state.planModePinned === false) {
+    state.permissionMode = fallbackNonPlanPermissionMode();
+  }
   const providerLabel = state.providerLabel || formatProviderName(state.provider);
   const modelLabel = state.model || "-";
   const effortLabel = formatEffort(state.effort);
@@ -376,8 +388,16 @@ export function updateState(snapshot = {}) {
 }
 
 export function setPlanModeIndicatorActive(active) {
-  state.planModePinned = Boolean(active);
-  state.permissionMode = active ? "Plan Mode" : "Default";
+  if (active) {
+    if (!isPlanPermissionMode(state.permissionMode) && state.permissionMode !== "-") {
+      state.lastNonPlanPermissionMode = state.permissionMode;
+    }
+    state.planModePinned = true;
+    state.permissionMode = "Plan Mode";
+  } else {
+    state.planModePinned = false;
+    state.permissionMode = fallbackNonPlanPermissionMode();
+  }
   updatePlanModeIndicator();
 }
 
@@ -386,9 +406,18 @@ function updatePlanModeIndicator() {
     return;
   }
   const mode = String(state.permissionMode || "").trim().toLowerCase().replace(/\s+/g, "_");
-  const active = mode === "plan" || mode === "plan_mode" || mode === "permissionmode.plan";
+  const active = isPlanPermissionMode(mode);
   els.planModeIndicator.classList.toggle("hidden", !active);
   els.planModeIndicator.setAttribute("aria-pressed", active ? "true" : "false");
+}
+
+function isPlanPermissionMode(value) {
+  const mode = String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
+  return mode === "plan" || mode === "plan_mode" || mode === "permissionmode.plan";
+}
+
+function fallbackNonPlanPermissionMode() {
+  return state.lastNonPlanPermissionMode || (state.yoloModeEnabled === false ? "default" : "full_auto");
 }
 
 export function formatProviderName(value) {

@@ -21,7 +21,7 @@ from myharness.api.pgpt_auth import (
 from myharness.api.provider import auth_status, detect_provider
 from myharness.bridge import get_bridge_manager
 from myharness.commands import CommandContext, CommandResult, create_default_command_registry
-from myharness.config import get_config_file_path, load_settings
+from myharness.config import Settings, get_config_file_path, load_settings
 from myharness.engine import QueryEngine
 from myharness.engine.messages import (
     ConversationMessage,
@@ -513,9 +513,10 @@ def sync_app_state(bundle: RuntimeBundle) -> None:
     if bundle.enforce_max_turns:
         bundle.engine.set_max_turns(settings.max_turns)
     provider = detect_provider(settings)
+    permission_mode = _active_runtime_permission_mode(bundle, settings)
     bundle.app_state.set(
         model=settings.model,
-        permission_mode=settings.permission.mode.value,
+        permission_mode=permission_mode,
         theme=settings.theme,
         cwd=bundle.cwd,
         provider=provider.name,
@@ -534,6 +535,14 @@ def sync_app_state(bundle: RuntimeBundle) -> None:
         output_style=settings.output_style,
         keybindings=load_keybindings(),
     )
+
+
+def _active_runtime_permission_mode(bundle: RuntimeBundle, settings: Settings) -> str:
+    checker_settings = getattr(getattr(bundle.engine, "_permission_checker", None), "_settings", None)
+    checker_mode = getattr(checker_settings, "mode", None)
+    if checker_mode is not None:
+        return getattr(checker_mode, "value", str(checker_mode))
+    return settings.permission.mode.value
 
 
 def refresh_runtime_client(bundle: RuntimeBundle) -> None:
