@@ -68,3 +68,17 @@
 - Lesson: A repeated failure was observed and later verified as resolved: web_fetch: web_fetch failed: Client error '403 Forbidden' for url 'https://abc.xyz/investor/events/event-details/2026/2026-Q1-Earnings-Call-2026-nW8kCrBAKS/default.aspx'
 - Do next time: Start by applying the verified corrective path: Inspected file C:\Users\[USER]\Desktop\Documents\Programing\MyHarness\.skills\design-md\references\catalog.json (lines 1-2000)
 - Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 578280e3e2a6147c
+- Confidence: 0.85
+- Signature: `web-fetch-web-fetch-failed-client-error-403-forbidden-for-url-https-www-datacent`
+- Lesson: A repeated failure was observed and later verified as resolved: web_fetch: web_fetch failed: Client error '403 Forbidden' for url 'https://www.datacenterdynamics.com/en/news/meta-signs-deal-with-oracle-cloud-for-ai-training/'
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://www.oracle.com/news/announcement/ai-innovators-worldwide-choose-oracle-for-ai-training-and-inferencing-2025-06-18/
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 60cbcabccf15b01f
+- Confidence: 0.85
+- Signature: `web-fetch-web-fetch-failed-client-error-403-forbidden-for-url-https-openai-com-i`
+- Lesson: A repeated failure was observed and later verified as resolved: web_fetch: web_fetch failed: Client error '403 Forbidden' for url 'https://openai.com/index/five-new-stargate-sites/'
+- Do next time: Start by applying the verified corrective path: Ran web search for OpenAI Oracle data center delays denied 2026 2025 March The Register DCD
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
