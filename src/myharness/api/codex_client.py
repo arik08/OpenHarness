@@ -418,7 +418,7 @@ class CodexApiClient:
         if isinstance(exc, RequestFailure):
             message = str(exc).lower()
             return any(term in message for term in ["timeout", "connect", "network", "rate", "overloaded"])
-        if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
             return True
         return False
 

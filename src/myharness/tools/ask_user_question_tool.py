@@ -24,7 +24,12 @@ class AskUserQuestionChoice(BaseModel):
 class AskUserQuestionToolInput(BaseModel):
     """Arguments for asking the user a question."""
 
-    question: str = Field(description="The exact question to ask the user")
+    question: str = Field(
+        description=(
+            "The exact question to ask the user. Batch all necessary clarification into this "
+            "one question instead of asking a series of small follow-ups."
+        )
+    )
     choices: list[AskUserQuestionChoice] = Field(
         default_factory=list,
         description=(
@@ -39,7 +44,15 @@ class AskUserQuestionTool(BaseTool):
     """Ask the interactive user a question and return the answer."""
 
     name = "ask_user_question"
-    description = "Ask the interactive user a follow-up question and return the answer."
+    description = (
+        "Ask the interactive user a follow-up question and return the answer. Use this only "
+        "when the missing information would make the work meaningfully wrong, destructive, "
+        "or wasteful. If a reasonable default exists, state the assumption and proceed. When "
+        "a question is necessary, batch the choices into one prompt and avoid approval-only "
+        "questions like asking whether to proceed after a reasonable plan. After the user "
+        "answers, continue the original task without restating the plan or asking for another "
+        "confirmation unless there is a new concrete blocker."
+    )
     input_model = AskUserQuestionToolInput
 
     def is_read_only(self, arguments: AskUserQuestionToolInput) -> bool:

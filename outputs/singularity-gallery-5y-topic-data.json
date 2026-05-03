@@ -1,0 +1,70 @@
+{
+  "generated_at": "2026-05-04",
+  "scope": "DCInside thesingularity gallery 중심, 공개 접근 가능 표본 기반",
+  "years": ["2021", "2022", "2023", "2024", "2025", "2026.1-5"],
+  "topic_series": [
+    {
+      "name": "LLM/GPT·챗봇",
+      "values": [15, 46, 94, 90, 93, 92],
+      "keywords": ["GPT", "ChatGPT", "GPT-4", "GPT-5", "o1", "바이브코딩"]
+    },
+    {
+      "name": "AGI·ASI 시기 예측",
+      "values": [72, 78, 86, 82, 89, 91],
+      "keywords": ["AGI", "ASI", "특이점", "2028 AGI", "온건한 특이점"]
+    },
+    {
+      "name": "이미지·영상 생성 AI",
+      "values": [12, 76, 74, 84, 67, 64],
+      "keywords": ["스테이블 디퓨전", "DALL-E 3", "Sora", "이미지", "영상"]
+    },
+    {
+      "name": "로봇·자동화·일자리",
+      "values": [38, 44, 50, 60, 78, 83],
+      "keywords": ["로봇", "휴머노이드", "월드모델", "일자리", "노동해방"]
+    },
+    {
+      "name": "모델 경쟁·오픈소스·중국",
+      "values": [18, 24, 48, 73, 90, 91],
+      "keywords": ["Claude", "Gemini", "Grok", "DeepSeek", "오픈소스", "중국"]
+    },
+    {
+      "name": "안전성·규제·윤리",
+      "values": [40, 46, 63, 69, 76, 79],
+      "keywords": ["안전", "규제", "Superalignment", "검열", "악용", "데이터 오염"]
+    }
+  ],
+  "sentiment_series": [
+    { "name": "기대·가속론", "values": [76, 82, 88, 82, 86, 84] },
+    { "name": "회의·피로감", "values": [38, 44, 50, 61, 58, 55] },
+    { "name": "실용화·업무 적용", "values": [15, 28, 56, 68, 78, 82] },
+    { "name": "경쟁/성능 비교", "values": [18, 25, 50, 78, 88, 90] }
+  ],
+  "turning_points": [
+    {
+      "period": "2022 하반기",
+      "label": "이미지 생성과 ChatGPT의 대중 충격",
+      "summary": "Stable Diffusion 실사용 질문과 ChatGPT 초기 성능 실험이 동시에 등장하면서, 추상적 특이점 담론이 체험형 AI 담론으로 바뀌기 시작했습니다."
+    },
+    {
+      "period": "2023",
+      "label": "GPT-4 이후 LLM 중심 재편",
+      "summary": "GPT-4, AGI 타임라인, 멀티모달, DALL-E 3, AI 논문 요약 글이 늘며 갤러리의 기본 언어가 LLM 중심으로 재편되었습니다."
+    },
+    {
+      "period": "2024",
+      "label": "멀티모달·추론모델·경쟁구도",
+      "summary": "GPT-4o, o1, Gemini, Claude, Sora 논의가 겹치며 단일 모델 기대보다 모델별 장단점 비교가 두드러졌습니다."
+    },
+    {
+      "period": "2025",
+      "label": "GPT-5와 경쟁사, 실용화 리스크",
+      "summary": "GPT-5 기대와 출시, Gemini 급부상, Claude/API 갈등, DeepSeek·중국 모델, 일자리·악용·규제 논의가 같이 커졌습니다."
+    },
+    {
+      "period": "2026.1-5",
+      "label": "고빈도 업데이트와 생활 밀착 사용",
+      "summary": "GPT 5.5, Gemini/Claude 비교, 코딩·업무 자동화·이미지 탭 같은 일상 사용 이슈가 매우 촘촘하게 올라오는 양상입니다."
+    }
+  ]
+}

@@ -175,6 +175,7 @@ class ReactBackendHost:
         self._running = True
         # Track last tool input per name for rich event emission
         self._last_tool_inputs: dict[str, dict] = {}
+        self._history_events: list[dict[str, object]] = []
         self._async_agent_monitor_task: asyncio.Task[None] | None = None
 
     async def run(self) -> int:
@@ -519,9 +520,21 @@ class ReactBackendHost:
                 BackendEvent(type="transcript_item", item=TranscriptItem(role="system", text=message))
             )
 
-        tool_progress_tasks: dict[str, list[asyncio.Task[None]]] = {}
+        tool_progress_tasks: dict[str, asyncio.Task[None]] = {}
 
-        async def _tool_progress_loop(tool_name: str, tool_input: dict[str, object] | None) -> None:
+        def _tool_progress_key(tool_name: str, tool_call_id: str | None, tool_call_index: int | None) -> str:
+            if tool_call_id:
+                return tool_call_id
+            if tool_call_index is not None:
+                return f"{tool_name}:{tool_call_index}"
+            return tool_name
+
+        async def _tool_progress_loop(
+            tool_name: str,
+            tool_input: dict[str, object] | None,
+            tool_call_id: str | None,
+            tool_call_index: int | None,
+        ) -> None:
             started_at = time.monotonic()
             await asyncio.sleep(_TOOL_PROGRESS_FIRST_DELAY_SECONDS)
             while True:
@@ -530,27 +543,37 @@ class ReactBackendHost:
                     BackendEvent(
                         type="tool_progress",
                         tool_name=tool_name,
+                        tool_call_id=tool_call_id,
+                        tool_call_index=tool_call_index,
                         tool_input=tool_input or {},
                         message=_tool_progress_message(tool_name, tool_input, elapsed),
                     )
                 )
                 await asyncio.sleep(_TOOL_PROGRESS_INTERVAL_SECONDS)
 
-        def _start_tool_progress(tool_name: str, tool_input: dict[str, object] | None) -> None:
-            task = asyncio.create_task(_tool_progress_loop(tool_name, tool_input))
-            tool_progress_tasks.setdefault(tool_name, []).append(task)
+        def _start_tool_progress(
+            tool_name: str,
+            tool_input: dict[str, object] | None,
+            tool_call_id: str | None,
+            tool_call_index: int | None,
+        ) -> None:
+            task = asyncio.create_task(_tool_progress_loop(tool_name, tool_input, tool_call_id, tool_call_index))
+            tool_progress_tasks[_tool_progress_key(tool_name, tool_call_id, tool_call_index)] = task
 
-        async def _stop_tool_progress(tool_name: str) -> None:
-            tasks = tool_progress_tasks.pop(tool_name, [])
+        async def _stop_tool_progress(tool_name: str, tool_call_id: str | None, tool_call_index: int | None) -> None:
+            task = tool_progress_tasks.pop(_tool_progress_key(tool_name, tool_call_id, tool_call_index), None)
+            if not task:
+                return
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        async def _stop_all_tool_progress() -> None:
+            tasks = list(tool_progress_tasks.values())
+            tool_progress_tasks.clear()
             for task in tasks:
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
-
-        async def _stop_all_tool_progress() -> None:
-            tool_names = list(tool_progress_tasks)
-            for tool_name in tool_names:
-                await _stop_tool_progress(tool_name)
 
         async def _render_event(event: StreamEvent) -> None:
             if isinstance(event, AssistantTextDelta):
@@ -592,11 +615,13 @@ class ReactBackendHost:
                 return
             if isinstance(event, ToolExecutionStarted):
                 self._last_tool_inputs[event.tool_name] = event.tool_input or {}
-                _start_tool_progress(event.tool_name, event.tool_input or {})
+                _start_tool_progress(event.tool_name, event.tool_input or {}, event.tool_use_id, event.index)
                 await self._emit(
                     BackendEvent(
                         type="tool_started",
                         tool_name=event.tool_name,
+                        tool_call_id=event.tool_use_id,
+                        tool_call_index=event.index,
                         tool_input=event.tool_input,
                         item=TranscriptItem(
                             role="tool",
@@ -608,11 +633,13 @@ class ReactBackendHost:
                 )
                 return
             if isinstance(event, ToolExecutionCompleted):
-                await _stop_tool_progress(event.tool_name)
+                await _stop_tool_progress(event.tool_name, event.tool_use_id, event.index)
                 await self._emit(
                     BackendEvent(
                         type="tool_completed",
                         tool_name=event.tool_name,
+                        tool_call_id=event.tool_use_id,
+                        tool_call_index=event.index,
                         output=event.output,
                         is_error=event.is_error,
                         item=TranscriptItem(
@@ -686,7 +713,15 @@ class ReactBackendHost:
             self._ensure_async_agent_monitor()
             if first_token != "/clear" and not quiet and not is_internal_task_notification:
                 await self._maybe_update_session_title()
-            await self._emit(BackendEvent(type="line_complete", quiet=quiet))
+            await self._emit(
+                BackendEvent(
+                    type="line_complete",
+                    quiet=quiet,
+                    compact_metadata={
+                        "workflow_duration_seconds": self._bundle.engine.tool_metadata.get("workflow_duration_seconds")
+                    },
+                )
+            )
             return should_continue
         finally:
             await _stop_all_tool_progress()
@@ -743,6 +778,7 @@ class ReactBackendHost:
             usage=self._bundle.engine.total_usage,
             session_id=self._bundle.session_id,
             tool_metadata=metadata,
+            history_events=self._history_events,
         )
 
     async def _generate_session_title(self, messages: list[ConversationMessage]) -> str:
@@ -823,6 +859,7 @@ class ReactBackendHost:
         session_id = uuid4().hex[:12]
         self._reset_session_scoped_metadata()
         self._set_saved_session_id(session_id)
+        self._history_events = []
         return session_id
 
     def _restore_session_tool_metadata(self, snapshot: dict[str, object]) -> None:
@@ -849,6 +886,7 @@ class ReactBackendHost:
             usage=self._bundle.engine.total_usage,
             session_id=self._bundle.session_id,
             tool_metadata=metadata,
+            history_events=[],
         )
 
     def _save_current_session_snapshot(self) -> None:
@@ -861,6 +899,7 @@ class ReactBackendHost:
             usage=self._bundle.engine.total_usage,
             session_id=self._bundle.session_id,
             tool_metadata=self._bundle.engine.tool_metadata,
+            history_events=self._history_events,
         )
 
     def _skill_snapshots(self) -> list[SkillSnapshot]:
@@ -1053,6 +1092,14 @@ class ReactBackendHost:
         messages = sanitize_conversation_messages(
             [ConversationMessage.model_validate(item) for item in snapshot.get("messages", [])]
         )
+        history_events = snapshot.get("history_events")
+        if not isinstance(history_events, list) or not history_events:
+            history_events = self._history_events_from_messages(messages)
+        self._history_events = [
+            dict(item)
+            for item in history_events
+            if isinstance(item, dict) and str(item.get("type") or "").strip()
+        ]
         self._bundle.engine.load_messages(messages)
         self._restore_session_tool_metadata(snapshot)
         self._set_saved_session_id(selected)
@@ -1067,7 +1114,7 @@ class ReactBackendHost:
                         snapshot.get("tool_metadata", {}) if isinstance(snapshot.get("tool_metadata"), dict) else {}
                     ).get("workflow_duration_seconds")
                 },
-                history_events=self._history_events_from_messages(messages),
+                history_events=self._history_events,
             )
         )
         await self._emit(self._status_snapshot())
@@ -1235,6 +1282,10 @@ class ReactBackendHost:
             await self._emit(BackendEvent(type="error", message="Missing session id"))
             return
         deleted = self._bundle.session_backend.delete_by_id(self._bundle.cwd, session_id)
+        if self._bundle.session_id == session_id:
+            new_session_id = self._start_new_saved_session()
+            deleted = True
+            await self._emit(BackendEvent(type="active_session", value=new_session_id))
         if not deleted:
             await self._emit(BackendEvent(type="error", message=f"Session not found: {session_id}"))
             return
@@ -1280,6 +1331,7 @@ class ReactBackendHost:
             usage=self._bundle.engine.total_usage,
             session_id=self._bundle.session_id,
             tool_metadata=metadata,
+            history_events=self._history_events,
         )
         await self._emit(BackendEvent(type="session_title", message=title))
 
@@ -1678,8 +1730,61 @@ class ReactBackendHost:
         finally:
             self._question_requests.pop(request_id, None)
 
+    def _append_history_event(self, event: dict[str, object]) -> None:
+        if not str(event.get("type") or "").strip():
+            return
+        self._history_events.append(event)
+        if len(self._history_events) > 1000:
+            self._history_events = self._history_events[-1000:]
+
+    def _record_history_event(self, event: BackendEvent) -> None:
+        if event.type == "transcript_item" and event.item is not None:
+            item = event.item
+            text = item.text.strip()
+            if not text:
+                return
+            if item.role == "user":
+                payload: dict[str, object] = {"type": "user", "text": text}
+                if item.kind:
+                    payload["kind"] = item.kind
+                self._append_history_event(payload)
+            elif item.role == "assistant":
+                self._append_history_event({"type": "assistant", "text": text})
+            return
+
+        if event.type == "assistant_complete":
+            text = (event.message or "").strip()
+            if text:
+                self._append_history_event(
+                    {
+                        "type": "assistant",
+                        "text": text,
+                        "has_tool_uses": bool(event.has_tool_uses),
+                    }
+                )
+            return
+
+        if event.type in {"tool_started", "tool_progress", "tool_completed"}:
+            payload = {
+                "type": event.type,
+                "tool_name": event.tool_name or "",
+            }
+            if event.tool_call_id:
+                payload["tool_call_id"] = event.tool_call_id
+            if event.tool_call_index is not None:
+                payload["tool_call_index"] = event.tool_call_index
+            if event.tool_input:
+                payload["tool_input"] = event.tool_input
+            if event.type == "tool_progress" and event.message:
+                payload["message"] = event.message
+            if event.type == "tool_completed":
+                payload["output"] = event.output or ""
+                payload["is_error"] = bool(event.is_error)
+            self._append_history_event(payload)
+
     async def _emit(self, event: BackendEvent) -> None:
         log.debug("emit event: type=%s tool=%s", event.type, getattr(event, "tool_name", None))
+        self._record_history_event(event)
         async with self._write_lock:
             payload = _PROTOCOL_PREFIX + event.model_dump_json() + "\n"
             buffer = getattr(sys.stdout, "buffer", None)

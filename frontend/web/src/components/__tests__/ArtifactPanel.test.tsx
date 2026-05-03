@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ArtifactPanel } from "../ArtifactPanel";
+import { ArtifactPanel, clampArtifactPanelWidth } from "../ArtifactPanel";
 import { AppStateProvider, useAppState } from "../../state/app-state";
 import { initialAppState } from "../../state/reducer";
 import { deleteArtifact, listProjectFiles, organizeProjectFiles, readArtifact } from "../../api/artifacts";
@@ -126,6 +126,101 @@ describe("ArtifactPanel", () => {
       window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
     });
     await waitFor(() => expect(screen.queryByText("report.html")).toBeNull());
+  });
+
+  it("uses the close button as detail-to-list, then list-to-closed", async () => {
+    const backSpy = vi.spyOn(history, "back");
+    vi.mocked(listProjectFiles).mockResolvedValue({
+      scope: "default",
+      files: [
+        {
+          path: "outputs/report.html",
+          name: "report.html",
+          kind: "html",
+          size: 42,
+        },
+      ],
+    });
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          artifactPanelOpen: true,
+          artifacts: [
+            {
+              path: "outputs/report.html",
+              name: "report.html",
+              kind: "html",
+              size: 42,
+            },
+          ],
+        }}
+      >
+        <ArtifactPanel />
+      </AppStateProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "report.html 열기" }));
+    await screen.findByTitle("report.html");
+
+    await userEvent.click(screen.getByRole("button", { name: "닫기" }));
+    await screen.findByRole("button", { name: "report.html 열기" });
+    expect(screen.queryByTitle("report.html")).toBeNull();
+    expect(backSpy).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "닫기" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "report.html 열기" })).toBeNull());
+    expect(history.state).toBeNull();
+    expect(backSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not reopen a previous artifact when closing from the list", async () => {
+    vi.mocked(listProjectFiles).mockResolvedValue({
+      scope: "default",
+      files: [
+        {
+          path: "outputs/report.html",
+          name: "report.html",
+          kind: "html",
+          size: 42,
+        },
+      ],
+    });
+    history.replaceState({
+      myharnessArtifactPanel: true,
+      view: "detail",
+      path: "outputs/previous.html",
+      name: "previous.html",
+      kind: "html",
+    }, "", window.location.href);
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          artifactPanelOpen: true,
+          activeArtifact: null,
+          artifacts: [
+            {
+              path: "outputs/report.html",
+              name: "report.html",
+              kind: "html",
+              size: 42,
+            },
+          ],
+        }}
+      >
+        <ArtifactPanel />
+      </AppStateProvider>,
+    );
+
+    await screen.findByRole("button", { name: "report.html 열기" });
+    await userEvent.click(screen.getByRole("button", { name: "닫기" }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "report.html 열기" })).toBeNull());
+    expect(readArtifact).not.toHaveBeenCalledWith(expect.objectContaining({ path: "outputs/previous.html" }));
+    expect(history.state).toBeNull();
   });
 
   it("renders markdown artifacts by default and shows raw markdown only in source mode", async () => {
@@ -269,6 +364,37 @@ describe("ArtifactPanel", () => {
     expect(code?.classList.contains("hljs")).toBe(true);
     expect(code?.querySelector(".hljs-keyword")?.textContent).toBe("def");
     expect(code?.textContent).toContain("return");
+  });
+
+  it("shows a visible download button for unsupported document previews", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          artifactPanelOpen: true,
+          clientId: "client-a",
+          sessionId: "session-a",
+          workspacePath: "C:/repo",
+          workspaceName: "repo",
+          activeArtifact: {
+            path: "outputs/namuwiki-history-report.pptx",
+            name: "namuwiki-history-report.pptx",
+            kind: "file",
+            label: "PPTX",
+            size: 42,
+          },
+          activeArtifactPayload: { kind: "file" },
+        }}
+      >
+        <ArtifactPanel />
+      </AppStateProvider>,
+    );
+
+    expect(screen.getByText("이 파일 형식은 미리보기 대신 다운로드로 열 수 있습니다.")).toBeTruthy();
+    const download = screen.getByRole("link", { name: "namuwiki-history-report.pptx 다운로드" });
+    expect(download).toBeTruthy();
+    expect(download.getAttribute("download")).toBe("namuwiki-history-report.pptx");
+    expect(decodeURIComponent(download.getAttribute("href") || "")).toContain("path=outputs/namuwiki-history-report.pptx");
   });
 
   it("requires a second click before deleting a project file from the list", async () => {
@@ -459,5 +585,9 @@ describe("ArtifactPanel", () => {
     });
 
     expect(screen.getByLabelText("resize state").textContent).toBe("false:520");
+  });
+
+  it("keeps enough chat width visible when the artifact panel is resized wide", () => {
+    expect(clampArtifactPanelWidth(1420, { windowWidth: 1200, sidebarCollapsed: false })).toBe(632);
   });
 });

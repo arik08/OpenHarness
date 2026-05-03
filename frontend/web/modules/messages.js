@@ -79,6 +79,15 @@ function formatWorkflowTokenCount(tokens) {
   return `${count} 토큰`;
 }
 
+function countWorkflowPreviewLines(text) {
+  const value = String(text || "");
+  return value ? value.replace(/\r\n/g, "\n").split("\n").length : 0;
+}
+
+function formatWorkflowContentCount(text, tokens) {
+  return `${formatWorkflowTokenCount(tokens)} (${countWorkflowPreviewLines(text).toLocaleString()}줄)`;
+}
+
 function workflowInputValue(input, keys) {
   for (const key of keys) {
     if (Object.prototype.hasOwnProperty.call(input || {}, key) && input[key] !== null && input[key] !== undefined) {
@@ -204,7 +213,7 @@ async function refreshWorkflowPreviewTokenCount(preview, options = {}) {
     preview.tokenExactCount = Number(payload.tokens) || 0;
     const parts = ensureWorkflowPreviewTitleParts(preview.node);
     if (parts) {
-      parts.count.textContent = formatWorkflowTokenCount(preview.tokenExactCount);
+      parts.count.textContent = formatWorkflowContentCount(text, preview.tokenExactCount);
     }
   } catch {
     // Keep the local estimate visible if the tokenizer request is interrupted.
@@ -221,7 +230,7 @@ function updateWorkflowPreviewLineCount(preview, text = preview?.body?.textConte
   if (!value) {
     window.clearTimeout(preview.tokenTimer);
     preview.tokenTimer = 0;
-    parts.count.textContent = "0 토큰";
+    parts.count.textContent = "0 토큰 (0줄)";
     return;
   }
   if (preview.kind === "diff") {
@@ -233,10 +242,10 @@ function updateWorkflowPreviewLineCount(preview, text = preview?.body?.textConte
     return;
   }
   if (preview.tokenExactText === value) {
-    parts.count.textContent = formatWorkflowTokenCount(preview.tokenExactCount);
+    parts.count.textContent = formatWorkflowContentCount(value, preview.tokenExactCount);
     return;
   }
-  parts.count.textContent = formatWorkflowTokenCount(estimateTextTokens(value));
+  parts.count.textContent = formatWorkflowContentCount(value, estimateTextTokens(value));
 }
 
 function scrollWorkflowPreviewToBottom(preview) {

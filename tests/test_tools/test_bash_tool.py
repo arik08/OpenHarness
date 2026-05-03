@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -195,6 +196,42 @@ async def test_bash_tool_uses_devnull_stdin_for_non_interactive_shell(monkeypatc
     assert result.is_error is False
     assert seen_kwargs["stdin"] == asyncio.subprocess.DEVNULL
     assert seen_kwargs["prefer_pty"] is True
+
+
+@pytest.mark.asyncio
+async def test_bash_tool_adds_skill_root_for_python_module_commands(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("MYHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    skill_root = tmp_path / ".skills" / "insane-search"
+    (skill_root / "engine").mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: insane-search\ndescription: Fetch chain\n---\n",
+        encoding="utf-8",
+    )
+    (skill_root / "engine" / "__main__.py").write_text("print('ok')\n", encoding="utf-8")
+
+    process = _FakeProcess(
+        stdout=_FakeStdout([b"ok\n", b""]),
+        returncode=0,
+    )
+    seen_kwargs: dict[str, object] = {}
+
+    async def fake_create_shell_subprocess(*args, **kwargs):
+        del args
+        seen_kwargs.update(kwargs)
+        return process
+
+    monkeypatch.setitem(BashTool.execute.__globals__, "create_shell_subprocess", fake_create_shell_subprocess)
+
+    result = await BashTool().execute(
+        BashToolInput(command="python -m engine --help"),
+        ToolExecutionContext(cwd=tmp_path),
+    )
+
+    assert result.is_error is False
+    env = seen_kwargs["env"]
+    assert isinstance(env, dict)
+    assert str(skill_root.resolve()) in str(env["PYTHONPATH"]).split(os.pathsep)
 
 
 def test_bash_tool_decodes_windows_cp949_output():

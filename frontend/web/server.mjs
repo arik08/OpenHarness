@@ -254,6 +254,21 @@ function normalizeClientAddress(value) {
   return address.replace(/^\[|\]$/g, "");
 }
 
+function isLoopbackAddress(value) {
+  const address = normalizeClientAddress(value).toLowerCase();
+  return address === "localhost" || address === "::1" || address === "0:0:0:0:0:0:0:1" || address.startsWith("127.");
+}
+
+function requireLocalAdminRequest(request, message = "This action can only be performed from the local MyHarness host") {
+  const peerAddress = normalizeClientAddress(request.socket?.remoteAddress || "");
+  const forwardedAddress = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  if (!isLoopbackAddress(peerAddress) || (forwardedAddress && !isLoopbackAddress(forwardedAddress))) {
+    const error = new Error(message);
+    error.status = 403;
+    throw error;
+  }
+}
+
 function safeWorkspaceScopeName(value) {
   const name = normalizeClientAddress(value).replace(/[^A-Za-z0-9._-]/g, "_").replace(/_+/g, "_");
   return name || "127.0.0.1";
@@ -663,6 +678,23 @@ function sessionFromIdForClient(sessionId, clientId) {
   const session = sessions.get(sessionId);
   if (session) {
     assertClientOwnsSession(session, clientId);
+  }
+  return session;
+}
+
+function ownedActiveSessionFromIdForClient(sessionId, clientId, message = "Action requires an active session owned by this client") {
+  const id = String(sessionId || "").trim();
+  const actualClientId = String(clientId || "").trim();
+  if (!id || !actualClientId) {
+    throw new SessionAccessError(message);
+  }
+  const session = sessions.get(id);
+  if (!session || session.shuttingDown) {
+    throw new SessionAccessError(message);
+  }
+  assertClientOwnsSession(session, actualClientId);
+  if (!String(session.clientId || "").trim()) {
+    throw new SessionAccessError(message);
   }
   return session;
 }
@@ -1960,6 +1992,42 @@ function workspaceFromHistoryRequest(paramsOrBody = {}, scope = defaultWorkspace
   return workspacePathFromName(defaultWorkspaceName, scope);
 }
 
+function sessionBelongsToWorkspace(session, workspace) {
+  const sessionPath = String(session?.workspace?.path || "").trim();
+  const workspacePath = String(workspace?.path || "").trim();
+  if (sessionPath && workspacePath) {
+    return sessionPath === workspacePath;
+  }
+  const sessionName = String(session?.workspace?.name || "").trim();
+  const workspaceName = String(workspace?.name || "").trim();
+  if (sessionName && workspaceName) {
+    return sessionName === workspaceName;
+  }
+  return true;
+}
+
+function detachDeletedSavedSession(workspace, sessionId) {
+  const cleanId = String(sessionId || "").trim();
+  if (!cleanId) {
+    return;
+  }
+  for (const session of sessions.values()) {
+    if (String(session.savedSessionId || "").trim() !== cleanId || !sessionBelongsToWorkspace(session, workspace)) {
+      continue;
+    }
+    session.savedSessionId = "";
+    try {
+      sendBackend(session, { type: "delete_session", value: cleanId });
+    } catch (error) {
+      writeRuntimeLog("history_delete_detach_failed", {
+        session_id: session.id,
+        saved_session_id: cleanId,
+        error: errorPayload(error),
+      });
+    }
+  }
+}
+
 async function deleteWorkspaceHistoryItem(workspace, sessionId) {
   const cleanId = String(sessionId || "").trim();
   if (!cleanId) {
@@ -2712,6 +2780,7 @@ async function createBackendSession(options = {}) {
     clientAddress,
     busy: false,
     savedSessionId: "",
+    title: "",
     shuttingDown: false,
     clientCloseTimer: null,
     forceKillTimer: null,
@@ -2787,6 +2856,9 @@ function updateSessionStateFromBackendEvent(session, event) {
   if (event.type === "active_session") {
     session.savedSessionId = String(event.value || "").trim();
   }
+  if (event.type === "session_title") {
+    session.title = String(event.message ?? event.value ?? "").trim();
+  }
   if (
     event.type === "status" ||
     event.type === "tool_started" ||
@@ -2806,6 +2878,7 @@ function liveSessionPayload(session) {
   return {
     sessionId: session.id,
     savedSessionId: session.savedSessionId || "",
+    title: session.title || "",
     workspace: session.workspace,
     busy: Boolean(session.busy),
     createdAt: session.createdAt,
@@ -2921,6 +2994,9 @@ async function handleApi(request, response, pathname) {
       const body = await readJson(request);
       const workspace = workspaceFromHistoryRequest(body, workspaceScope);
       const deleted = await deleteWorkspaceHistoryItem(workspace, body.sessionId);
+      if (deleted) {
+        detachDeletedSavedSession(workspace, body.sessionId);
+      }
       json(response, deleted ? 200 : 404, { deleted, workspace });
     } catch (error) {
       json(response, 400, { error: error.message || "Could not delete history" });
@@ -3042,10 +3118,11 @@ async function handleApi(request, response, pathname) {
 
   if (request.method === "POST" && pathname === "/api/settings/pgpt") {
     try {
+      requireLocalAdminRequest(request, "Global settings can only be changed from the local MyHarness host");
       const body = await readJson(request);
       json(response, 200, await savePgptSettings(body));
     } catch (error) {
-      json(response, 400, { error: error.message || "Could not save P-GPT settings" });
+      json(response, error.status || 400, { error: error.message || "Could not save P-GPT settings" });
     }
     return true;
   }
@@ -3061,10 +3138,11 @@ async function handleApi(request, response, pathname) {
 
   if (request.method === "POST" && pathname === "/api/settings/workspace-scope") {
     try {
+      requireLocalAdminRequest(request, "Global settings can only be changed from the local MyHarness host");
       const body = await readJson(request);
       json(response, 200, await saveWorkspaceScopeSettings(body, request));
     } catch (error) {
-      json(response, 400, { error: error.message || "Could not save workspace scope settings" });
+      json(response, error.status || 400, { error: error.message || "Could not save workspace scope settings" });
     }
     return true;
   }
@@ -3080,10 +3158,11 @@ async function handleApi(request, response, pathname) {
 
   if (request.method === "POST" && pathname === "/api/settings/learned-skills") {
     try {
+      requireLocalAdminRequest(request, "Global settings can only be changed from the local MyHarness host");
       const body = await readJson(request);
       json(response, 200, await saveLearnedSkillsSettings(body));
     } catch (error) {
-      json(response, 400, { error: error.message || "Could not save learned skill settings" });
+      json(response, error.status || 400, { error: error.message || "Could not save learned skill settings" });
     }
     return true;
   }
@@ -3099,10 +3178,11 @@ async function handleApi(request, response, pathname) {
 
   if (request.method === "POST" && pathname === "/api/settings/shell") {
     try {
+      requireLocalAdminRequest(request, "Global settings can only be changed from the local MyHarness host");
       const body = await readJson(request);
       json(response, 200, await saveShellSettings(body));
     } catch (error) {
-      json(response, 400, { error: error.message || "Could not save shell settings" });
+      json(response, error.status || 400, { error: error.message || "Could not save shell settings" });
     }
     return true;
   }
@@ -3118,20 +3198,22 @@ async function handleApi(request, response, pathname) {
 
   if (request.method === "POST" && pathname === "/api/settings/yolo-mode") {
     try {
+      requireLocalAdminRequest(request, "Global settings can only be changed from the local MyHarness host");
       const body = await readJson(request);
       json(response, 200, await saveYoloModeSettings(body));
     } catch (error) {
-      json(response, 400, { error: error.message || "Could not save Yolo mode settings" });
+      json(response, error.status || 400, { error: error.message || "Could not save Yolo mode settings" });
     }
     return true;
   }
 
   if (request.method === "POST" && pathname === "/api/dialog/folder") {
     try {
+      requireLocalAdminRequest(request, "Folder picker can only be opened from the local MyHarness host");
       const body = await readJson(request);
       json(response, 200, await openFolderDialog(body.initialPath));
     } catch (error) {
-      json(response, 400, { error: error.message || "Could not open folder picker" });
+      json(response, error.status || 400, { error: error.message || "Could not open folder picker" });
     }
     return true;
   }
@@ -3383,7 +3465,11 @@ async function handleApi(request, response, pathname) {
   if (request.method === "POST" && pathname === "/api/shell") {
     try {
       const body = await readJson(request);
-      const session = body.sessionId ? sessionFromIdForClient(body.sessionId, body.clientId) : null;
+      const session = ownedActiveSessionFromIdForClient(
+        body.sessionId,
+        body.clientId,
+        "Shell command requires an active session owned by this client",
+      );
       const result = await runShellCommand({
         command: body.command,
         cwd: body.cwd,
@@ -3400,7 +3486,11 @@ async function handleApi(request, response, pathname) {
   if (request.method === "POST" && pathname === "/api/shell/stream") {
     try {
       const body = await readJson(request);
-      const session = body.sessionId ? sessionFromIdForClient(body.sessionId, body.clientId) : null;
+      const session = ownedActiveSessionFromIdForClient(
+        body.sessionId,
+        body.clientId,
+        "Shell command requires an active session owned by this client",
+      );
       await streamShellCommand({
         command: body.command,
         cwd: body.cwd,

@@ -48,6 +48,36 @@ def test_save_and_load_session_snapshot(tmp_path: Path, monkeypatch):
     assert snapshot["tool_metadata"]["recent_verified_work"] == ["Focused session storage test passed"]
 
 
+def test_save_and_load_session_snapshot_keeps_history_events(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "repo"
+    project.mkdir()
+
+    save_session_snapshot(
+        cwd=project,
+        model="claude-test",
+        system_prompt="system",
+        messages=[ConversationMessage(role="user", content=[TextBlock(text="보고서 만들어줘")])],
+        usage=UsageSnapshot(input_tokens=1, output_tokens=2),
+        history_events=[
+            {"type": "user", "text": "보고서 만들어줘"},
+            {"type": "tool_started", "tool_name": "shell_command", "tool_input": {"command": "pytest"}},
+            {"type": "tool_completed", "tool_name": "shell_command", "output": "passed", "is_error": False},
+            {"type": "assistant", "text": "완료했습니다."},
+        ],
+    )
+
+    snapshot = load_session_snapshot(project)
+
+    assert snapshot is not None
+    assert snapshot["history_events"] == [
+        {"type": "user", "text": "보고서 만들어줘"},
+        {"type": "tool_started", "tool_name": "shell_command", "tool_input": {"command": "pytest"}},
+        {"type": "tool_completed", "tool_name": "shell_command", "output": "passed", "is_error": False},
+        {"type": "assistant", "text": "완료했습니다."},
+    ]
+
+
 def test_user_edited_session_title_is_preserved(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MYHARNESS_DATA_DIR", str(tmp_path / "data"))
     project = tmp_path / "repo"

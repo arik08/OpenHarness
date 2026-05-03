@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode, RefObject } from "react";
 import { useAppState } from "../state/app-state";
 import { deleteHistory, updateHistoryTitle } from "../api/history";
-import { restartSession } from "../api/session";
+import { listLiveSessions, restartSession, shutdownSession, startSession } from "../api/session";
 import { sendBackendRequest, sendMessage } from "../api/messages";
 import type { HistoryItem, Workspace } from "../types/backend";
 import type { RuntimePickerOption } from "../types/ui";
@@ -37,6 +37,14 @@ export function Sidebar() {
   async function startFreshChat(workspace?: Workspace) {
     const nextWorkspace = workspace || (state.workspacePath ? { name: state.workspaceName, path: state.workspacePath } : undefined);
     try {
+      if (state.busy || !state.sessionId) {
+        const session = await startSession({
+          clientId: state.clientId,
+          cwd: nextWorkspace?.path || undefined,
+        });
+        dispatch({ type: "session_replaced", sessionId: session.sessionId, workspace: session.workspace || nextWorkspace });
+        return;
+      }
       const session = await restartSession({
         sessionId: state.sessionId,
         clientId: state.clientId,
@@ -73,7 +81,44 @@ export function Sidebar() {
       event: { type: "transcript_item", item: { role: "system", text: `히스토리 복원 중: ${label}` } },
     });
     try {
-      await sendBackendRequest(state.sessionId, state.clientId, {
+      let targetSessionId = state.sessionId;
+      const liveSessions = await listLiveSessions({
+        clientId: state.clientId,
+        workspacePath: state.workspacePath || undefined,
+      });
+      const liveSession = liveSessions.sessions.find((item) => (
+        item.savedSessionId === sessionId || item.sessionId === sessionId
+      ));
+      if (liveSession) {
+        dispatch({
+          type: "session_started",
+          sessionId: liveSession.sessionId,
+          clientId: state.clientId,
+        });
+        dispatch({ type: "clear_messages" });
+        if (liveSession.workspace) {
+          dispatch({ type: "set_workspace", workspace: liveSession.workspace });
+        }
+        dispatch({ type: "set_busy", value: liveSession.busy });
+        dispatch({ type: "finish_history_restore" });
+        return;
+      }
+      if (state.busy) {
+        const session = await startSession({
+          clientId: state.clientId,
+          cwd: state.workspacePath || undefined,
+        });
+        targetSessionId = session.sessionId;
+        dispatch({
+          type: "session_started",
+          sessionId: session.sessionId,
+          clientId: state.clientId,
+        });
+        if (session.workspace) {
+          dispatch({ type: "set_workspace", workspace: session.workspace });
+        }
+      }
+      await sendBackendRequest(targetSessionId, state.clientId, {
         type: "apply_select_command",
         command: "resume",
         value: sessionId,
@@ -88,11 +133,21 @@ export function Sidebar() {
     }
   }
 
-  async function removeHistory(sessionId: string) {
+  async function removeHistory(item: HistoryItem) {
+    const sessionId = item.value;
     if (!sessionId) return;
     setDeletingHistoryId(sessionId);
     try {
-      await deleteHistory(sessionId, state.workspacePath, state.workspaceName);
+      if (item.live && item.liveSessionId) {
+        await shutdownSession(item.liveSessionId, state.clientId);
+      } else {
+        const workspace = item.workspace || null;
+        await deleteHistory(
+          sessionId,
+          workspace?.path || state.workspacePath,
+          workspace?.name || state.workspaceName,
+        );
+      }
       dispatch({ type: "set_history", history: state.history.filter((item) => item.value !== sessionId) });
     } catch (error) {
       dispatch({
@@ -350,7 +405,8 @@ export function Sidebar() {
   const currentTheme = themeOptions.find((item) => item.id === state.themeId) || themeOptions[0];
   const sidebarLabel = state.sidebarCollapsed ? "사이드바 열기" : "사이드바 닫기";
   const activeHistoryValue = state.activeHistoryId || state.sessionId || "";
-  const hasActiveHistoryItem = Boolean(activeHistoryValue && state.history.some((item) => isActiveHistoryItem(item, activeHistoryValue, state.sessionId)));
+  const visibleHistory = state.history.filter((item) => !isCurrentLiveHistoryItem(item, state.sessionId));
+  const hasActiveHistoryItem = Boolean(activeHistoryValue && visibleHistory.some((item) => isActiveHistoryItem(item, activeHistoryValue, state.sessionId)));
   const renderedHistory = state.busy && activeHistoryValue && !hasActiveHistoryItem
     ? [
         {
@@ -361,9 +417,9 @@ export function Sidebar() {
             ? { name: state.workspaceName, path: state.workspacePath }
             : null,
         },
-        ...state.history,
+        ...visibleHistory,
       ]
-    : state.history;
+    : visibleHistory;
 
   return (
     <aside
@@ -495,8 +551,8 @@ export function Sidebar() {
             Restart
           </button>
         </div>
-        <div className="history-list">
-          {state.historyLoading ? (
+        <div className="history-list" aria-busy={state.historyLoading ? "true" : "false"}>
+          {state.historyLoading && !renderedHistory.length ? (
             <p className="empty">대화 내역을 불러오는 중...</p>
           ) : renderedHistory.length ? (
             renderedHistory.slice(0, 20).map((item) => {
@@ -505,7 +561,7 @@ export function Sidebar() {
               const detailLabel = item.description ? compactHistoryTitle(item.label) : "";
               const editing = editingHistoryId === item.value;
               const isActive = isActiveHistoryItem(item, activeHistoryValue, state.sessionId);
-              const isBusy = isActive && state.busy;
+              const isBusy = (isActive && state.busy) || (item.live === true && item.busy === true);
               const isDeleting = deletingHistoryId === item.value;
               return (
                 <div
@@ -552,7 +608,7 @@ export function Sidebar() {
                     aria-label={`${label} 삭제`}
                     data-tooltip="기록 삭제"
                     disabled={isBusy || isDeleting}
-                    onClick={() => void removeHistory(item.value)}
+                    onClick={() => void removeHistory(item)}
                   >
                     <svg aria-hidden="true" viewBox="0 0 24 24">
                       <path d="M10 11v6" />
@@ -718,6 +774,13 @@ function isActiveHistoryItem(item: HistoryItem, activeHistoryValue: string, sess
     return false;
   }
   return item.value === activeHistoryValue || (!!sessionId && item.value === sessionId);
+}
+
+function isCurrentLiveHistoryItem(item: HistoryItem, sessionId: string | null) {
+  if (!sessionId || item.live !== true) {
+    return false;
+  }
+  return item.liveSessionId === sessionId || item.value === sessionId;
 }
 
 function RuntimePanel({ title, value, className = "", children }: { title: string; value: string; className?: string; children: ReactNode }) {

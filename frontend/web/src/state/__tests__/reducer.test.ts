@@ -50,6 +50,7 @@ describe("appReducer", () => {
     });
 
     const answerEvent = next.workflowEvents.find((event) => event.role === "final");
+    expect(next.busy).toBe(true);
     expect(answerEvent?.title).toBe("응답 작성");
     expect(answerEvent?.status).toBe("running");
     expect(answerEvent?.detail).toContain("수신 중");
@@ -88,15 +89,37 @@ describe("appReducer", () => {
 
     expect(completed.messages[0].text).toBe("도구 호출 준비");
     expect(completed.messages[0].isComplete).toBe(false);
+    expect(completed.busy).toBe(true);
   });
 
-  it("ignores regular backend user transcript because the composer already rendered it", () => {
-    const optimistic = appReducer(initialAppState, {
+  it("ignores duplicate regular backend user transcript because the composer already rendered it", () => {
+    const withOptimisticUser = appReducer(initialAppState, {
+      type: "append_message",
+      message: { role: "user", text: "안녕?" },
+    });
+    const optimistic = appReducer(withOptimisticUser, {
       type: "backend_event",
       event: { type: "transcript_item", item: { role: "user", text: "안녕?" } },
     });
 
-    expect(optimistic.messages).toHaveLength(0);
+    expect(optimistic.messages).toHaveLength(1);
+    expect(optimistic.messages[0].text).toBe("안녕?");
+  });
+
+  it("restores regular backend user transcript when reconnecting to a live answer", () => {
+    const reconnected = appReducer(
+      { ...initialAppState, sessionId: "session-live", busy: true },
+      {
+        type: "backend_event",
+        event: { type: "transcript_item", item: { role: "user", text: "진행 중 재접속 질문" } },
+      },
+    );
+
+    expect(reconnected.messages).toHaveLength(1);
+    expect(reconnected.messages[0]).toMatchObject({
+      role: "user",
+      text: "진행 중 재접속 질문",
+    });
   });
 
   it("renders local composer user messages", () => {
@@ -123,6 +146,37 @@ describe("appReducer", () => {
     });
   });
 
+  it("removes stale live history rows for the backend session that becomes active", () => {
+    const next = appReducer(
+      {
+        ...initialAppState,
+        sessionId: "old-session",
+        history: [
+          {
+            value: "web-current",
+            label: "진행 중인 채팅",
+            description: "열려 있는 세션",
+            live: true,
+            liveSessionId: "web-current",
+            busy: false,
+          },
+          {
+            value: "saved-old",
+            label: "5/3 10:00 2 msg",
+            description: "저장된 대화",
+          },
+        ],
+      },
+      {
+        type: "session_started",
+        sessionId: "web-current",
+        clientId: "client-1",
+      },
+    );
+
+    expect(next.history.map((item) => item.value)).toEqual(["saved-old"]);
+  });
+
   it("keeps queued and steering user transcript items visible", () => {
     const next = appReducer(initialAppState, {
       type: "backend_event",
@@ -132,6 +186,15 @@ describe("appReducer", () => {
     expect(next.messages).toHaveLength(1);
     expect(next.messages[0].text).toBe("추가 지시");
     expect(next.messages[0].kind).toBe("steering");
+  });
+
+  it("hides plan mode steering transcript items", () => {
+    const next = appReducer(initialAppState, {
+      type: "backend_event",
+      event: { type: "transcript_item", item: { role: "user", text: "/plan", kind: "steering" } },
+    });
+
+    expect(next.messages).toHaveLength(0);
   });
 
   it("hides plan mode status transcript items", () => {
@@ -196,6 +259,26 @@ describe("appReducer", () => {
     expect(next.status).toBe("connecting");
     expect(next.statusText).toBe("세션이 종료되어 새 세션에 다시 연결 중입니다.");
     expect(next.messages.at(-1)?.text).toContain("진행 중이던 세션이 종료되었습니다.");
+  });
+
+  it("ignores shutdown events from a stale backend session", () => {
+    const current = {
+      ...initialAppState,
+      sessionId: "current-session",
+      clientId: "client-1",
+      ready: true,
+      status: "ready" as const,
+      statusText: "준비됨",
+    };
+    const next = appReducer(current, {
+      type: "backend_event",
+      sessionId: "old-session",
+      event: { type: "shutdown", message: "Backend exited with code 0" },
+    });
+
+    expect(next.sessionId).toBe("current-session");
+    expect(next.ready).toBe(true);
+    expect(next.status).toBe("ready");
   });
 
   it("renders stale session errors as actionable Korean text", () => {
@@ -365,10 +448,66 @@ describe("appReducer", () => {
     });
 
     const shellEvent = completed.workflowEvents.find((event) => event.toolName === "shell_command");
+    expect(started.busy).toBe(true);
+    expect(progressed.busy).toBe(true);
+    expect(completed.busy).toBe(true);
     expect(completed.workflowEvents.map((event) => event.title)).toContain("작업 실행");
     expect(shellEvent?.status).toBe("done");
     expect(shellEvent?.detail).toContain("pass");
     expect(completed.artifactRefreshKey).toBe(progressed.artifactRefreshKey + 1);
+  });
+
+  it("keeps parallel same-named tool steps matched to their backend call ids", () => {
+    const firstStarted = appReducer(initialAppState, {
+      type: "backend_event",
+      event: {
+        type: "tool_started",
+        tool_name: "web_search",
+        tool_call_id: "call-first",
+        tool_call_index: 0,
+        tool_input: { query: "first query" },
+      } as any,
+    });
+    const secondStarted = appReducer(firstStarted, {
+      type: "backend_event",
+      event: {
+        type: "tool_started",
+        tool_name: "web_search",
+        tool_call_id: "call-second",
+        tool_call_index: 1,
+        tool_input: { query: "second query" },
+      } as any,
+    });
+    const startedSearchEvents = secondStarted.workflowEvents.filter((event) => event.toolName === "web_search");
+    expect(startedSearchEvents).toHaveLength(2);
+    expect(startedSearchEvents.map((event) => event.status)).toEqual(["running", "running"]);
+
+    const firstCompleted = appReducer(secondStarted, {
+      type: "backend_event",
+      event: {
+        type: "tool_completed",
+        tool_name: "web_search",
+        tool_call_id: "call-first",
+        output: "Search results for: first query",
+      } as any,
+    });
+    const completed = appReducer(firstCompleted, {
+      type: "backend_event",
+      event: {
+        type: "tool_completed",
+        tool_name: "web_search",
+        tool_call_id: "call-second",
+        output: "Search results for: second query",
+      } as any,
+    });
+
+    const searchEvents = completed.workflowEvents.filter((event) => event.toolName === "web_search");
+    expect(searchEvents).toHaveLength(2);
+    expect(searchEvents.map((event) => event.status)).toEqual(["done", "done"]);
+    expect(searchEvents.map((event) => event.detail)).toEqual([
+      "Search results for: first query",
+      "Search results for: second query",
+    ]);
   });
 
   it("keeps the header status compact for web tools and answer streaming", () => {
@@ -456,6 +595,50 @@ describe("appReducer", () => {
     expect(writeEvents).toHaveLength(1);
     expect(writeEvents[0].status).toBe("done");
     expect(writeEvents[0].toolInput?.content).toBe("hello");
+  });
+
+  it("merges streamed write previews when backend call ids arrive later", () => {
+    const streamed = appReducer(initialAppState, {
+      type: "backend_event",
+      event: {
+        type: "tool_input_delta",
+        tool_name: "write_file",
+        arguments_delta: "{\"path\":\"agent-harness-trend-report.html\",\"content\":\"<!doctype html>",
+      },
+    });
+    const started = appReducer(streamed, {
+      type: "backend_event",
+      event: {
+        type: "tool_started",
+        tool_name: "write_file",
+        tool_call_id: "call-write",
+        tool_call_index: 0,
+        tool_input: {
+          path: "agent-harness-trend-report.html",
+          content: "<!doctype html>",
+        },
+      } as any,
+    });
+    const completed = appReducer(started, {
+      type: "backend_event",
+      event: {
+        type: "tool_completed",
+        tool_name: "write_file",
+        tool_call_id: "call-write",
+        tool_call_index: 0,
+        output: "Wrote agent-harness-trend-report.html",
+        is_error: false,
+      } as any,
+    });
+
+    const writeEvents = completed.workflowEvents.filter((event) => event.toolName === "write_file");
+    expect(writeEvents).toHaveLength(1);
+    expect(writeEvents[0]).toMatchObject({
+      status: "done",
+      toolCallId: "call-write",
+      toolCallIndex: 0,
+    });
+    expect(writeEvents[0].toolInput?.path).toBe("agent-harness-trend-report.html");
   });
 
   it("merges shell shortcut output into the optimistic terminal message", () => {

@@ -207,6 +207,7 @@ test("finalizing drains queued tool events before flushing workflow previews", a
   const previewTitle = ctx.els.messages.querySelector(".workflow-output-title");
   assert.ok(previewTitle);
   assert.match(previewTitle.textContent, /작성 완료 - myharness-source-analysis\.md/);
+  assert.match(previewTitle.textContent, /\d+ 토큰 \(3줄\)/);
 });
 
 test("finalizing drains queued start and completion events in order", async () => {

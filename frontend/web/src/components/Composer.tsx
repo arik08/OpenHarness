@@ -264,7 +264,7 @@ export function Composer() {
         clientId: state.clientId,
         line,
         attachments: state.composer.attachments,
-        suppressUserTranscript: true,
+        suppressUserTranscript: shellShortcut || state.composer.attachments.length > 0,
         systemPrompt: state.systemPrompt.trim() || undefined,
       });
     } catch (error) {

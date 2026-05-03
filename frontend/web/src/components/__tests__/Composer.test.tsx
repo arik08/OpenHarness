@@ -280,7 +280,7 @@ describe("Composer", () => {
       sessionId: "session-1",
       clientId: "client-1",
       line: "2",
-      suppressUserTranscript: true,
+      suppressUserTranscript: false,
     }));
   });
 
@@ -422,6 +422,33 @@ describe("Composer", () => {
     });
   });
 
+  it("does not attach generic quick replies to open-ended backend questions", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-1",
+          clientId: "client-1",
+          modal: {
+            kind: "backend",
+            payload: {
+              kind: "question",
+              request_id: "question-1",
+              question: "웹보고서 제작에 앞서 방향만 짧게 확인하겠습니다. 인터넷 문화의 변천사를 어떤 관점으로 보고서화할까요?",
+            },
+          },
+        }}
+      >
+        <Composer />
+      </AppStateProvider>,
+    );
+
+    expect(document.querySelector(".inline-question-card")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /네, 진행해주세요/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /아니요/ })).toBeNull();
+    expect(screen.getByPlaceholderText("직접 답변 입력...")).toBeTruthy();
+  });
+
   it("reserves bottom scroll space for inline questions above the composer input", () => {
     const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
     HTMLElement.prototype.getBoundingClientRect = function mockRect(this: HTMLElement) {
@@ -516,7 +543,34 @@ describe("Composer", () => {
       sessionId: "session-1",
       clientId: "client-1",
       line: "네, 진행해주세요",
-      suppressUserTranscript: true,
+      suppressUserTranscript: false,
     }));
+  });
+
+  it("does not attach generic quick replies to assistant alternative questions", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-1",
+          clientId: "client-1",
+          messages: [
+            {
+              id: "assistant-1",
+              role: "assistant",
+              text: "“DCInside 트이전글”을 기준으로 보면 될까요, 아니면 구글/웹 검색에 노출되는 외부 요약까지 포함한 넓은 웹 담론으로 볼까요?",
+              isComplete: true,
+            },
+          ],
+        }}
+      >
+        <Composer />
+      </AppStateProvider>,
+    );
+
+    expect(document.querySelector(".inline-question-card")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /네, 진행해주세요/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /아니요/ })).toBeNull();
+    expect(screen.getByPlaceholderText("직접 답변 입력...")).toBeTruthy();
   });
 });

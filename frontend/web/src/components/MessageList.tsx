@@ -2,10 +2,10 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { readArtifact, resolveArtifact, saveArtifact } from "../api/artifacts";
 import { useAppState } from "../state/app-state";
 import type { ArtifactSummary } from "../types/backend";
-import type { AppSettings, ChatMessage } from "../types/ui";
+import type { AppSettings, AppState, ChatMessage, WorkflowEvent } from "../types/ui";
 import { CommandHelpMessage, isCommandCatalog } from "./CommandHelpMessage";
 import { MarkdownMessage } from "./MarkdownMessage";
-import { WorkflowPanel } from "./WorkflowPanel";
+import { WebInvestigationSources, webInvestigationSummary, WorkflowPanel } from "./WorkflowPanel";
 
 const artifactPathExtensionPattern = "html?|md|markdown|txt|json|csv|xml|ya?ml|toml|ini|log|py|m?js|cjs|tsx?|jsx|css|sql|sh|ps1|bat|cmd|png|gif|jpe?g|webp|svg|pdf|docx?|xlsx?|pptx?|zip";
 const artifactExtensions = new Set([
@@ -427,12 +427,18 @@ function AssistantArtifactCards({ message }: { message: ChatMessage }) {
   );
 }
 
-const streamFlushIntervalMs = 18;
-const streamMinCharsPerFlush = 1;
-const streamMaxCharsPerFlush = 8;
+const streamFlushIntervalMs = 36;
+const streamMinCharsPerFlush = 3;
+const streamMaxCharsPerFlush = 12;
 const nearBottomPx = 96;
 const streamingRejoinBottomPx = 260;
 const scrollStorageKey = "myharness:scrollPositions";
+
+function easeInOutCubic(progress: number) {
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+}
 
 function readScrollPositions() {
   try {
@@ -468,7 +474,7 @@ function streamingRevealCount(pendingChars: string[], flushAll = false) {
     return pendingChars.length;
   }
   const text = pendingChars.join("");
-  const sentenceMatch = text.match(/^.{18,}?[.!?。！？...]\s*/u);
+  const sentenceMatch = text.match(/^.{18,}?[.!?。！？…]\s*/u);
   if (sentenceMatch && sentenceMatch[0].length <= streamMaxCharsPerFlush) {
     return sentenceMatch[0].length;
   }
@@ -489,16 +495,52 @@ function useStreamingText(targetText: string, isComplete: boolean, settings: App
   const targetTextRef = useRef(targetText);
   const displayStartedRef = useRef(false);
   const timerRef = useRef<number>(0);
+  const flushRef = useRef<(flushAll?: boolean) => void>(() => undefined);
+  const scheduleFlushRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     visibleTextRef.current = visibleText;
   }, [visibleText]);
 
   useEffect(() => {
+    return () => window.clearTimeout(timerRef.current);
+  }, []);
+
+  flushRef.current = (flushAll = false) => {
+    timerRef.current = 0;
+    const current = visibleTextRef.current;
+    const target = targetTextRef.current;
+    if (!target.startsWith(current) || current.length >= target.length) {
+      return;
+    }
+    displayStartedRef.current = true;
+    const pending = Array.from(target.slice(current.length));
+    const nextCount = streamingRevealCount(pending, flushAll);
+    const nextText = `${current}${pending.slice(0, nextCount).join("")}`;
+    revealFromRef.current = Array.from(current).length;
+    visibleTextRef.current = nextText;
+    setVisibleText(nextText);
+    if (nextText.length < target.length) {
+      scheduleFlushRef.current();
+    }
+  };
+
+  scheduleFlushRef.current = () => {
+    if (timerRef.current) {
+      return;
+    }
+    const delay = displayStartedRef.current
+      ? streamFlushIntervalMs
+      : Math.max(0, Math.min(2000, settings.streamStartBufferMs));
+    timerRef.current = window.setTimeout(() => flushRef.current(false), delay);
+  };
+
+  useEffect(() => {
     targetTextRef.current = targetText;
-    window.clearTimeout(timerRef.current);
 
     if (isComplete) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = 0;
       revealFromRef.current = null;
       visibleTextRef.current = targetText;
       setVisibleText(targetText);
@@ -506,36 +548,17 @@ function useStreamingText(targetText: string, isComplete: boolean, settings: App
     }
 
     if (!targetText.startsWith(visibleTextRef.current)) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = 0;
       revealFromRef.current = 0;
       visibleTextRef.current = "";
       setVisibleText("");
       displayStartedRef.current = false;
     }
 
-    const flush = (flushAll = false) => {
-      const current = visibleTextRef.current;
-      const target = targetTextRef.current;
-      if (!target.startsWith(current) || current.length >= target.length) {
-        return;
-      }
-      displayStartedRef.current = true;
-      const pending = Array.from(target.slice(current.length));
-      const nextCount = streamingRevealCount(pending, flushAll);
-      const nextText = `${current}${pending.slice(0, nextCount).join("")}`;
-      revealFromRef.current = Array.from(current).length;
-      visibleTextRef.current = nextText;
-      setVisibleText(nextText);
-      if (nextText.length < target.length) {
-        timerRef.current = window.setTimeout(() => flush(false), streamFlushIntervalMs);
-      }
-    };
-
-    const delay = displayStartedRef.current
-      ? streamFlushIntervalMs
-      : Math.max(0, Math.min(2000, settings.streamStartBufferMs));
-    timerRef.current = window.setTimeout(() => flush(false), delay);
-
-    return () => window.clearTimeout(timerRef.current);
+    if (targetText.length > visibleTextRef.current.length) {
+      scheduleFlushRef.current();
+    }
   }, [targetText, isComplete, settings.streamStartBufferMs]);
 
   return { visibleText, revealFrom: revealFromRef.current };
@@ -596,6 +619,18 @@ function messageKindBadge(kind: ChatMessage["kind"]) {
   return null;
 }
 
+function workflowEventsForMessageId(state: AppState, messageId: string) {
+  return messageId === state.workflowAnchorMessageId
+    ? state.workflowEvents
+    : state.workflowEventsByMessageId[messageId] || [];
+}
+
+function workflowDurationForMessageId(state: AppState, messageId: string) {
+  return messageId === state.workflowAnchorMessageId
+    ? state.workflowDurationSeconds
+    : state.workflowDurationSecondsByMessageId[messageId] ?? null;
+}
+
 export function MessageList() {
   const { state, dispatch } = useAppState();
   const messagesRef = useRef<HTMLElement | null>(null);
@@ -607,7 +642,34 @@ export function MessageList() {
   const scrollSaveTimerRef = useRef(0);
   const lastMessage = state.messages.at(-1);
   const isLastAssistantStreaming = state.busy && lastMessage?.role === "assistant" && !lastMessage.isComplete;
+  const isActiveWorkflowGrowing = state.busy && Boolean(state.workflowAnchorMessageId && state.workflowEvents.length);
+  const shouldFollowGrowingTail = isLastAssistantStreaming || isActiveWorkflowGrowing;
+  const activeWorkflowFollowSignature = useMemo(
+    () => state.workflowEvents.map((event) => [
+      event.id,
+      event.status,
+      event.detail,
+      event.output?.length ?? 0,
+      typeof event.toolInput?.content === "string" ? event.toolInput.content.length : 0,
+    ].join(":")).join("|"),
+    [state.workflowEvents],
+  );
   const scrollSessionId = state.activeHistoryId || state.sessionId;
+
+  function webSourceEventsForAssistant(messageIndex: number): WorkflowEvent[] {
+    for (let index = messageIndex - 1; index >= 0; index -= 1) {
+      const message = state.messages[index];
+      if (message.role !== "user") {
+        continue;
+      }
+      const events = workflowEventsForMessageId(state, message.id);
+      if (events.length) {
+        return events;
+      }
+      break;
+    }
+    return [];
+  }
 
   function stopAutoFollow(container = messagesRef.current) {
     if (animationFrameRef.current) {
@@ -696,7 +758,7 @@ export function MessageList() {
 
       const target = Math.max(0, liveContainer.scrollHeight - liveContainer.clientHeight);
       const progress = Math.min(1, (now - startedAt) / duration);
-      const eased = 1 - Math.pow(1 - progress, 3);
+      const eased = easeInOutCubic(progress);
       liveContainer.scrollTop = start + (target - start) * eased;
       if (progress < 1 && autoFollowRef.current) {
         animationFrameRef.current = window.requestAnimationFrame(step);
@@ -712,7 +774,7 @@ export function MessageList() {
 
   function resumeAutoFollow(container = messagesRef.current) {
     autoFollowRef.current = true;
-    if (!container || !isLastAssistantStreaming) {
+    if (!container || !shouldFollowGrowingTail) {
       return;
     }
     container.classList.add("streaming-follow");
@@ -728,7 +790,7 @@ export function MessageList() {
     const movedUp = Number.isFinite(previousTop) && currentTop < previousTop - 2;
     const userScrolling = Date.now() <= userScrollIntentUntilRef.current;
     const remaining = container.scrollHeight - container.clientHeight - container.scrollTop;
-    const threshold = isLastAssistantStreaming ? Math.max(nearBottomPx, streamingRejoinBottomPx) : nearBottomPx;
+    const threshold = shouldFollowGrowingTail ? Math.max(nearBottomPx, streamingRejoinBottomPx) : nearBottomPx;
     if (remaining <= threshold) {
       resumeAutoFollow(container);
     } else if (userScrolling || movedUp) {
@@ -749,13 +811,13 @@ export function MessageList() {
       return;
     }
     container.style.setProperty("--stream-follow-lead", `${Math.max(0, Math.min(220, state.appSettings.streamFollowLeadPx))}px`);
-    container.classList.toggle("streaming-follow", Boolean(isLastAssistantStreaming));
+    container.classList.toggle("streaming-follow", Boolean(shouldFollowGrowingTail));
     scrollMessagesToBottom({
       smooth: true,
       duration: state.appSettings.streamScrollDurationMs,
-      continuous: Boolean(isLastAssistantStreaming),
+      continuous: Boolean(shouldFollowGrowingTail),
     });
-  }, [state.messages.length, lastMessage?.text, lastMessage?.isComplete, state.appSettings.streamScrollDurationMs, state.appSettings.streamFollowLeadPx, isLastAssistantStreaming, state.restoringHistory]);
+  }, [state.messages.length, lastMessage?.text, lastMessage?.isComplete, activeWorkflowFollowSignature, state.appSettings.streamScrollDurationMs, state.appSettings.streamFollowLeadPx, shouldFollowGrowingTail, state.restoringHistory]);
 
   useLayoutEffect(() => {
     const container = messagesRef.current;
@@ -801,7 +863,7 @@ export function MessageList() {
 
   return (
     <section
-      className={`messages${isLastAssistantStreaming ? " streaming-follow" : ""}`}
+      className={`messages${shouldFollowGrowingTail ? " streaming-follow" : ""}`}
       aria-live="polite"
       ref={messagesRef}
       onScroll={(event) => {
@@ -821,12 +883,14 @@ export function MessageList() {
         userScrollIntentUntilRef.current = Date.now() + 900;
       }}
     >
-      {state.messages.map((message) => {
+      {state.messages.map((message, messageIndex) => {
         const commandCatalog = isCommandCatalog(message.text);
         const kindBadge = message.role === "user" ? messageKindBadge(message.kind) : null;
-        const workflowEvents = message.id === state.workflowAnchorMessageId
-          ? state.workflowEvents
-          : state.workflowEventsByMessageId[message.id] || [];
+        const workflowEvents = workflowEventsForMessageId(state, message.id);
+        const showWorkflowHere = workflowEvents.length > 0;
+        const answerWebSources = message.role === "assistant" && message.isComplete
+          ? webInvestigationSummary(webSourceEventsForAssistant(messageIndex))
+          : { sources: [], queries: [] };
         return (
           <Fragment key={message.id}>
             <article
@@ -855,6 +919,7 @@ export function MessageList() {
                     />
                     <AssistantActions message={message} />
                     <AssistantArtifactCards message={message} />
+                    <WebInvestigationSources sources={answerWebSources.sources} queries={answerWebSources.queries} />
                   </>
                 ) : message.terminal ? (
                   <TerminalCommandMessage message={message} />
@@ -863,7 +928,12 @@ export function MessageList() {
                 )}
               </div>
             </article>
-            {workflowEvents.length ? <WorkflowPanel events={workflowEvents} /> : null}
+            {showWorkflowHere ? (
+              <WorkflowPanel
+                events={workflowEvents}
+                durationSeconds={workflowDurationForMessageId(state, message.id)}
+              />
+            ) : null}
           </Fragment>
         );
       })}

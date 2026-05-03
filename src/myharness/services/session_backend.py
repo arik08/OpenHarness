@@ -27,6 +27,7 @@ class SessionBackend(Protocol):
         usage: UsageSnapshot,
         session_id: str | None = None,
         tool_metadata: dict[str, object] | None = None,
+        history_events: list[dict] | None = None,
     ) -> Path:
         """Persist a session snapshot and return its path."""
 
@@ -68,6 +69,7 @@ class MyHarnessSessionBackend:
         usage: UsageSnapshot,
         session_id: str | None = None,
         tool_metadata: dict[str, object] | None = None,
+        history_events: list[dict] | None = None,
     ) -> Path:
         return session_storage.save_session_snapshot(
             cwd=cwd,
@@ -77,6 +79,7 @@ class MyHarnessSessionBackend:
             usage=usage,
             session_id=session_id,
             tool_metadata=tool_metadata,
+            history_events=history_events,
         )
 
     def load_latest(self, cwd: str | Path) -> dict | None:

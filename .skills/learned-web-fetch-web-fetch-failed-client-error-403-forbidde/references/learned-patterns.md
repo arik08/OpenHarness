@@ -82,3 +82,10 @@
 - Lesson: A repeated failure was observed and later verified as resolved: web_fetch: web_fetch failed: Client error '403 Forbidden' for url 'https://openai.com/index/five-new-stargate-sites/'
 - Do next time: Start by applying the verified corrective path: Ran web search for OpenAI Oracle data center delays denied 2026 2025 March The Register DCD
 - Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 00957d3ab6651e6f
+- Confidence: 0.85
+- Signature: `web-fetch-web-fetch-failed-client-error-403-forbidden-for-url-https-ko-wikipedia`
+- Lesson: A repeated failure was observed and later verified as resolved: web_fetch: web_fetch failed: Client error '403 Forbidden' for url 'https://ko.wikipedia.org/wiki/%EB%82%98%EB%AC%B4%EC%9C%84%ED%82%A4%EC%9D%98_%EB%85%BC%EB%9E%80'
+- Do next time: Start by applying the verified corrective path: Ran command python - <<'PY' from pathlib import Path from pptx import Presentation p=Path('outputs/namuwiki-history-report.pptx') prs=Presentation(str(p)) print('exists', p [exists True]
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.

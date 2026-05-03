@@ -4,6 +4,7 @@ import test from "node:test";
 function createContext() {
   const workflowTurns = [];
   const assistantActions = [];
+  const messages = [];
   const state = {
     activeFrontendId: "slot-1",
     activeHistoryId: "",
@@ -45,6 +46,7 @@ function createContext() {
       restoring: "복원 중",
     },
     appendMessage: (role, text) => {
+      messages.push({ role, text });
       if (role === "user") {
         lastUserText = text;
       }
@@ -97,6 +99,7 @@ function createContext() {
     updateState: () => undefined,
     updateTasks: () => undefined,
     assistantActions,
+    messages,
   };
 }
 
@@ -231,6 +234,42 @@ test("assistant transcript items receive answer actions on line completion", asy
     ctx.assistantActions.map((action) => action.text),
     ["재연결로 받은 최종 답변입니다."],
   );
+});
+
+test("plan mode steering transcript items stay out of the chat body", async () => {
+  globalThis.localStorage = {
+    getItem: () => null,
+    setItem: () => undefined,
+    removeItem: () => undefined,
+  };
+  globalThis.document = {
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  globalThis.requestAnimationFrame = (callback) => {
+    callback();
+    return 1;
+  };
+  globalThis.window = {
+    clearInterval: () => undefined,
+    clearTimeout: () => undefined,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+  };
+
+  const ctx = createContext();
+  const { createEvents } = await import("../modules/events.js");
+  const events = createEvents(ctx);
+
+  events.handleEvent({
+    type: "transcript_item",
+    item: { role: "user", text: "/plan", kind: "steering" },
+  });
+  events.handleEvent({
+    type: "transcript_item",
+    item: { role: "user", text: "추가 지시", kind: "steering" },
+  });
+
+  assert.deepEqual(ctx.messages, [{ role: "user", text: "추가 지시" }]);
 });
 
 test("pending assistant actions survive slot state snapshots", async () => {

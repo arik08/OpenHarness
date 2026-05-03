@@ -634,6 +634,9 @@ function handleEvent(event) {
       if (!userText.trim()) {
         return;
       }
+      if ((kind === "steering" || kind === "queued") && /^\/plan(?:\s|$)/i.test(userText.trim())) {
+        return;
+      }
       if (kind === "steering" || kind === "queued") {
         appendMessage("user", userText, [], { kind });
       }

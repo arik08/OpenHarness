@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import locale
+import os
 import re
 from pathlib import Path
 from typing import Iterable
@@ -12,6 +13,8 @@ from typing import Iterable
 from pydantic import BaseModel, Field
 
 from myharness.sandbox import SandboxUnavailableError
+from myharness.skills import load_skill_registry
+from myharness.skills.loader import get_program_skills_dirs, get_user_skills_dir
 from myharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
 from myharness.utils.shell import create_shell_subprocess
 
@@ -44,6 +47,7 @@ class BashTool(BaseTool):
                 is_error=True,
                 metadata={"interactive_required": True},
             )
+        env = _python_module_env_for_skill(arguments.command, cwd, context)
         process: asyncio.subprocess.Process | None = None
         try:
             process = await create_shell_subprocess(
@@ -53,6 +57,7 @@ class BashTool(BaseTool):
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env=env,
             )
         except SandboxUnavailableError as exc:
             return ToolResult(output=str(exc), is_error=True)
@@ -164,6 +169,139 @@ def _decode_output(output_buffer: bytearray) -> str:
     if decoded_with_replacement:
         return min(decoded_with_replacement, key=lambda value: value.count("\ufffd"))
     return data.decode("utf-8", errors="replace")
+
+
+def _python_module_env_for_skill(
+    command: str,
+    cwd: Path,
+    context: ToolExecutionContext,
+) -> dict[str, str] | None:
+    module = _python_m_module_name(command)
+    if module is None or _module_package_exists(cwd, module):
+        return None
+
+    candidates = _skill_roots_with_module(cwd, module, context)
+    if len(candidates) != 1:
+        return None
+
+    skill_root = str(candidates[0])
+    current_pythonpath = os.environ.get("PYTHONPATH", "")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = (
+        skill_root
+        if not current_pythonpath
+        else f"{skill_root}{os.pathsep}{current_pythonpath}"
+    )
+    return env
+
+
+def _python_m_module_name(command: str) -> str | None:
+    match = re.match(
+        r"""(?ix)
+        ^\s*
+        (?:&\s*)?
+        (?:
+            (?:"[^"]*python(?:3)?(?:\.exe)?")
+            |(?:'[^']*python(?:3)?(?:\.exe)?')
+            |(?:[^\s'"]*python(?:3)?(?:\.exe)?)
+            |py(?:\.exe)?
+        )
+        (?:\s+-3)?
+        (?:
+            \s+-[A-Za-z0-9]+
+            (?!\s+[A-Za-z_][\w.]*\b)
+        )*
+        \s+-m\s+
+        (?P<module>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)
+        \b
+        """,
+        command,
+    )
+    if match is None:
+        return None
+    return match.group("module")
+
+
+def _skill_roots_with_module(
+    cwd: Path,
+    module: str,
+    context: ToolExecutionContext,
+) -> list[Path]:
+    seen: set[Path] = set()
+    for roots in _skill_directory_groups(cwd, context):
+        candidates = _module_skill_roots_from_dirs(roots, module, seen)
+        if candidates:
+            return candidates
+
+    try:
+        registry = load_skill_registry(
+            cwd,
+            extra_skill_dirs=context.metadata.get("extra_skill_dirs"),
+            extra_plugin_roots=context.metadata.get("extra_plugin_roots"),
+        )
+    except Exception:
+        return []
+
+    roots: list[Path] = []
+    for skill in registry.list_skills():
+        path = getattr(skill, "path", None)
+        if not path:
+            continue
+        skill_root = Path(path).expanduser().resolve().parent
+        if skill_root in seen or not _module_package_exists(skill_root, module):
+            continue
+        seen.add(skill_root)
+        roots.append(skill_root)
+    return roots
+
+
+def _skill_directory_groups(
+    cwd: Path,
+    context: ToolExecutionContext,
+) -> list[list[Path]]:
+    groups: list[list[Path]] = [[cwd / ".skills"]]
+    extra_skill_dirs = context.metadata.get("extra_skill_dirs")
+    if isinstance(extra_skill_dirs, (list, tuple)):
+        groups.append([Path(path).expanduser() for path in extra_skill_dirs])
+    elif isinstance(extra_skill_dirs, str):
+        groups.append([Path(extra_skill_dirs).expanduser()])
+    try:
+        groups.append([get_user_skills_dir()])
+    except Exception:
+        pass
+    try:
+        groups.append(get_program_skills_dirs())
+    except Exception:
+        pass
+    return groups
+
+
+def _module_skill_roots_from_dirs(
+    skill_dirs: Iterable[Path],
+    module: str,
+    seen: set[Path],
+) -> list[Path]:
+    roots: list[Path] = []
+    for skills_dir in skill_dirs:
+        try:
+            resolved_dir = skills_dir.expanduser().resolve()
+            children = sorted(resolved_dir.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if not child.is_dir() or not (child / "SKILL.md").exists():
+                continue
+            skill_root = child.resolve()
+            if skill_root in seen or not _module_package_exists(skill_root, module):
+                continue
+            seen.add(skill_root)
+            roots.append(skill_root)
+    return roots
+
+
+def _module_package_exists(root: Path, module: str) -> bool:
+    package_dir = root.joinpath(*module.split("."))
+    return (package_dir / "__main__.py").exists() or (package_dir / "__init__.py").exists()
 
 
 def _format_timeout_output(output_buffer: bytearray, *, command: str, timeout_seconds: int) -> str:

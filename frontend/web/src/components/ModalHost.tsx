@@ -28,6 +28,7 @@ export function ModalHost() {
   const [workspaceName, setWorkspaceName] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
   const [deletingWorkspace, setDeletingWorkspace] = useState("");
+  const [pendingDeleteWorkspace, setPendingDeleteWorkspace] = useState("");
 
   if (!state.modal) {
     return null;
@@ -102,16 +103,31 @@ export function ModalHost() {
       }
     }
 
-    async function removeWorkspace(name: string) {
+    async function removeWorkspace(workspace: Workspace) {
       setWorkspaceError("");
-      setDeletingWorkspace(name);
+      if (pendingDeleteWorkspace !== workspace.name) {
+        setPendingDeleteWorkspace(workspace.name);
+        return;
+      }
+      setDeletingWorkspace(workspace.name);
       try {
-        const data = await deleteWorkspace(name);
+        const active = workspace.path === state.workspacePath;
+        if (active) {
+          const nextWorkspace =
+            state.workspaces.find((item) => item.name === "Default" && item.path !== workspace.path)
+            || state.workspaces.find((item) => item.path !== workspace.path);
+          if (!nextWorkspace) {
+            throw new Error("마지막 프로젝트는 삭제할 수 없습니다.");
+          }
+          await switchWorkspace(nextWorkspace);
+        }
+        const data = await deleteWorkspace(workspace.name);
         dispatch({ type: "set_workspaces", workspaces: data.workspaces });
       } catch (error) {
         setWorkspaceError(error instanceof Error ? error.message : String(error));
       } finally {
         setDeletingWorkspace("");
+        setPendingDeleteWorkspace("");
       }
     }
 
@@ -130,8 +146,9 @@ export function ModalHost() {
             {state.workspaces.map((workspace) => {
               const active = workspace.path === state.workspacePath;
               const deleting = deletingWorkspace === workspace.name;
+              const deleteReady = pendingDeleteWorkspace === workspace.name;
               return (
-                <div className={`workspace-row${active ? " active" : ""}${deleting ? " deleting" : ""}`} key={workspace.path}>
+                <div className={`workspace-row${active ? " active" : ""}${deleteReady ? " delete-ready" : ""}${deleting ? " deleting" : ""}`} key={workspace.path}>
                   <button className="workspace-option" type="button" onClick={() => void switchWorkspace(workspace).then(close)}>
                     <span>
                       <strong>{workspace.name}</strong>
@@ -141,17 +158,26 @@ export function ModalHost() {
                   <button
                     className="workspace-delete"
                     type="button"
-                    aria-label={`${workspace.name} 삭제`}
-                    disabled={active || workspace.name === "Default" || deleting}
-                    onClick={() => void removeWorkspace(workspace.name)}
+                    aria-label={deleteReady ? `${workspace.name} 삭제 확인` : `${workspace.name} 삭제`}
+                    data-tooltip={deleteReady ? "한 번 더 누르면 삭제됩니다" : "프로젝트 삭제"}
+                    disabled={deleting}
+                    onClick={() => void removeWorkspace(workspace)}
                   >
-                    <svg aria-hidden="true" viewBox="0 0 24 24">
-                      <path d="M3 6h18" />
-                      <path d="M8 6V4h8v2" />
-                      <path d="M10 11v6" />
-                      <path d="M14 11v6" />
-                      <path d="M6 6l1 15h10l1-15" />
-                    </svg>
+                    {deleteReady ? (
+                      <svg aria-hidden="true" viewBox="0 0 24 24">
+                        <path d="M12 3l9 16H3L12 3z" />
+                        <path d="M12 9v4" />
+                        <path d="M12 17h.01" />
+                      </svg>
+                    ) : (
+                      <svg aria-hidden="true" viewBox="0 0 24 24">
+                        <path d="M3 6h18" />
+                        <path d="M8 6V4h8v2" />
+                        <path d="M10 11v6" />
+                        <path d="M14 11v6" />
+                        <path d="M6 6l1 15h10l1-15" />
+                      </svg>
+                    )}
                   </button>
                 </div>
               );
@@ -309,9 +335,13 @@ function handleBackdropClick(event: MouseEvent<HTMLDivElement>, onDismiss: () =>
 
 type SettingsView = "home" | "prompt" | "behavior" | "download" | "shell" | "yolo" | "stats" | "restart" | "workspace" | "learned-skills" | "pgpt";
 
-function isLocalBrowserHost() {
-  const host = window.location.hostname.trim().toLowerCase();
+export function isLocalBrowserHostname(hostname: string) {
+  const host = hostname.trim().toLowerCase();
   return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+function isLocalBrowserHost() {
+  return isLocalBrowserHostname(window.location.hostname);
 }
 
 function shellPreferenceLabel(value: AppSettings["shell"]) {
@@ -360,6 +390,8 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
 
 function SettingsHome({ onSelect }: { onSelect: (view: SettingsView) => void }) {
   const { state } = useAppState();
+  const localBrowserHost = isLocalBrowserHost();
+  const serverOnlyLabel = "서버 PC에서만 변경";
   return (
     <>
       <h2>설정</h2>
@@ -377,13 +409,13 @@ function SettingsHome({ onSelect }: { onSelect: (view: SettingsView) => void }) 
           <strong>파일 저장경로</strong>
           <small>{downloadModeLabel(state.appSettings)}</small>
         </button>
-        <button type="button" className="settings-row" onClick={() => onSelect("shell")}>
+        <button type="button" className="settings-row" onClick={() => onSelect("shell")} disabled={!localBrowserHost}>
           <strong>명령어 셀 (CLI)</strong>
-          <small>{shellPreferenceLabel(state.appSettings.shell)}</small>
+          <small>{localBrowserHost ? shellPreferenceLabel(state.appSettings.shell) : serverOnlyLabel}</small>
         </button>
-        <button type="button" className="settings-row" onClick={() => onSelect("yolo")}>
+        <button type="button" className="settings-row" onClick={() => onSelect("yolo")} disabled={!localBrowserHost}>
           <strong>Yolo 모드</strong>
-          <small>명령 실행과 파일 작업 권한 자동 승인 여부를 정합니다.</small>
+          <small>{localBrowserHost ? "명령 실행과 파일 작업 권한 자동 승인 여부를 정합니다." : serverOnlyLabel}</small>
         </button>
         <button type="button" className="settings-row" onClick={() => onSelect("stats")}>
           <strong>IP별 사용 통계</strong>
@@ -393,17 +425,17 @@ function SettingsHome({ onSelect }: { onSelect: (view: SettingsView) => void }) 
           <strong>터미널 세션 재시작</strong>
           <small>{state.sessionId ? "현재 세션 강제 재연결" : "새 세션 시작"}</small>
         </button>
-        <button type="button" className="settings-row" onClick={() => onSelect("workspace")}>
+        <button type="button" className="settings-row" onClick={() => onSelect("workspace")} disabled={!localBrowserHost}>
           <strong>작업공간 범위</strong>
-          <small>{state.workspaceScope.mode === "ip" ? "IP별 프로젝트 분리" : "공용 shared 프로젝트"}</small>
+          <small>{localBrowserHost ? (state.workspaceScope.mode === "ip" ? "IP별 프로젝트 분리" : "공용 shared 프로젝트") : serverOnlyLabel}</small>
         </button>
-        <button type="button" className="settings-row" onClick={() => onSelect("learned-skills")}>
+        <button type="button" className="settings-row" onClick={() => onSelect("learned-skills")} disabled={!localBrowserHost}>
           <strong>자동학습 스킬 표시</strong>
-          <small>학습된 스킬을 표시하거나 숨깁니다.</small>
+          <small>{localBrowserHost ? "학습된 스킬을 표시하거나 숨깁니다." : serverOnlyLabel}</small>
         </button>
-        <button type="button" className="settings-row" onClick={() => onSelect("pgpt")}>
+        <button type="button" className="settings-row" onClick={() => onSelect("pgpt")} disabled={!localBrowserHost}>
           <strong>P-GPT API KEY</strong>
-          <small>API Key, 직원번호, 회사번호를 저장합니다.</small>
+          <small>{localBrowserHost ? "API Key, 직원번호, 회사번호를 저장합니다." : serverOnlyLabel}</small>
         </button>
       </div>
     </>
@@ -411,6 +443,7 @@ function SettingsHome({ onSelect }: { onSelect: (view: SettingsView) => void }) 
 }
 
 function SettingsDetail({ view, onBack, onClose }: { view: SettingsView; onBack: () => void; onClose: () => void }) {
+  if (!isLocalBrowserHost() && isServerHostSettingsView(view)) return <ServerHostOnlySettings onBack={onBack} />;
   if (view === "prompt") return <PromptSettings onBack={onBack} />;
   if (view === "behavior") return <BehaviorSettings onBack={onBack} />;
   if (view === "download") return <DownloadSettings onBack={onBack} />;
@@ -421,6 +454,21 @@ function SettingsDetail({ view, onBack, onClose }: { view: SettingsView; onBack:
   if (view === "workspace") return <WorkspaceScopeSettings onBack={onBack} onClose={onClose} />;
   if (view === "learned-skills") return <LearnedSkillsSettings onBack={onBack} />;
   return <PgptSettingsForm onBack={onBack} />;
+}
+
+function isServerHostSettingsView(view: SettingsView) {
+  return view === "shell" || view === "yolo" || view === "workspace" || view === "learned-skills" || view === "pgpt";
+}
+
+function ServerHostOnlySettings({ onBack }: { onBack: () => void }) {
+  return (
+    <>
+      <SettingsHeader title="서버 PC 전용">이 설정은 MyHarness를 실행 중인 PC에서만 변경할 수 있습니다.</SettingsHeader>
+      <div className="modal-actions">
+        <button type="button" onClick={onBack}>뒤로</button>
+      </div>
+    </>
+  );
 }
 
 function SettingsHeader({ title, children }: { title: string; children: string }) {

@@ -23,6 +23,10 @@ function formatElapsed(seconds: number) {
   return remainder ? `${minutes}분 ${remainder}초 경과` : `${minutes}분 경과`;
 }
 
+function formatDuration(seconds: number) {
+  return formatElapsed(seconds).replace(/\s*경과$/, "");
+}
+
 function estimateTextTokens(text: string) {
   const value = String(text || "");
   if (!value) {
@@ -46,6 +50,16 @@ function estimateTextTokens(text: string) {
 
 function formatWorkflowTokenCount(tokens: number) {
   return `${Math.max(0, Math.round(tokens || 0)).toLocaleString()} 토큰`;
+}
+
+function countWorkflowPreviewLines(text: string) {
+  const value = String(text || "");
+  return value ? value.replace(/\r\n/g, "\n").split("\n").length : 0;
+}
+
+function formatWorkflowContentCount(text: string) {
+  const lines = countWorkflowPreviewLines(text);
+  return `${formatWorkflowTokenCount(estimateTextTokens(text))} (${lines.toLocaleString()}줄)`;
 }
 
 function workflowPreviewFileName(path: string) {
@@ -124,6 +138,123 @@ function workflowPreviewSource(event: WorkflowEvent) {
 }
 
 type WorkflowPreviewSource = NonNullable<ReturnType<typeof workflowPreviewSource>>;
+type WorkflowRow =
+  | { type: "event"; event: WorkflowEvent }
+  | { type: "group"; parent: WorkflowEvent; children: WorkflowEvent[] };
+
+const workflowEventStaggerMs = 90;
+
+type WebInvestigationSource = {
+  url: string;
+  label: string;
+  domain: string;
+  path: string;
+};
+
+function stringInputValue(input: Record<string, unknown> | null | undefined, key: string) {
+  const value = input?.[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeSourceUrl(value: string) {
+  const cleaned = String(value || "").trim().replace(/^<|>$/g, "").replace(/[),.;]+$/g, "");
+  if (!/^https?:\/\//i.test(cleaned)) {
+    return "";
+  }
+  try {
+    return new URL(cleaned).href;
+  } catch {
+    return cleaned;
+  }
+}
+
+function labelForSourceUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    const path = decodedUrlText(`${parsed.pathname}${parsed.search}`.replace(/\/$/g, "") || "/");
+    return `${parsed.hostname}${path === "/" ? "" : path}` || url;
+  } catch {
+    return decodedUrlText(url.replace(/^https?:\/\//i, ""));
+  }
+}
+
+function decodedUrlText(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function sourcePartsForUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return {
+      domain: parsed.hostname.replace(/^www\./i, ""),
+      path: decodedUrlText(`${parsed.pathname}${parsed.search}`.replace(/\/$/g, "") || "/"),
+    };
+  } catch {
+    return { domain: labelForSourceUrl(url), path: "" };
+  }
+}
+
+function outputUrls(output = "") {
+  const urls: string[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/\bURL:\s*(https?:\/\/\S+)/i);
+    if (match?.[1]) {
+      urls.push(match[1]);
+    }
+  }
+  return urls;
+}
+
+export function webInvestigationSummary(events: WorkflowEvent[]) {
+  const seenUrls = new Set<string>();
+  const seenQueries = new Set<string>();
+  const sources: WebInvestigationSource[] = [];
+  const queries: string[] = [];
+
+  function addUrl(value: string) {
+    const url = normalizeSourceUrl(value);
+    if (!url || seenUrls.has(url)) {
+      return;
+    }
+    seenUrls.add(url);
+    sources.push({ url, label: labelForSourceUrl(url), ...sourcePartsForUrl(url) });
+  }
+
+  function addQuery(value: string) {
+    const query = value.trim();
+    if (!query || seenQueries.has(query)) {
+      return;
+    }
+    seenQueries.add(query);
+    queries.push(query);
+  }
+
+  for (const event of events) {
+    const lower = event.toolName.toLowerCase();
+    if (!lower.includes("web_search") && !lower.includes("web_fetch")) {
+      continue;
+    }
+    const input = event.toolInput || {};
+    if (lower.includes("web_search")) {
+      addQuery(stringInputValue(input, "query"));
+      for (const url of outputUrls(event.output || "")) {
+        addUrl(url);
+      }
+    }
+    if (lower.includes("web_fetch")) {
+      addUrl(stringInputValue(input, "url"));
+      for (const url of outputUrls(event.output || "")) {
+        addUrl(url);
+      }
+    }
+  }
+
+  return { sources, queries };
+}
 
 function workflowDiffLineClassName(line: string) {
   if (line.startsWith("++ ")) {
@@ -155,7 +286,7 @@ function WorkflowOutputPreview({ event, source }: { event: WorkflowEvent; source
     : 0;
   const count = source.kind === "diff"
     ? `${formatWorkflowTokenCount(estimateTextTokens(source.content))} (${changedLines.toLocaleString()}줄)`
-    : formatWorkflowTokenCount(estimateTextTokens(source.content));
+    : formatWorkflowContentCount(source.content);
 
   useLayoutEffect(() => {
     const body = bodyRef.current;
@@ -182,13 +313,198 @@ function WorkflowOutputPreview({ event, source }: { event: WorkflowEvent; source
   );
 }
 
-export function WorkflowPanel({ events: eventOverride }: { events?: WorkflowEvent[] } = {}) {
+function workflowRows(events: WorkflowEvent[]): WorkflowRow[] {
+  const purposeGroupIds = new Set(
+    events
+      .filter((event) => event.role === "purpose" && event.groupId)
+      .map((event) => event.groupId as string),
+  );
+  const childrenByGroupId = new Map<string, WorkflowEvent[]>();
+  for (const event of events) {
+    if (!event.groupId || event.role === "purpose" || !purposeGroupIds.has(event.groupId)) {
+      continue;
+    }
+    const children = childrenByGroupId.get(event.groupId) || [];
+    children.push(event);
+    childrenByGroupId.set(event.groupId, children);
+  }
+
+  const rows: WorkflowRow[] = [];
+  for (const event of events) {
+    if (event.role === "purpose" && event.groupId) {
+      rows.push({ type: "group", parent: event, children: childrenByGroupId.get(event.groupId) || [] });
+      continue;
+    }
+    if (event.groupId && purposeGroupIds.has(event.groupId)) {
+      continue;
+    }
+    rows.push({ type: "event", event });
+  }
+  return rows;
+}
+
+function WorkflowStep({ event, detail, animate }: { event: WorkflowEvent; detail: string; animate: boolean }) {
+  const [entering, setEntering] = useState(animate);
+
+  useLayoutEffect(() => {
+    if (!animate) {
+      setEntering(false);
+      return undefined;
+    }
+    setEntering(true);
+    const frame = window.requestAnimationFrame(() => setEntering(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [animate, event.id]);
+
+  return (
+    <div
+      className={`workflow-step ${event.level || "child"} ${event.status}${entering ? " entering" : ""}`}
+      data-workflow-role={event.role}
+      data-workflow-group-id={event.groupId}
+      aria-level={event.level === "child" ? 2 : 1}
+    >
+      <span className="workflow-dot" aria-hidden="true" />
+      <span className="workflow-copy">
+        <strong>{event.title}</strong>
+        <small>
+          {statusLabel(event.status)}
+          {detail ? ` · ${detail}` : ""}
+        </small>
+      </span>
+    </div>
+  );
+}
+
+function activeWorkflowCount(events: WorkflowEvent[]) {
+  return events.filter((event) => event.status === "running" && event.role !== "purpose").length;
+}
+
+function isImmediateWorkflowEvent(event: WorkflowEvent) {
+  return !event.toolName && event.role !== "purpose";
+}
+
+function visibleStaggeredWorkflowEvents(events: WorkflowEvent[], staggeredCount: number) {
+  let remaining = staggeredCount;
+  return events.filter((event) => {
+    if (isImmediateWorkflowEvent(event)) {
+      return true;
+    }
+    if (remaining <= 0) {
+      return false;
+    }
+    remaining -= 1;
+    return true;
+  });
+}
+
+function useStaggeredWorkflowEvents(events: WorkflowEvent[], enabled: boolean) {
+  const initialStaggeredCount = () => {
+    if (!enabled) {
+      return events.filter((event) => !isImmediateWorkflowEvent(event)).length;
+    }
+    return events.some(isImmediateWorkflowEvent) ? 0 : Math.min(1, events.length);
+  };
+  const [visibleCount, setVisibleCount] = useState(initialStaggeredCount);
+  const visibleCountRef = useRef(visibleCount);
+  const firstEventIdRef = useRef(events[0]?.id || "");
+
+  useEffect(() => {
+    visibleCountRef.current = visibleCount;
+  }, [visibleCount]);
+
+  useEffect(() => {
+    const firstEventId = events[0]?.id || "";
+    const staggeredEventCount = events.filter((event) => !isImmediateWorkflowEvent(event)).length;
+    if (!enabled) {
+      firstEventIdRef.current = firstEventId;
+      setVisibleCount(staggeredEventCount);
+      return undefined;
+    }
+    if (firstEventIdRef.current !== firstEventId) {
+      firstEventIdRef.current = firstEventId;
+      const initialCount = events.some(isImmediateWorkflowEvent) ? 0 : Math.min(1, staggeredEventCount);
+      visibleCountRef.current = initialCount;
+      setVisibleCount(initialCount);
+    } else if (visibleCountRef.current > staggeredEventCount) {
+      visibleCountRef.current = staggeredEventCount;
+      setVisibleCount(staggeredEventCount);
+    } else if (visibleCountRef.current === 0 && staggeredEventCount > 0 && !events.some(isImmediateWorkflowEvent)) {
+      visibleCountRef.current = 1;
+      setVisibleCount(1);
+    }
+    if (visibleCountRef.current >= staggeredEventCount) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      setVisibleCount((current) => {
+        const next = Math.min(staggeredEventCount, current + 1);
+        visibleCountRef.current = next;
+        return next;
+      });
+    }, workflowEventStaggerMs);
+    return () => window.clearInterval(timer);
+  }, [enabled, events]);
+
+  return enabled ? visibleStaggeredWorkflowEvents(events, visibleCount) : events;
+}
+
+export function WebInvestigationSources({ sources, queries }: { sources: WebInvestigationSource[]; queries: string[] }) {
+  if (!sources.length && !queries.length) {
+    return null;
+  }
+
+  const sourceCount = sources.length;
+  const queryCount = queries.length;
+  return (
+    <details className="answer-web-sources">
+      <summary>
+        <span className="answer-web-sources-title">출처</span>
+        <small>
+          {sourceCount ? `${sourceCount.toLocaleString()}개 사이트` : "검색어만 기록"}
+          {queryCount ? ` · 검색어 ${queryCount.toLocaleString()}개` : ""}
+        </small>
+      </summary>
+      <div className="workflow-web-source-body">
+        {queries.length ? (
+          <div className="workflow-web-query-group" aria-label="검색어">
+            <span className="workflow-web-query-label">검색어</span>
+            <div className="workflow-web-query-list">
+              {queries.map((query) => (
+                <span className="workflow-web-query" key={query}>{query}</span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {sources.length ? (
+          <ul className="workflow-web-source-list">
+            {sources.map((source, index) => (
+              <li key={source.url}>
+                <a href={source.url} target="_blank" rel="noreferrer">
+                  <span className="workflow-web-source-index" aria-hidden="true">{index + 1}</span>
+                  <span className="workflow-web-source-copy">
+                    <span className="workflow-web-source-domain">{source.domain}</span>
+                    {source.path ? <span className="workflow-web-source-path">{source.path}</span> : null}
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+export function WorkflowPanel({ events: eventOverride, durationSeconds }: { events?: WorkflowEvent[]; durationSeconds?: number | null } = {}) {
   const { state } = useAppState();
   const events = eventOverride || state.workflowEvents;
+  const animateActiveWorkflow = state.busy && !state.restoringHistory && events === state.workflowEvents;
+  const visibleEvents = useStaggeredWorkflowEvents(events, animateActiveWorkflow);
+  const totalDurationSeconds = durationSeconds ?? (!eventOverride ? state.workflowDurationSeconds : null);
   const [now, setNow] = useState(() => Date.now());
   const runningSinceRef = useRef<Record<string, number>>({});
 
-  const runningCount = events.filter((event) => event.status === "running").length;
+  const runningCount = activeWorkflowCount(events);
 
   useEffect(() => {
     const runningIds = new Set(events.filter((event) => event.status === "running").map((event) => event.id));
@@ -220,12 +536,19 @@ export function WorkflowPanel({ events: eventOverride }: { events?: WorkflowEven
   }
 
   const outputPreviewEvents = useMemo(
-    () => events
+    () => visibleEvents
       .map((event) => ({ event, source: isWorkflowOutputTool(event.toolName) ? workflowPreviewSource(event) : null }))
       .filter((item): item is { event: WorkflowEvent; source: WorkflowPreviewSource } => Boolean(item.source)),
-    [events],
+    [visibleEvents],
   );
+  const rows = useMemo(() => workflowRows(visibleEvents), [visibleEvents]);
   const hasOutputPreview = outputPreviewEvents.length > 0;
+  const countLabel = runningCount
+    ? `${runningCount}개 실행 중`
+    : [
+      `${events.length}개 기록`,
+      totalDurationSeconds ? `(${formatDuration(totalDurationSeconds)})` : "",
+    ].filter(Boolean).join(" ");
 
   if (!events.length) {
     return null;
@@ -237,22 +560,28 @@ export function WorkflowPanel({ events: eventOverride }: { events?: WorkflowEven
         <summary>
           <span className="workflow-title">작업 진행</span>
           <span className="workflow-count">
-            {runningCount ? `${runningCount}개 실행 중` : `${events.length}개 기록`}
+            {countLabel}
           </span>
         </summary>
         <div className="workflow-body">
           <div className="workflow-list">
-            {events.map((event) => (
-              <div className={`workflow-step ${event.level || "child"} ${event.status}`} key={event.id}>
-                <span className="workflow-dot" aria-hidden="true" />
-                <span className="workflow-copy">
-                  <strong>{event.title}</strong>
-                  <small>
-                    {statusLabel(event.status)}
-                    {eventDetail(event) ? ` · ${eventDetail(event)}` : ""}
-                  </small>
-                </span>
+            {rows.map((row) => row.type === "group" ? (
+              <div
+                className={`workflow-group ${row.parent.status}`}
+                data-workflow-group-id={row.parent.groupId}
+                key={row.parent.id}
+              >
+                <WorkflowStep event={row.parent} detail={eventDetail(row.parent)} animate={animateActiveWorkflow} />
+                {row.children.length ? (
+                  <div className="workflow-children" role="group" aria-label={`${row.parent.title} 하위 단계`}>
+                    {row.children.map((child) => (
+                      <WorkflowStep event={child} detail={eventDetail(child)} animate={animateActiveWorkflow} key={child.id} />
+                    ))}
+                  </div>
+                ) : null}
               </div>
+            ) : (
+              <WorkflowStep event={row.event} detail={eventDetail(row.event)} animate={animateActiveWorkflow} key={row.event.id} />
             ))}
           </div>
           {outputPreviewEvents.length ? (

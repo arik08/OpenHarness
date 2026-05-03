@@ -105,6 +105,21 @@ def test_build_system_prompt_plans_substantial_tasks_first():
     assert "Do not add a checklist for tiny, obvious, or purely informational tasks" in prompt
 
 
+def test_build_system_prompt_discourages_repeated_clarification_rounds():
+    env = _make_env()
+    prompt = build_system_prompt(env=env)
+
+    assert "Clarifying-question budget" in prompt
+    assert "state your assumption and proceed" in prompt
+    assert "batch the necessary choices into one message" in prompt
+    assert "at most two clarification rounds" in prompt
+    assert 'Do not ask "should I proceed?"' in prompt
+    assert "After the user answers a clarification question" in prompt
+    assert 'A short numeric reply like "2" counts as choosing' in prompt
+    assert "Do not restate the full plan, table of contents, or alternative approaches" in prompt
+    assert "unless the answer creates a new concrete blocker or risky action" in prompt
+
+
 def test_build_system_prompt_guides_chat_html_rendering_and_report_charts():
     env = _make_env()
     prompt = build_system_prompt(env=env)
@@ -119,6 +134,16 @@ def test_build_system_prompt_guides_chat_html_rendering_and_report_charts():
     assert "Avoid oversized border-radius" in prompt
     assert "usually around 4-8px radius" in prompt
     assert "self-contained, compact, readable in a constrained iframe" in prompt
+
+
+def test_build_system_prompt_rejects_yellowed_report_palettes():
+    env = _make_env()
+    prompt = build_system_prompt(env=env)
+
+    assert "Avoid yellowed report palettes" in prompt
+    assert "aged paper, parchment, sepia" in prompt
+    assert "cream/beige/yellowed document" in prompt
+    assert "any appropriate non-yellowed palette" in prompt
 
 
 def test_build_system_prompt_prefers_existing_files_and_batched_edits():

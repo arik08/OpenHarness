@@ -278,6 +278,7 @@ def save_session_snapshot(
     usage: UsageSnapshot,
     session_id: str | None = None,
     tool_metadata: dict[str, object] | None = None,
+    history_events: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Persist a session snapshot. Saves both by ID and as latest."""
     session_dir = get_project_session_dir(cwd)
@@ -305,6 +306,7 @@ def save_session_snapshot(
         "model": model,
         "system_prompt": system_prompt,
         "messages": [message.model_dump(mode="json") for message in messages],
+        "history_events": _sanitize_history_events(history_events),
         "usage": usage.model_dump(),
         "tool_metadata": _persistable_tool_metadata(tool_metadata),
         "created_at": now,
@@ -324,6 +326,23 @@ def save_session_snapshot(
     return latest_path
 
 
+def _sanitize_history_events(history_events: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Keep only JSON-safe event dictionaries for web history replay."""
+    if not isinstance(history_events, list):
+        return []
+    events: list[dict[str, Any]] = []
+    for event in history_events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").strip()
+        if not event_type:
+            continue
+        sanitized = {str(key): _sanitize_metadata(value) for key, value in event.items()}
+        sanitized["type"] = event_type
+        events.append(sanitized)
+    return events
+
+
 def _sanitize_snapshot_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize persisted messages for forward compatibility."""
     raw_messages = payload.get("messages", [])
@@ -334,6 +353,7 @@ def _sanitize_snapshot_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload = dict(payload)
         payload["messages"] = [message.model_dump(mode="json") for message in messages]
         payload["message_count"] = len(messages)
+    payload["history_events"] = _sanitize_history_events(payload.get("history_events"))
     return payload
 
 

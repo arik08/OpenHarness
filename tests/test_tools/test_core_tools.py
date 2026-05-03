@@ -32,6 +32,7 @@ from myharness.tools.skill_tool import SkillTool, SkillToolInput
 from myharness.tools.todo_write_tool import TodoWriteTool, TodoWriteToolInput
 from myharness.tools.tool_search_tool import ToolSearchTool, ToolSearchToolInput
 from myharness.tools import create_default_tool_registry
+from myharness.tools.ask_user_question_tool import AskUserQuestionTool
 from myharness.config.settings import load_settings
 
 
@@ -306,6 +307,18 @@ def test_todo_write_schema_guides_incremental_progress_updates():
     assert "immediately after each step completes" in TodoWriteTool.description
     assert "full current checklist" in schema["properties"]["todos"]["description"]
     assert "actually completed since the prior update" in schema["properties"]["todos"]["description"]
+
+
+def test_ask_user_question_schema_discourages_unnecessary_follow_ups():
+    schema = AskUserQuestionTool.input_model.model_json_schema()
+
+    assert "Use this only when the missing information" in AskUserQuestionTool.description
+    assert "state the assumption and proceed" in AskUserQuestionTool.description
+    assert "batch the choices into one prompt" in AskUserQuestionTool.description
+    assert "avoid approval-only questions" in AskUserQuestionTool.description
+    assert "After the user answers, continue the original task" in AskUserQuestionTool.description
+    assert "without restating the plan" in AskUserQuestionTool.description
+    assert "Batch all necessary clarification" in schema["properties"]["question"]["description"]
 
 
 @pytest.mark.asyncio

@@ -79,6 +79,21 @@ class FakeBinaryStdout:
         return None
 
 
+class FakeSessionBackend:
+    def __init__(self, deleted: bool = True) -> None:
+        self.deleted = deleted
+        self.deleted_ids: list[str] = []
+
+    def delete_by_id(self, cwd, session_id: str) -> bool:
+        del cwd
+        self.deleted_ids.append(session_id)
+        return self.deleted
+
+    def list_snapshots(self, cwd, limit=None):
+        del cwd, limit
+        return []
+
+
 @pytest.mark.asyncio
 async def test_run_backend_host_accepts_permission_mode(monkeypatch):
     captured: dict[str, str | None] = {}
@@ -96,6 +111,74 @@ async def test_run_backend_host_accepts_permission_mode(monkeypatch):
 
     assert result == 0
     assert captured["permission_mode"] == "full_auto"
+
+
+def test_backend_host_records_history_events_for_snapshot_replay():
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+
+    host._record_history_event(BackendEvent(type="transcript_item", item={"role": "user", "text": "질문"}))
+    host._record_history_event(
+        BackendEvent(
+            type="tool_started",
+            tool_name="shell_command",
+            tool_call_index=0,
+            tool_input={"command": "pytest"},
+        )
+    )
+    host._record_history_event(
+        BackendEvent(
+            type="tool_completed",
+            tool_name="shell_command",
+            tool_call_index=0,
+            output="passed",
+            is_error=False,
+        )
+    )
+    host._record_history_event(BackendEvent(type="assistant_complete", message="완료했습니다."))
+
+    assert host._history_events == [
+        {"type": "user", "text": "질문"},
+        {
+            "type": "tool_started",
+            "tool_name": "shell_command",
+            "tool_call_index": 0,
+            "tool_input": {"command": "pytest"},
+        },
+        {
+            "type": "tool_completed",
+            "tool_name": "shell_command",
+            "tool_call_index": 0,
+            "output": "passed",
+            "is_error": False,
+        },
+        {"type": "assistant", "text": "완료했습니다.", "has_tool_uses": False},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delete_current_session_rotates_saved_session_id(tmp_path):
+    backend = FakeSessionBackend(deleted=False)
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    host._bundle = SimpleNamespace(
+        cwd=tmp_path,
+        session_backend=backend,
+        session_id="current123",
+        engine=SimpleNamespace(tool_metadata={"session_id": "current123"}),
+    )
+    events: list[BackendEvent] = []
+
+    async def _emit(event: BackendEvent) -> None:
+        events.append(event)
+
+    host._emit = _emit  # type: ignore[method-assign]
+
+    await host._handle_delete_session("current123")
+
+    assert backend.deleted_ids == ["current123"]
+    assert host._bundle.session_id != "current123"
+    assert host._bundle.engine.tool_metadata["session_id"] == host._bundle.session_id
+    assert any(event.type == "active_session" and event.value == host._bundle.session_id for event in events)
+    assert not any(event.type == "error" for event in events)
 
 
 @pytest.mark.asyncio
@@ -476,6 +559,11 @@ async def test_backend_host_restore_history_replaces_session_metadata(tmp_path, 
                 "session_title_source": "conversation",
                 "workflow_duration_seconds": 42,
             },
+            history_events=[
+                {"type": "user", "text": "저장된 원본 질문"},
+                {"type": "tool_started", "tool_name": "shell_command", "tool_input": {"command": "pytest"}},
+                {"type": "assistant", "text": "저장된 원본 답변"},
+            ],
         )
 
         await host._restore_history_snapshot("restored123")
@@ -487,6 +575,11 @@ async def test_backend_host_restore_history_replaces_session_metadata(tmp_path, 
     assert host._bundle.engine.tool_metadata["session_title_source"] == "conversation"
     snapshot_event = next(event for event in events if event.type == "history_snapshot")
     assert snapshot_event.compact_metadata == {"workflow_duration_seconds": 42}
+    assert snapshot_event.history_events == [
+        {"type": "user", "text": "저장된 원본 질문"},
+        {"type": "tool_started", "tool_name": "shell_command", "tool_input": {"command": "pytest"}},
+        {"type": "assistant", "text": "저장된 원본 답변"},
+    ]
 
 
 @pytest.mark.asyncio

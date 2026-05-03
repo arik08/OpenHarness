@@ -40,6 +40,8 @@ export type WorkflowEvent = {
   role?: "planning" | "purpose" | "activity" | "final" | "waiting";
   purpose?: "info" | "action" | "verification";
   groupId?: string;
+  toolCallId?: string | null;
+  toolCallIndex?: number | null;
   toolInput?: Record<string, unknown> | null;
   output?: string;
 };
@@ -94,10 +96,12 @@ export type AppState = {
   messages: ChatMessage[];
   workflowAnchorMessageId: string | null;
   workflowEventsByMessageId: Record<string, WorkflowEvent[]>;
+  workflowDurationSecondsByMessageId: Record<string, number>;
   workflowInputBuffers: Record<string, string>;
   todoMarkdown: string;
   todoCollapsed: boolean;
   workflowEvents: WorkflowEvent[];
+  workflowDurationSeconds: number | null;
   composer: ComposerState;
   runtimePicker: RuntimePickerState;
 };

@@ -8,7 +8,12 @@ from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.socket_mode.websockets import SocketModeClient
 from slack_sdk.web.async_client import AsyncWebClient
-from slackify_markdown import slackify_markdown
+
+try:
+    from slackify_markdown import slackify_markdown
+except ImportError:  # pragma: no cover - optional formatting dependency
+    def slackify_markdown(text: str) -> str:
+        return text
 
 from myharness.channels.bus.events import OutboundMessage
 from myharness.channels.bus.queue import MessageBus
@@ -16,6 +21,17 @@ from myharness.channels.impl.base import BaseChannel
 from myharness.config.schema import SlackConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _thread_session_key(
+    chat_id: str,
+    thread_ts: str | None,
+    sender_id: str,
+    channel_type: str,
+) -> str | None:
+    if not thread_ts or channel_type == "im":
+        return None
+    return f"slack:{chat_id}:{thread_ts}:{sender_id}"
 
 
 class SlackChannel(BaseChannel):
@@ -179,8 +195,8 @@ class SlackChannel(BaseChannel):
         except Exception as e:
             logger.debug("Slack reactions_add failed: %s", e)
 
-        # Thread-scoped session key for channel/group messages
-        session_key = f"slack:{chat_id}:{thread_ts}" if thread_ts and channel_type != "im" else None
+        # Thread-scoped session key for channel/group messages, still separated by sender.
+        session_key = _thread_session_key(chat_id, thread_ts, sender_id, channel_type)
 
         try:
             await self._handle_message(

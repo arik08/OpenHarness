@@ -11,6 +11,10 @@ type IconName = "source" | "preview" | "copy" | "fullscreen" | "restore" | "clos
 
 const artifactHistoryMarker = "myharnessArtifactPanel";
 const artifactFrameBackMessage = "myharness:artifact-panel-back";
+const artifactPanelMinWidth = 320;
+const visibleChatMinWidth = 300;
+const desktopSidebarWidth = 268;
+const collapsedSidebarWidth = 16;
 const projectFileCategories = [
   ["all", "전체"],
   ["web", "웹"],
@@ -42,6 +46,12 @@ function sameArtifactHistoryState(nextState: Record<string, unknown>) {
   return isArtifactHistoryState(current)
     && current.view === nextState.view
     && String(current.path || "") === String(nextState.path || "");
+}
+
+export function clampArtifactPanelWidth(value: number, options: { windowWidth: number; sidebarCollapsed: boolean }) {
+  const sidebarWidth = options.sidebarCollapsed ? collapsedSidebarWidth : desktopSidebarWidth;
+  const maxWidth = Math.max(artifactPanelMinWidth, options.windowWidth - sidebarWidth - visibleChatMinWidth);
+  return Math.min(Math.max(value, artifactPanelMinWidth), maxWidth);
 }
 
 function iframeBackBridge(content: string) {
@@ -293,8 +303,16 @@ export function ArtifactPanel() {
   }
 
   function closePanel() {
-    if (requestHistoryBack()) {
+    if (state.activeArtifact) {
+      skipNextHistoryPushRef.current = true;
+      if (isArtifactHistoryState(history.state)) {
+        history.replaceState(artifactHistoryState("list"), "", window.location.href);
+      }
+      dispatch({ type: "open_artifact_list" });
       return;
+    }
+    if (isArtifactHistoryState(history.state)) {
+      history.replaceState(null, "", window.location.href);
     }
     dispatch({ type: "close_artifact" });
   }
@@ -478,7 +496,10 @@ export function ArtifactPanel() {
         finishResize();
         return;
       }
-      const next = Math.min(Math.max(startWidth + startX - moveEvent.clientX, 320), Math.max(360, window.innerWidth - 360));
+      const next = clampArtifactPanelWidth(startWidth + startX - moveEvent.clientX, {
+        windowWidth: window.innerWidth,
+        sidebarCollapsed: state.sidebarCollapsed,
+      });
       dispatch({ type: "set_artifact_panel_width", value: Math.round(next) });
     };
     window.addEventListener("pointermove", onMove);
@@ -599,7 +620,14 @@ export function ArtifactPanel() {
             })}
           />
         ) : payload ? (
-          <ArtifactPreview artifact={active} payload={payload} draftContent={draftContent} sourceMode={sourceMode} onDraftContentChange={setDraftContent} />
+          <ArtifactPreview
+            artifact={active}
+            payload={payload}
+            draftContent={draftContent}
+            sourceMode={sourceMode}
+            downloadUrl={downloadUrl(active, state)}
+            onDraftContentChange={setDraftContent}
+          />
         ) : (
           <p className="artifact-empty">산출물을 불러오는 중...</p>
         )}
@@ -998,12 +1026,14 @@ function ArtifactPreview({
   payload,
   draftContent,
   sourceMode,
+  downloadUrl,
   onDraftContentChange,
 }: {
   artifact: ArtifactSummary;
   payload: ArtifactPayload;
   draftContent: string;
   sourceMode: boolean;
+  downloadUrl: string;
   onDraftContentChange: (value: string) => void;
 }) {
   const kind = String(payload.kind || artifact.kind || "");
@@ -1042,7 +1072,15 @@ function ArtifactPreview({
     return <HighlightedArtifactSource artifact={artifact} content={draftContent || content} />;
   }
   if (kind === "file") {
-    return <p className="artifact-empty">이 파일 형식은 현재 프리뷰에서 다운로드 대상으로 표시됩니다.</p>;
+    return (
+      <div className="artifact-file">
+        <p className="artifact-empty">이 파일 형식은 미리보기 대신 다운로드로 열 수 있습니다.</p>
+        <a className="artifact-file-download" href={downloadUrl} download={artifact.name} aria-label={`${artifact.name} 다운로드`}>
+          <Icon name="download" />
+          <span>다운로드</span>
+        </a>
+      </div>
+    );
   }
   return (
     <textarea

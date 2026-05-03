@@ -1,8 +1,62 @@
 import { useEffect } from "react";
 import { listProjectFiles } from "../api/artifacts";
 import { listHistory } from "../api/history";
+import { listLiveSessions } from "../api/session";
 import { listWorkspaces } from "../api/workspaces";
 import { useAppState } from "../state/app-state";
+import type { HistoryItem, LiveSessionItem } from "../types/backend";
+
+function mergeLiveSessions(history: HistoryItem[], sessions: LiveSessionItem[], currentSessionId: string | null): HistoryItem[] {
+  const historyByValue = new Map<string, HistoryItem>();
+  for (const item of history) {
+    if (item.value) {
+      historyByValue.set(item.value, item);
+    }
+  }
+  const mergedHistory = history.map((item) => ({ ...item }));
+  const seen = new Set(historyByValue.keys());
+  const liveItems: HistoryItem[] = [];
+  for (const session of sessions) {
+    if (session.sessionId === currentSessionId) {
+      continue;
+    }
+    const value = session.savedSessionId || session.sessionId;
+    if (!value) {
+      continue;
+    }
+    const savedItemIndex = session.savedSessionId
+      ? mergedHistory.findIndex((item) => item.value === session.savedSessionId)
+      : -1;
+    if (savedItemIndex >= 0) {
+      mergedHistory[savedItemIndex] = {
+        ...mergedHistory[savedItemIndex],
+        workspace: mergedHistory[savedItemIndex].workspace || session.workspace || null,
+        live: true,
+        liveSessionId: session.sessionId,
+        busy: session.busy,
+      };
+      seen.add(value);
+      continue;
+    }
+    if (!session.busy && !String(session.title || "").trim()) {
+      continue;
+    }
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    liveItems.push({
+      value,
+      label: "진행 중인 채팅",
+      description: session.title || (session.busy ? "진행 중인 응답" : "열려 있는 세션"),
+      workspace: session.workspace || null,
+      live: true,
+      liveSessionId: session.sessionId,
+      busy: session.busy,
+    });
+  }
+  return [...liveItems, ...mergedHistory];
+}
 
 export function useWorkspaceData() {
   const { state, dispatch } = useAppState();
@@ -40,10 +94,20 @@ export function useWorkspaceData() {
     }
 
     dispatch({ type: "set_history_loading", value: true });
-    void listHistory({ workspacePath: state.workspacePath, workspaceName: state.workspaceName })
-      .then((data) => {
+    void Promise.all([
+      listHistory({ workspacePath: state.workspacePath, workspaceName: state.workspaceName }),
+      state.clientId
+        ? listLiveSessions({
+          clientId: state.clientId,
+          workspacePath: state.workspacePath || undefined,
+        })
+        : Promise.resolve({ sessions: [] }),
+    ])
+      .then(([data, liveData]) => {
         if (!cancelled) {
-          dispatch({ type: "set_history", history: Array.isArray(data.options) ? data.options : [] });
+          const history = Array.isArray(data.options) ? data.options : [];
+          const liveSessions = Array.isArray(liveData.sessions) ? liveData.sessions : [];
+          dispatch({ type: "set_history", history: mergeLiveSessions(history, liveSessions, state.sessionId) });
         }
       })
       .catch((error) => {
@@ -56,7 +120,7 @@ export function useWorkspaceData() {
     return () => {
       cancelled = true;
     };
-  }, [dispatch, state.historyRefreshKey, state.workspaceName, state.workspacePath]);
+  }, [dispatch, state.clientId, state.historyRefreshKey, state.sessionId, state.workspaceName, state.workspacePath]);
 
   useEffect(() => {
     let cancelled = false;

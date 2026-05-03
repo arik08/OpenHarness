@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
 import pytest
 
 from myharness.api.client import (
     ApiMessageCompleteEvent,
     ApiMessageRequest,
+    ApiRetryEvent,
     ApiTextDeltaEvent,
     ApiToolCallDeltaEvent,
 )
@@ -21,10 +23,18 @@ from myharness.engine.messages import ConversationMessage, ImageBlock, TextBlock
 
 
 class _FakeStreamResponse:
-    def __init__(self, *, status_code: int = 200, lines: list[str] | None = None, body: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        lines: list[str] | None = None,
+        body: str = "",
+        error_after_lines: int | None = None,
+    ) -> None:
         self.status_code = status_code
         self._lines = lines or []
         self._body = body.encode("utf-8")
+        self._error_after_lines = error_after_lines
 
     async def __aenter__(self) -> "_FakeStreamResponse":
         return self
@@ -36,7 +46,12 @@ class _FakeStreamResponse:
         return self._body
 
     async def aiter_lines(self):
-        for line in self._lines:
+        for index, line in enumerate(self._lines):
+            if self._error_after_lines is not None and index >= self._error_after_lines:
+                raise httpx.RemoteProtocolError(
+                    "peer closed connection without sending complete message body "
+                    "(incomplete chunked read)"
+                )
             yield line
 
 
@@ -57,6 +72,26 @@ class _FakeAsyncClient:
         self._sink["headers"] = headers
         self._sink["json"] = json
         return self._response
+
+
+class _SequenceAsyncClient:
+    def __init__(self, responses: list[_FakeStreamResponse], sink: dict[str, Any]) -> None:
+        self._responses = responses
+        self._sink = sink
+
+    async def __aenter__(self) -> "_SequenceAsyncClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def stream(self, method: str, url: str, *, headers: dict[str, str], json: dict[str, Any]):
+        self._sink["attempts"] = self._sink.get("attempts", 0) + 1
+        self._sink["method"] = method
+        self._sink["url"] = url
+        self._sink["headers"] = headers
+        self._sink["json"] = json
+        return self._responses.pop(0)
 
 
 def _b64url(data: dict[str, object]) -> str:
@@ -189,6 +224,54 @@ async def test_codex_client_streams_text(monkeypatch):
     assert sink["json"]["instructions"] == "Be helpful."
     assert sink["json"]["reasoning"] == {"effort": "high"}
     assert sink["headers"]["OpenAI-Beta"] == "responses=experimental"
+
+
+@pytest.mark.asyncio
+async def test_codex_client_retries_incomplete_chunked_read(monkeypatch):
+    sink: dict[str, Any] = {}
+    first_response = _FakeStreamResponse(
+        lines=[
+            'data: {"type":"response.output_item.added","item":{"id":"msg_1","type":"message","content":[],"role":"assistant"}}',
+        ],
+        error_after_lines=0,
+    )
+    second_response = _FakeStreamResponse(
+        lines=[
+            'data: {"type":"response.output_text.delta","delta":"retry ok"}',
+            "",
+            'data: {"type":"response.output_item.done","item":{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"retry ok","annotations":[]}]}}',
+            "",
+            'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":4,"output_tokens":2}}}',
+            "",
+        ]
+    )
+    responses = [first_response, second_response]
+    monkeypatch.setattr(
+        "myharness.api.codex_client.httpx.AsyncClient",
+        lambda *args, **kwargs: _SequenceAsyncClient(responses, sink),
+    )
+
+    async def _no_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+
+    client = CodexApiClient(_fake_codex_token())
+    events = [
+        event
+        async for event in client.stream_message(
+            ApiMessageRequest(
+                model="gpt-5.5",
+                messages=[ConversationMessage.from_user_text("hi")],
+                system_prompt="Be helpful.",
+            )
+        )
+    ]
+
+    assert sink["attempts"] == 2
+    assert any(isinstance(event, ApiRetryEvent) for event in events)
+    complete = next(event for event in events if isinstance(event, ApiMessageCompleteEvent))
+    assert complete.message.text == "retry ok"
 
 
 @pytest.mark.asyncio

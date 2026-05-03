@@ -12,6 +12,12 @@ const BUSY_VISUAL_DELAY_MS = 280;
 const NEAR_BOTTOM_PX = 96;
 const STREAMING_REJOIN_BOTTOM_PX = 260;
 
+function easeInOutCubic(progress) {
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+}
+
 export function createUI(ctx) {
   const { state, els, STATUS_LABELS } = ctx;
   function markActiveHistory(...args) { return ctx.markActiveHistory(...args); }
@@ -226,7 +232,7 @@ function scrollMessagesToBottom(options = {}) {
 
       const step = (now) => {
         const progress = Math.min(1, (now - startedAt) / duration);
-        const eased = 1 - Math.pow(1 - progress, 3);
+        const eased = easeInOutCubic(progress);
         const liveTargetTop = options.followTail
           ? Math.max(0, els.messages.scrollHeight - els.messages.clientHeight)
           : targetTop;
@@ -289,7 +295,7 @@ function scrollMessagesToBottom(options = {}) {
 
       const target = Math.max(0, els.messages.scrollHeight - els.messages.clientHeight);
       const progress = Math.min(1, (now - startedAt) / duration);
-      const eased = 1 - Math.pow(1 - progress, 3);
+      const eased = easeInOutCubic(progress);
       els.messages.scrollTop = start + (target - start) * eased;
       if (progress < 1 && state.autoFollowMessages) {
         scrollAnimationFrame = window.requestAnimationFrame(step);

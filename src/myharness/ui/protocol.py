@@ -148,6 +148,7 @@ class BackendEvent(BaseModel):
     history_events: list[dict[str, Any]] | None = None
     modal: dict[str, Any] | None = None
     tool_name: str | None = None
+    tool_call_id: str | None = None
     tool_call_index: int | None = None
     has_tool_uses: bool | None = None
     arguments_delta: str | None = None

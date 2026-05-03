@@ -138,3 +138,17 @@
 - Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
 - Do next time: Start by applying the verified corrective path: Expanded glob pattern .skills/*/SKILL.md
 - Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence f3db6cad704ca654
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity&s_type=search_subject_memo&s_keyword=GPT-4
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 04befaba2b54de8c
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Loaded skill verification-before-completion
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.

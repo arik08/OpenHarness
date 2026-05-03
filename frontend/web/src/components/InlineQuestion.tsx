@@ -26,7 +26,11 @@ export function InlineQuestion() {
   const question = (assistantQuestion?.question || String(payload?.question || payload?.reason || payload?.message || "")).trim()
     || (isPermission ? "이 도구 실행을 허용할까요?" : "추가 정보가 필요합니다.");
   const choices = useMemo(() => (
-    isQuestion ? normalizeQuestionChoices(payload, question, assistantQuestion?.choices) : []
+    isQuestion
+      ? normalizeQuestionChoices(payload, question, assistantQuestion?.choices, {
+        allowDefaultChoices: !assistantQuestion || !isAlternativeQuestion(question),
+      })
+      : []
   ), [assistantQuestion, isQuestion, payload, question]);
   const conciseQuestion = useMemo(() => {
     const fromQuestion = choices.some((choice) => choice.source === "question")
@@ -81,7 +85,7 @@ export function InlineQuestion() {
         clientId: state.clientId,
         line: trimmed,
         attachments: [],
-        suppressUserTranscript: true,
+        suppressUserTranscript: false,
         systemPrompt: state.systemPrompt.trim() || undefined,
       });
       setAnswer("");
@@ -199,6 +203,7 @@ function normalizeQuestionChoices(
   modal: Record<string, unknown> | null,
   question: string,
   fallbackChoices: QuestionChoice[] = [],
+  options: { allowDefaultChoices?: boolean } = {},
 ): QuestionChoice[] {
   const rawSources = [
     modal?.choices,
@@ -220,7 +225,7 @@ function normalizeQuestionChoices(
   if (!choices.length) {
     choices.push(...extractQuestionChoices(question));
   }
-  if (!choices.length) {
+  if (!choices.length && options.allowDefaultChoices !== false) {
     choices.push(...defaultQuestionChoices(question));
   }
   const seen = new Set<string>();
@@ -262,18 +267,29 @@ function extractQuestionChoices(question: string): QuestionChoice[] {
 }
 
 function defaultQuestionChoices(question: string): QuestionChoice[] {
-  if (/(예|아니오|yes|no|할까요|될까요|원하시나요|진행할까요|괜찮을까요|맞나요)/i.test(question)) {
+  if (isConfirmationQuestion(question)) {
     return [
       { label: "네, 진행해주세요", value: "네, 진행해주세요", description: "", source: "default" },
       { label: "아니요", value: "아니요", description: "", source: "default" },
       { label: "선택지를 더 보여주세요", value: "선택지를 더 보여주세요", description: "", source: "default" },
     ];
   }
-  return [
-    { label: "추천안으로 진행해주세요", value: "추천안으로 진행해주세요", description: "", source: "default" },
-    { label: "선택지를 더 제안해주세요", value: "선택지를 더 제안해주세요", description: "", source: "default" },
-    { label: "적절히 판단해주세요", value: "적절히 판단해주세요", description: "", source: "default" },
-  ];
+  return [];
+}
+
+function isAlternativeQuestion(question: string) {
+  return /\b(?:or|versus|vs\.?)\b|(?:아니면|또는|혹은|대신|중에서|양자택일)/i.test(question);
+}
+
+function isOpenEndedQuestion(question: string) {
+  return /(?:어떤|무엇|무슨|어느|어떻게|어디|왜|누구|언제|몇|얼마|which|what|how|where|why|who|when)/i.test(question);
+}
+
+function isConfirmationQuestion(question: string) {
+  if (isOpenEndedQuestion(question) || isAlternativeQuestion(question)) {
+    return false;
+  }
+  return /(?:예|아니오|yes|no|원하시나요|괜찮을까요|맞나요|해도 될까요|진행.*(?:할까요|될까요)|시작.*(?:할까요|될까요)|만들.*(?:할까요|될까요)|수정.*(?:할까요|될까요)|적용.*(?:할까요|될까요)|확정.*(?:할까요|될까요)|should i|would you like|proceed|continue)/i.test(question);
 }
 
 function stripQuestionChoiceLines(question: string, choices: QuestionChoice[]) {
@@ -311,7 +327,7 @@ function assistantFollowUpQuestion(messages: Array<{ role: string; text: string;
   }
   return {
     question,
-    choices: defaultQuestionChoices(question),
+    choices: isAlternativeQuestion(question) ? [] : defaultQuestionChoices(question),
   };
 }
 

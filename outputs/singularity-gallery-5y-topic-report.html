@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>특이점 갤러리 5년 주제 변화 웹보고서</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+:root{
+  --bg:#f4f6f8; --paper:#fff; --ink:#20282d; --muted:#65727a; --line:#dce3e8;
+  --accent:#0f766e; --accent2:#2563eb; --accent3:#ea580c; --soft:#ecfdf5;
+  --warn:#b45309; --shadow:0 8px 20px rgba(24,35,42,.07); --r:6px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Malgun Gothic","Apple SD Gothic Neo","Segoe UI",sans-serif;line-height:1.55;letter-spacing:0}
+a{color:#0f766e;text-decoration:none} a:hover{text-decoration:underline}
+.report{max-width:1200px;margin:0 auto;padding:30px 22px 56px}
+.hero{background:var(--paper);border-top:5px solid var(--accent);border-radius:var(--r);box-shadow:var(--shadow);padding:28px 32px 24px}
+.eyebrow{font:700 12px/1.2 "Segoe UI",sans-serif;color:var(--accent);text-transform:uppercase;letter-spacing:.08em}
+h1{margin:10px 0 8px;font-size:34px;line-height:1.18;letter-spacing:0}
+.subtitle{max-width:880px;color:var(--muted);font-size:15px;margin:0}
+.meta{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}
+.meta div{border:1px solid var(--line);background:#f9fbfc;border-radius:4px;padding:12px}
+.meta b{display:block;color:var(--accent);font:700 21px/1 "Segoe UI",sans-serif}
+.meta span{display:block;margin-top:5px;color:var(--muted);font-size:12px}
+.section{margin-top:20px;background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:22px;box-shadow:0 3px 12px rgba(24,35,42,.04)}
+.section h2{margin:0 0 14px;padding-bottom:9px;border-bottom:1px solid var(--line);font-size:21px;letter-spacing:0}
+.section h3{margin:0 0 8px;font-size:16px;letter-spacing:0}
+.grid{display:grid;gap:16px}.g2{grid-template-columns:1.08fr .92fr}.g3{grid-template-columns:repeat(3,1fr)}
+.finding{border-left:4px solid var(--accent);background:#f8fbfc;border-radius:0 4px 4px 0;padding:12px 14px;margin-bottom:9px}
+.finding b{display:block;margin-bottom:4px}
+.kpi{border:1px solid var(--line);background:#f8fbfc;border-radius:4px;padding:14px}
+.kpi b{display:block;color:var(--accent);font:700 28px/1 "Segoe UI",sans-serif}
+.kpi span{display:block;color:var(--muted);font-size:13px;margin-top:6px}
+.chart{width:100%;height:335px}.chart.small{height:278px}
+table{width:100%;border-collapse:collapse;font-size:13px;background:white}
+th,td{border-bottom:1px solid var(--line);padding:8px;vertical-align:top;text-align:left}
+th{background:#eef4f6;color:#46535a;font:700 12px/1.35 "Segoe UI",sans-serif}
+td.num{text-align:right;font-family:"Segoe UI",sans-serif}
+.timeline{display:grid;gap:10px}
+.tl{display:grid;grid-template-columns:94px 1fr;gap:12px;align-items:start;border-bottom:1px solid var(--line);padding:0 0 10px}
+.tl:last-child{border-bottom:0;padding-bottom:0}
+.tl time{font:700 13px/1.2 "Segoe UI",sans-serif;color:var(--accent);background:var(--soft);border:1px solid #d4e7ea;border-radius:4px;padding:7px;text-align:center}
+.tl p{margin:2px 0 0;color:var(--muted);font-size:13px}
+.tag{display:inline-block;border:1px solid #cfdde2;background:#f3f8f9;color:#0f766e;border-radius:4px;padding:2px 6px;margin:0 4px 5px 0;font:700 12px/1.45 "Segoe UI",sans-serif}
+.note{color:var(--muted);font-size:12px;margin:9px 0 0}
+.callout{background:#fff8e8;border:1px solid #ecd9a4;border-left:4px solid var(--warn);border-radius:4px;padding:12px 14px;color:#4e432d}
+.sources{columns:2;column-gap:28px;font-size:12px}.sources li{break-inside:avoid;margin:0 0 6px}
+.footer{margin-top:16px;color:var(--muted);font-size:12px}
+@media(max-width:860px){.report{padding:16px}.hero{padding:22px 18px}h1{font-size:27px}.meta,.g2,.g3{grid-template-columns:1fr}.tl{grid-template-columns:1fr}.sources{columns:1}.chart{height:300px}}
+@media print{body{background:white}.report{max-width:none;padding:0}.hero,.section{box-shadow:none;break-inside:avoid}.chart{height:260px}.sources{columns:1}a{text-decoration:none;color:inherit}}
+</style>
+</head>
+<body>
+<main class="report">
+  <header class="hero">
+    <div class="eyebrow">DCInside Thesingularity · Sample-Based Web Report</div>
+    <h1>특이점 갤러리 5년 주제 변화</h1>
+    <p class="subtitle">DCInside `특이점이 온다` 마이너 갤러리의 공개 접근 가능 게시글·검색 결과 표본을 기반으로, 2021년부터 2026년 5월 초까지 논의의 중심이 어떻게 이동했는지 정리한 웹보고서입니다.</p>
+    <div class="meta">
+      <div><b>2021-2026</b><span>최근 5년 흐름, 2026년은 5월 초까지</span></div>
+      <div><b>18+</b><span>직접 조회·검색한 핵심 키워드</span></div>
+      <div><b>6</b><span>주제 클러스터</span></div>
+      <div><b>표본 기반</b><span>전수 빈도 통계가 아닌 상대 강도</span></div>
+    </div>
+  </header>
+
+  <section class="section">
+    <h2>Executive Summary</h2>
+    <div class="finding"><b>1. 담론의 중심은 “언젠가 올 특이점”에서 “지금 쓰는 모델의 성능과 한계”로 이동했습니다.</b>2021~2022년의 AGI·ASI 예측 담론은 2022년 말 ChatGPT, 2023년 GPT-4 이후 실제 모델 사용기·벤치마크·프롬프트·서비스 품질 논의와 결합했습니다.</div>
+    <div class="finding"><b>2. 2023년은 GPT-4와 멀티모달이 갤러리 언어를 바꾼 전환점입니다.</b>GPT-4, AGI 인터뷰, DALL-E 3, GPT-4 Vision, LLM 이해 여부 같은 글이 늘며 갤러리가 AI 뉴스 큐레이션과 해석 커뮤니티 성격을 강하게 띠기 시작했습니다.</div>
+    <div class="finding"><b>3. 2024~2025년에는 OpenAI 단일 기대보다 모델 경쟁 구도가 강해졌습니다.</b>Claude, Gemini, Grok, DeepSeek, 오픈소스·중국 모델이 반복적으로 비교되며 “어느 모델이 특이점에 가까운가”보다 “어느 모델이 지금 더 잘 쓰이는가”가 중요해졌습니다.</div>
+    <div class="finding"><b>4. 2025~2026년 표본에서는 실용화와 사회 리스크가 같이 커졌습니다.</b>바이브코딩, 업무 자동화, 의료·유전 상담, 이미지 기능 같은 생활형 사용 이슈와 일자리, 규제, 악용, 검열, 안전성 우려가 같은 화면에 공존합니다.</div>
+  </section>
+
+  <section class="section grid g2">
+    <div>
+      <h2>주제 강도 변화</h2>
+      <div id="topicChart" class="chart"></div>
+      <p class="note">점수는 게시글 전수 비율이 아니라 검색 표본과 대표 게시글 관찰을 0~100으로 정규화한 상대 강도입니다.</p>
+    </div>
+    <div>
+      <h2>핵심 전환</h2>
+      <div class="timeline">
+        <div class="tl"><time>2022 H2</time><div><h3>이미지 생성과 ChatGPT 충격</h3><p>Stable Diffusion 실사용 질문, ChatGPT 초기 실험, 검색 대체론이 등장했습니다.</p></div></div>
+        <div class="tl"><time>2023</time><div><h3>GPT-4 이후 LLM 중심 재편</h3><p>GPT-4, AGI 타임라인, 멀티모달, DALL-E 3, LLM 한계 논의가 묶였습니다.</p></div></div>
+        <div class="tl"><time>2024</time><div><h3>추론·멀티모달·경쟁 모델</h3><p>GPT-4o, o1, Gemini, Claude, Sora가 모델별 장단점 비교를 강화했습니다.</p></div></div>
+        <div class="tl"><time>2025</time><div><h3>GPT-5와 산업·사회 레이어</h3><p>GPT-5 기대/출시, Gemini 급부상, Anthropic/OpenAI 갈등, DeepSeek·중국 모델, 일자리 논의가 커졌습니다.</p></div></div>
+        <div class="tl"><time>2026.1-5</time><div><h3>도구화와 고빈도 업데이트</h3><p>GPT 5.5, 바이브코딩, 업무 자동화, 구독·기능·서비스 품질 논의가 촘촘합니다.</p></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section grid g2">
+    <div>
+      <h2>커뮤니티 정서 변화</h2>
+      <div id="sentimentChart" class="chart small"></div>
+    </div>
+    <div>
+      <h2>해석 포인트</h2>
+      <table>
+        <thead><tr><th>축</th><th>초기 양상</th><th>최근 양상</th></tr></thead>
+        <tbody>
+          <tr><td>기대</td><td>AGI/ASI 도래 시점 예측</td><td>모델별 체감 성능, 코딩·업무 생산성</td></tr>
+          <tr><td>회의</td><td>환각, 수학 실패, 이미지 품질 문제</td><td>스케일링 한계, 벤치마크 피로, 서비스 품질·요금</td></tr>
+          <tr><td>경쟁</td><td>OpenAI/GPT 중심</td><td>Claude, Gemini, DeepSeek, Grok, 오픈소스 비교</td></tr>
+          <tr><td>사회성</td><td>특이점 철학, 영생, 미래학</td><td>일자리, 규제, 악용, 검열, 기업 권력</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>주제 클러스터별 변화</h2>
+    <div class="grid g3">
+      <div class="kpi"><b>LLM/GPT</b><span>2022년 말부터 급상승, 2023년 GPT-4 이후 갤러리의 기본 축이 되었습니다. 2026년에는 GPT 5.5, 바이브코딩, 업무 자동화처럼 일상 사용 이슈가 강합니다.</span></div>
+      <div class="kpi"><b>AGI·ASI</b><span>갤러리 정체성의 장기 축입니다. 다만 최근에는 순수 예언보다 모델 성능, 에이전트 자동화, 로봇 상용화 타임라인과 결합합니다.</span></div>
+      <div class="kpi"><b>이미지·영상</b><span>2022년 Stable Diffusion에서 촉발된 실사용 논의가 2023년 DALL-E 3, 2024년 Sora와 멀티모달 논의로 이어졌습니다.</span></div>
+      <div class="kpi"><b>로봇·일자리</b><span>초기에는 미래 기술 전망에 가까웠지만, 2025년 이후 피지컬 AI, 월드모델, 휴머노이드, 노동해방/감축 논의로 구체화됐습니다.</span></div>
+      <div class="kpi"><b>모델 경쟁</b><span>Claude, Gemini, Grok, DeepSeek, 중국·오픈소스 모델이 OpenAI와 나란히 비교되면서 성능/검열/가격/접근성 논의가 늘었습니다.</span></div>
+      <div class="kpi"><b>안전·규제</b><span>데이터 오염, Superalignment, 악용, 검열, 규제, 기업 권력 논의가 2023년 이후 꾸준히 올라오며 기술 낙관론을 보정합니다.</span></div>
+    </div>
+  </section>
+
+  <section class="section grid g2">
+    <div>
+      <h2>연도별 대표 키워드</h2>
+      <table>
+        <thead><tr><th>시기</th><th>대표 키워드</th><th>담론 성격</th></tr></thead>
+        <tbody>
+          <tr><td>2021</td><td><span class="tag">특이점</span><span class="tag">AGI</span><span class="tag">영생</span></td><td>미래학·철학·도래 시점 예측 중심</td></tr>
+          <tr><td>2022</td><td><span class="tag">Stable Diffusion</span><span class="tag">ChatGPT</span><span class="tag">GPT-4 루머</span></td><td>생성 AI를 직접 써보며 놀라움과 한계를 동시에 기록</td></tr>
+          <tr><td>2023</td><td><span class="tag">GPT-4</span><span class="tag">DALL-E 3</span><span class="tag">멀티모달</span><span class="tag">AGI 타임라인</span></td><td>LLM 중심의 정보 정리·해석 커뮤니티로 확장</td></tr>
+          <tr><td>2024</td><td><span class="tag">GPT-4o</span><span class="tag">o1</span><span class="tag">Sora</span><span class="tag">Gemini</span><span class="tag">Claude</span></td><td>추론·멀티모달·모델 경쟁이 동시 진행</td></tr>
+          <tr><td>2025</td><td><span class="tag">GPT-5</span><span class="tag">DeepSeek</span><span class="tag">일자리</span><span class="tag">API 차단</span><span class="tag">월드모델</span></td><td>산업 경쟁, 사회 영향, 피지컬 AI로 주제 확장</td></tr>
+          <tr><td>2026.1-5</td><td><span class="tag">GPT 5.5</span><span class="tag">바이브코딩</span><span class="tag">업무 자동화</span><span class="tag">서비스 비교</span></td><td>고성능 모델을 일상 도구로 전제하는 실사용 담론 강화</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h2>표본 기반 주제 비중</h2>
+      <div id="mixChart" class="chart small"></div>
+      <p class="note">최근 표본에서 관찰된 논의 축의 대략적 구성입니다. 이벤트 당일 게시량에 따라 달라질 수 있습니다.</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>방법론과 한계</h2>
+    <div class="callout">이 보고서는 DCInside 전체 게시글·댓글을 전수 수집한 통계 보고서가 아닙니다. 공개 접근 가능한 갤러리 목록 검색, 검색엔진 색인 게시글, 대표 게시글 스니펫을 바탕으로 한 표본 기반 담론 분석입니다. 차트의 0~100 점수는 실제 게시글 비율이 아니라 상대적 관심 강도를 보여주기 위한 지표입니다.</div>
+    <table style="margin-top:12px">
+      <thead><tr><th>확인 항목</th><th>내용</th></tr></thead>
+      <tbody>
+        <tr><td>직접 조회</td><td>DCInside `thesingularity` 목록 검색에서 18개 이상 키워드와 일부 페이지를 확인했습니다.</td></tr>
+        <tr><td>보조 자료</td><td>검색엔진에 색인된 DCInside 게시글 제목·본문 스니펫을 연도별 대표 사례로 확인했습니다.</td></tr>
+        <tr><td>개인정보 처리</td><td>보고서에는 닉네임/IP/댓글 작성자 등 개인 식별 가능 정보를 싣지 않았습니다.</td></tr>
+        <tr><td>주의점</td><td>삭제글, 이미지 본문, 검색 누락, 이벤트성 게시량, 검색어 선정 편향이 있습니다.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="section">
+    <h2>참고 표본 링크</h2>
+    <ol class="sources">
+      <li><a href="https://gall.dcinside.com/mgallery/board/lists/?id=thesingularity">특이점이 온다 갤러리 목록</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=96819">Stable Diffusion 사용 질문 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=111751">ChatGPT 수학 문제 실험 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=110857">ChatGPT 검색 대체론 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=109292">GPT-4 전망 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=140292">GPT-4와 AGI 대담 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=363502">AI 엔지니어 서밋 2023 정리 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=375493">AI 정보글 모음 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=503328">GPT-3.5 은퇴 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=577550">Sora와 추론모델 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=583519">Gemini 2.0 Flash 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=730522">GPT-5 기대와 Gemini 급부상 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=739272">일자리/AI 악용 우려 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=791161">온건한 특이점 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=794456">GPT-5 출시 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=842869">노동해방 타임라인 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=868912">월드모델/피지컬 AI 표본</a></li>
+      <li><a href="https://gall.dcinside.com/mgallery/board/view/?id=thesingularity&no=955687">빅테크 모델 출시 주기 표본</a></li>
+    </ol>
+    <p class="footer">별도 조사 메모: <code>outputs/singularity-gallery-5y-topic-notes.md</code> · 차트 데이터: <code>outputs/singularity-gallery-5y-topic-data.json</code></p>
+  </section>
+</main>
+<script>
+const years = ["2021", "2022", "2023", "2024", "2025", "2026.1-5"];
+const topicSeries = [
+  {name:"LLM/GPT·챗봇", values:[15,46,94,90,93,92]},
+  {name:"AGI·ASI 시기 예측", values:[72,78,86,82,89,91]},
+  {name:"이미지·영상 생성 AI", values:[12,76,74,84,67,64]},
+  {name:"로봇·자동화·일자리", values:[38,44,50,60,78,83]},
+  {name:"모델 경쟁·오픈소스·중국", values:[18,24,48,73,90,91]},
+  {name:"안전성·규제·윤리", values:[40,46,63,69,76,79]}
+];
+const sentimentSeries = [
+  {name:"기대·가속론", values:[76,82,88,82,86,84]},
+  {name:"회의·피로감", values:[38,44,50,61,58,55]},
+  {name:"실용화·업무 적용", values:[15,28,56,68,78,82]},
+  {name:"경쟁/성능 비교", values:[18,25,50,78,88,90]}
+];
+const colors = ["#2563eb","#059669","#ea580c","#7c3aed","#0891b2","#e11d48"];
+function initChart(id, option){
+  const el = document.getElementById(id);
+  const chart = echarts.init(el, null, {renderer:"canvas"});
+  chart.setOption(option);
+  window.addEventListener("resize", () => chart.resize());
+  return chart;
+}
+initChart("topicChart", {
+  color: colors,
+  tooltip:{trigger:"axis"},
+  legend:{type:"scroll", bottom:0, textStyle:{fontSize:11}},
+  grid:{left:42,right:18,top:36,bottom:62},
+  xAxis:{type:"category", data:years, axisTick:{alignWithLabel:true}},
+  yAxis:{type:"value", min:0, max:100, name:"상대 강도", nameTextStyle:{fontSize:11}},
+  series: topicSeries.map(s => ({name:s.name, type:"line", smooth:true, symbolSize:6, lineStyle:{width:2}, data:s.values}))
+});
+initChart("sentimentChart", {
+  color:["#2563eb","#e11d48","#059669","#0891b2"],
+  tooltip:{trigger:"axis"},
+  legend:{bottom:0, textStyle:{fontSize:11}},
+  grid:{left:38,right:12,top:18,bottom:58},
+  xAxis:{type:"category", data:years},
+  yAxis:{type:"value", min:0, max:100},
+  series: sentimentSeries.map(s => ({name:s.name, type:"line", smooth:true, data:s.values, symbolSize:6}))
+});
+initChart("mixChart", {
+  color: colors,
+  tooltip:{trigger:"item"},
+  legend:{bottom:0, type:"scroll", textStyle:{fontSize:11}},
+  series:[{
+    name:"최근 표본 구성",
+    type:"pie",
+    radius:["42%","70%"],
+    center:["50%","43%"],
+    label:{formatter:"{b}\n{d}%", fontSize:11},
+    data:[
+      {name:"LLM/GPT", value:24},
+      {name:"AGI·ASI", value:19},
+      {name:"모델 경쟁", value:19},
+      {name:"로봇·일자리", value:15},
+      {name:"이미지·영상", value:12},
+      {name:"안전·규제", value:11}
+    ]
+  }]
+});
+</script>
+</body>
+</html>

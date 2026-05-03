@@ -16,7 +16,7 @@ const defaultAppSettings: AppSettings = {
 };
 
 export type AppAction =
-  | { type: "backend_event"; event: BackendEvent }
+  | { type: "backend_event"; event: BackendEvent; sessionId?: string }
   | { type: "append_message"; message: Omit<ChatMessage, "id"> }
   | { type: "session_started"; sessionId: string; clientId?: string }
   | { type: "session_replaced"; sessionId: string; workspace?: Workspace }
@@ -210,10 +210,12 @@ export const initialAppState: AppState = {
   messages: [],
   workflowAnchorMessageId: null,
   workflowEventsByMessageId: {},
+  workflowDurationSecondsByMessageId: {},
   workflowInputBuffers: {},
   todoMarkdown: "",
   todoCollapsed: false,
   workflowEvents: [],
+  workflowDurationSeconds: null,
   runtimePicker: {
     open: false,
     loading: false,
@@ -499,6 +501,16 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function backendToolCallId(event: BackendEvent) {
+  const value = "tool_call_id" in event ? event.tool_call_id : null;
+  return typeof value === "string" && value ? value : null;
+}
+
+function backendToolCallIndex(event: BackendEvent) {
+  const value = "tool_call_index" in event ? Number(event.tool_call_index) : Number.NaN;
+  return Number.isFinite(value) ? value : null;
+}
+
 function appendWorkflowEvent(events: WorkflowEvent[], event: Omit<WorkflowEvent, "id">) {
   return [...events, { id: nextId(), ...event }];
 }
@@ -653,8 +665,27 @@ function updateLatestWorkflowEvent(
   events: WorkflowEvent[],
   toolName: string,
   patch: Partial<Omit<WorkflowEvent, "id" | "toolName">>,
+  identity: { toolCallId?: string | null; toolCallIndex?: number | null } = {},
 ) {
-  const index = [...events].reverse().findIndex((event) => event.toolName === toolName && event.status === "running");
+  const callId = identity.toolCallId || null;
+  const callIndex = identity.toolCallIndex ?? null;
+  const reversed = [...events].reverse();
+  let index = callId
+    ? reversed.findIndex((event) => event.toolCallId === callId && event.status === "running")
+    : -1;
+  if (index === -1 && callIndex !== null) {
+    index = reversed.findIndex(
+      (event) => event.toolName === toolName && event.toolCallIndex === callIndex && event.status === "running",
+    );
+  }
+  if (index === -1) {
+    index = reversed.findIndex((event) => (
+      event.toolName === toolName
+      && event.status === "running"
+      && !event.toolCallId
+      && (callIndex === null || event.toolCallIndex === callIndex || event.toolCallIndex === null)
+    ));
+  }
   if (index === -1) return null;
   const realIndex = events.length - 1 - index;
   return events.map((event, currentIndex) => (currentIndex === realIndex ? { ...event, ...patch } : event));
@@ -668,6 +699,21 @@ function workflowSnapshotMap(state: AppState) {
     ...state.workflowEventsByMessageId,
     [state.workflowAnchorMessageId]: state.workflowEvents,
   };
+}
+
+function workflowDurationSnapshotMap(state: AppState) {
+  if (!state.workflowAnchorMessageId || !state.workflowDurationSeconds) {
+    return state.workflowDurationSecondsByMessageId;
+  }
+  return {
+    ...state.workflowDurationSecondsByMessageId,
+    [state.workflowAnchorMessageId]: state.workflowDurationSeconds,
+  };
+}
+
+function workflowDurationFromMetadata(metadata?: Record<string, unknown> | null) {
+  const seconds = Number(metadata?.workflow_duration_seconds);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : null;
 }
 
 function normalizeCommands(commands: unknown[]): CommandItem[] {
@@ -717,6 +763,15 @@ function updateCurrentHistoryTitle(history: HistoryItem[], sessionId: string | n
   if (!sessionId) return history;
   return history.map((item) => (
     item.value === sessionId ? { ...item, description: title } : item
+  ));
+}
+
+function removeLiveHistoryRowsForSession(history: HistoryItem[], sessionId: string | null) {
+  const activeSessionId = String(sessionId || "").trim();
+  if (!activeSessionId) return history;
+  return history.filter((item) => (
+    item.live !== true
+    || (item.liveSessionId !== activeSessionId && item.value !== activeSessionId)
   ));
 }
 
@@ -831,6 +886,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         sessionId: action.sessionId,
         clientId: action.clientId || state.clientId,
+        history: removeLiveHistoryRowsForSession(state.history, action.sessionId),
         status: "ready",
         statusText: "준비됨",
       };
@@ -844,7 +900,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           messages: [...state.messages, message],
           workflowAnchorMessageId: message.id,
           workflowEventsByMessageId: workflowSnapshotMap(state),
+          workflowDurationSecondsByMessageId: workflowDurationSnapshotMap(state),
           workflowEvents: initialWorkflowEvents(),
+          workflowDurationSeconds: null,
         };
       }
       return {
@@ -864,6 +922,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         messages: [],
         workflowAnchorMessageId: null,
         workflowEventsByMessageId: {},
+        workflowDurationSecondsByMessageId: {},
         workflowInputBuffers: {},
         activeHistoryId: null,
         restoringHistory: false,
@@ -875,6 +934,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         todoMarkdown: "",
         todoCollapsed: false,
         workflowEvents: [],
+        workflowDurationSeconds: null,
+        history: removeLiveHistoryRowsForSession(state.history, action.sessionId),
         workspaceName: action.workspace?.name || state.workspaceName,
         workspacePath: action.workspace?.path || state.workspacePath,
         workspaceScope: action.workspace?.scope || state.workspaceScope,
@@ -974,7 +1035,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
 
     case "set_history":
-      return { ...state, history: action.history, historyLoading: false };
+      return {
+        ...state,
+        history: removeLiveHistoryRowsForSession(action.history, state.sessionId),
+        historyLoading: false,
+      };
 
     case "set_history_loading":
       return { ...state, historyLoading: action.value };
@@ -1096,12 +1161,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, todoMarkdown: "", todoCollapsed: false };
 
     case "clear_workflow":
-      return { ...state, workflowEvents: [], workflowEventsByMessageId: {} };
+      return { ...state, workflowEvents: [], workflowEventsByMessageId: {}, workflowDurationSecondsByMessageId: {}, workflowDurationSeconds: null };
 
     case "clear_messages":
-      return { ...state, messages: [], workflowAnchorMessageId: null, workflowEventsByMessageId: {}, workflowInputBuffers: {}, todoMarkdown: "", todoCollapsed: false, workflowEvents: [] };
+      return { ...state, messages: [], workflowAnchorMessageId: null, workflowEventsByMessageId: {}, workflowDurationSecondsByMessageId: {}, workflowInputBuffers: {}, todoMarkdown: "", todoCollapsed: false, workflowEvents: [], workflowDurationSeconds: null };
 
     case "backend_event": {
+      if (action.sessionId && action.sessionId !== state.sessionId) {
+        return state;
+      }
       const event = action.event;
 
       if (event.type === "ready" || event.type === "state_snapshot") {
@@ -1129,9 +1197,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           messages: [],
           workflowAnchorMessageId: null,
           workflowEventsByMessageId: {},
+          workflowDurationSecondsByMessageId: {},
           workflowInputBuffers: {},
           todoMarkdown: "",
           workflowEvents: [],
+          workflowDurationSeconds: null,
         };
       }
 
@@ -1141,6 +1211,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         let workflowEvents: WorkflowEvent[] = [];
         let workflowAnchorMessageId: string | null = null;
         const workflowEventsByMessageId: Record<string, WorkflowEvent[]> = {};
+        const workflowDurationSecondsByMessageId: Record<string, number> = {};
         const historyEvents = (Array.isArray(historyEvent.history_events) ? historyEvent.history_events : [])
           .map((item) => (item && typeof item === "object" ? item as Record<string, unknown> : {}));
         for (const [index, record] of historyEvents.entries()) {
@@ -1165,6 +1236,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           if (type === "tool_started") {
             const toolName = String(record.tool_name || "");
             const toolInput = recordOrNull(record.tool_input);
+            const toolCallId = typeof record.tool_call_id === "string" && record.tool_call_id ? record.tool_call_id : null;
+            const rawToolCallIndex = Number(record.tool_call_index);
+            const toolCallIndex = Number.isFinite(rawToolCallIndex) ? rawToolCallIndex : null;
             const purpose = ensurePurposeEvent(completePlanning(workflowEvents.length ? workflowEvents : initialWorkflowEvents()), toolName);
             workflowEvents = appendWorkflowEvent(purpose.events, {
               toolName,
@@ -1173,19 +1247,26 @@ export function appReducer(state: AppState, action: AppAction): AppState {
               status: "running",
               level: "child",
               groupId: purpose.groupId,
+              toolCallId,
+              toolCallIndex,
               toolInput,
             });
             continue;
           }
           if (type === "tool_completed") {
             const toolName = String(record.tool_name || "");
+            const toolCallId = typeof record.tool_call_id === "string" && record.tool_call_id ? record.tool_call_id : null;
+            const rawToolCallIndex = Number(record.tool_call_index);
+            const toolCallIndex = Number.isFinite(rawToolCallIndex) ? rawToolCallIndex : null;
             const output = String(record.output || "");
             const isError = record.is_error === true;
             let nextEvents = updateLatestWorkflowEvent(workflowEvents, toolName, {
               detail: output.split(/\r?\n/).find((line) => line.trim()) || `${toolName || "도구"} 완료`,
               output,
               status: isError ? "error" : "done",
-            });
+              toolCallId,
+              toolCallIndex,
+            }, { toolCallId, toolCallIndex });
             if (!nextEvents) {
               const purpose = ensurePurposeEvent(completePlanning(workflowEvents.length ? workflowEvents : initialWorkflowEvents()), toolName);
               nextEvents = appendWorkflowEvent(purpose.events, {
@@ -1196,6 +1277,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
                 status: isError ? "error" : "done",
                 level: "child",
                 groupId: purpose.groupId,
+                toolCallId,
+                toolCallIndex,
               });
             }
             workflowEvents = refreshPurposeEvents(nextEvents);
@@ -1203,6 +1286,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         }
         if (workflowAnchorMessageId && workflowEvents.length) {
           workflowEventsByMessageId[workflowAnchorMessageId] = workflowEvents;
+          const workflowDurationSeconds = workflowDurationFromMetadata(historyEvent.compact_metadata);
+          if (workflowDurationSeconds) {
+            workflowDurationSecondsByMessageId[workflowAnchorMessageId] = workflowDurationSeconds;
+          }
         }
         return {
           ...state,
@@ -1211,7 +1298,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           messages,
           workflowAnchorMessageId,
           workflowEventsByMessageId,
+          workflowDurationSecondsByMessageId,
           workflowEvents,
+          workflowDurationSeconds: workflowAnchorMessageId ? workflowDurationSecondsByMessageId[workflowAnchorMessageId] ?? null : null,
           restoringHistory: true,
           busy: false,
           status: "ready",
@@ -1249,14 +1338,25 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         if (isNonConversationTranscriptItem(item)) {
           return state;
         }
-        if (item.role === "user" && item.kind !== "steering" && item.kind !== "queued") {
+        if (
+          item.role === "user"
+          && (item.kind === "steering" || item.kind === "queued")
+          && /^\/plan(?:\s|$)/i.test(String(item.text || "").trim())
+        ) {
           return state;
+        }
+        const text = normalizeVisibleText(item.text);
+        if (item.role === "user" && item.kind !== "steering" && item.kind !== "queued") {
+          const last = state.messages[state.messages.length - 1];
+          if (last?.role === "user" && last.text === text && !last.kind) {
+            return state;
+          }
         }
         return {
           ...state,
           messages: appendMessage(state.messages, {
             role: item.role,
-            text: normalizeVisibleText(item.text),
+            text,
             kind: item.kind || undefined,
             toolName: item.tool_name || undefined,
             isError: item.is_error === true,
@@ -1272,6 +1372,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         if (last?.role === "assistant") {
           return {
             ...state,
+            busy: true,
             status: "processing",
             statusText: "응답 작성 중",
             workflowEvents,
@@ -1283,6 +1384,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         }
         return {
           ...state,
+          busy: true,
           status: "processing",
           statusText: "응답 작성 중",
           workflowEvents,
@@ -1306,13 +1408,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             : state.messages;
         return {
           ...state,
+          busy: event.has_tool_uses === true,
           messages,
           workflowEvents: isFinalAnswer
             ? finishFinalAnswerStep(state.workflowEvents.length ? state.workflowEvents : initialWorkflowEvents())
             : removeWorkflowEventsByRole(state.workflowEvents, "final"),
-          busy: false,
-          status: "ready",
-          statusText: "준비됨",
+          status: event.has_tool_uses === true ? "processing" : "ready",
+          statusText: event.has_tool_uses === true ? "도구 실행 준비 중" : "준비됨",
         };
       }
 
@@ -1320,6 +1422,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         const toolName = typeof event.tool_name === "string" ? event.tool_name : "";
         const label = compactToolStatus(toolName, "도구 실행 중");
         const toolInput = recordOrNull(event.tool_input);
+        const toolCallId = backendToolCallId(event);
+        const toolCallIndex = backendToolCallIndex(event);
         const purpose = ensurePurposeEvent(
           completePlanning(removeWorkflowEventsByRole(state.workflowEvents.length ? state.workflowEvents : initialWorkflowEvents(), "activity")),
           toolName,
@@ -1331,18 +1435,23 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         const startedWorkflowEvents = updateLatestWorkflowEvent(purpose.events, toolName, {
           detail: workflowDetailFromInput(toolInput),
           status: "running",
+          toolCallId,
+          toolCallIndex,
           toolInput,
-        }) || appendWorkflowEvent(purpose.events, {
+        }, { toolCallId, toolCallIndex }) || appendWorkflowEvent(purpose.events, {
           toolName,
           title: workflowTitle(toolName),
           detail: workflowDetailFromInput(toolInput),
           status: "running",
           level: "child",
           groupId: purpose.groupId,
+          toolCallId,
+          toolCallIndex,
           toolInput,
         });
         return {
           ...state,
+          busy: true,
           messages,
           status: "processing",
           statusText: label,
@@ -1356,6 +1465,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (event.type === "tool_input_delta") {
         const deltaEvent = event as Extract<BackendEvent, { type: "tool_input_delta" }>;
         const toolName = typeof deltaEvent.tool_name === "string" ? deltaEvent.tool_name : "";
+        const toolCallIndex = backendToolCallIndex(deltaEvent);
         const delta = String(deltaEvent.arguments_delta || "");
         if (!delta) {
           return state;
@@ -1366,14 +1476,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         const toolInput = partialToolInputFromBuffer(toolName, nextBuffer);
         const workflowInputBuffers = { ...state.workflowInputBuffers, [key]: nextBuffer };
         if (!toolInput) {
-          return { ...state, workflowInputBuffers };
+          return { ...state, busy: true, workflowInputBuffers };
         }
         const detail = workflowDetailFromInput(toolInput) || "작성 내용 수신 중";
         let workflowEvents = updateLatestWorkflowEvent(state.workflowEvents, toolName, {
           detail,
           status: "running",
+          toolCallIndex,
           toolInput,
-        });
+        }, { toolCallIndex });
         if (!workflowEvents) {
           const purpose = ensurePurposeEvent(
             completePlanning(removeWorkflowEventsByRole(state.workflowEvents.length ? state.workflowEvents : initialWorkflowEvents(), "activity")),
@@ -1386,11 +1497,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             status: "running",
             level: "child",
             groupId: purpose.groupId,
+            toolCallIndex,
             toolInput,
           });
         }
         return {
           ...state,
+          busy: true,
           workflowInputBuffers,
           workflowEvents: refreshPurposeEvents(workflowEvents),
           status: "processing",
@@ -1400,11 +1513,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
       if (event.type === "tool_progress") {
         const toolName = typeof event.tool_name === "string" ? event.tool_name : "";
+        const toolCallId = backendToolCallId(event);
+        const toolCallIndex = backendToolCallIndex(event);
         const detail = String(event.message || workflowDetailFromInput(recordOrNull(event.tool_input)) || "처리 중");
         let workflowEvents = updateLatestWorkflowEvent(state.workflowEvents, toolName, {
           detail,
           status: "running",
-        });
+          toolCallId,
+          toolCallIndex,
+        }, { toolCallId, toolCallIndex });
         if (!workflowEvents) {
           const purpose = ensurePurposeEvent(completePlanning(state.workflowEvents.length ? state.workflowEvents : initialWorkflowEvents()), toolName);
           workflowEvents = appendWorkflowEvent(purpose.events, {
@@ -1414,11 +1531,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             status: "running",
             level: "child",
             groupId: purpose.groupId,
+            toolCallId,
+            toolCallIndex,
             toolInput: recordOrNull(event.tool_input),
           });
         }
         return {
           ...state,
+          busy: true,
           workflowEvents: refreshPurposeEvents(workflowEvents),
           status: "processing",
           statusText: compactToolStatus(toolName),
@@ -1427,11 +1547,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
       if (event.type === "tool_completed") {
         const toolName = typeof event.tool_name === "string" ? event.tool_name : "";
+        const toolCallId = backendToolCallId(event);
+        const toolCallIndex = backendToolCallIndex(event);
         const output = String(event.output || "");
         const isError = event.is_error === true;
         const lastToolInput = [...state.workflowEvents]
           .reverse()
-          .find((workflowEvent) => workflowEvent.toolName === toolName && workflowEvent.toolInput)?.toolInput || null;
+          .find((workflowEvent) => {
+            if (toolCallId) {
+              return workflowEvent.toolCallId === toolCallId && workflowEvent.toolInput;
+            }
+            if (toolCallIndex !== null) {
+              return workflowEvent.toolName === toolName && workflowEvent.toolCallIndex === toolCallIndex && workflowEvent.toolInput;
+            }
+            return workflowEvent.toolName === toolName && workflowEvent.toolInput;
+          })?.toolInput || null;
         const command = isShellTool(toolName) ? commandFromToolInput(lastToolInput) : "";
         const messages = command
           ? updateLatestTerminalMessage(state.messages, command, {
@@ -1444,7 +1574,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           detail: output.split(/\r?\n/).find((line) => line.trim()) || `${toolName || "도구"} 완료`,
           output,
           status: isError ? "error" : "done",
-        });
+          toolCallId,
+          toolCallIndex,
+        }, { toolCallId, toolCallIndex });
         if (!workflowEvents) {
           const purpose = ensurePurposeEvent(completePlanning(state.workflowEvents.length ? state.workflowEvents : initialWorkflowEvents()), toolName);
           workflowEvents = appendWorkflowEvent(purpose.events, {
@@ -1455,11 +1587,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             status: isError ? "error" : "done",
             level: "child",
             groupId: purpose.groupId,
+            toolCallId,
+            toolCallIndex,
           });
         }
         workflowEvents = startActivityStep(refreshPurposeEvents(workflowEvents));
         return {
           ...state,
+          busy: true,
           messages,
           workflowEvents,
           workflowInputBuffers: Object.fromEntries(
@@ -1514,6 +1649,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
 
       if (event.type === "line_complete") {
+        const workflowDurationSeconds = workflowDurationFromMetadata(recordOrNull(event.compact_metadata));
+        const workflowDurationSecondsByMessageId = workflowDurationSeconds && state.workflowAnchorMessageId
+          ? {
+              ...state.workflowDurationSecondsByMessageId,
+              [state.workflowAnchorMessageId]: workflowDurationSeconds,
+            }
+          : state.workflowDurationSecondsByMessageId;
         return {
           ...state,
           busy: false,
@@ -1521,6 +1663,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           statusText: state.status === "error" ? state.statusText : "준비됨",
           artifactRefreshKey: event.type === "line_complete" ? state.artifactRefreshKey + 1 : state.artifactRefreshKey,
           historyRefreshKey: state.historyRefreshKey + 1,
+          workflowDurationSeconds: workflowDurationSeconds ?? state.workflowDurationSeconds,
+          workflowDurationSecondsByMessageId,
         };
       }
 

@@ -135,7 +135,7 @@
   "max_turns": 200,
   "system_prompt": null,
   "permission": {
-    "mode": "default",
+    "mode": "full_auto",
     "plan_previous_mode": null,
     "allowed_tools": [],
     "denied_tools": [],

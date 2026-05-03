@@ -524,9 +524,6 @@ window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && workspaceDropdownOpen) {
     closeWorkspaceDropdown();
   }
-  if (!event.defaultPrevented && handlePlanModeShortcut(event)) {
-    return;
-  }
   if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "o") {
     event.preventDefault();
     closeSlashMenu();
