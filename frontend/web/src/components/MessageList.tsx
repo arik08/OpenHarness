@@ -543,6 +543,70 @@ function TerminalCommandMessage({ message }: { message: ChatMessage }) {
   );
 }
 
+function promptTokenKind(rawToken: string) {
+  if (rawToken.startsWith("@")) return "file";
+  const lower = rawToken.toLowerCase();
+  if (lower.startsWith("$mcp:")) return "mcp";
+  if (lower.startsWith("$plugin:")) return "plugin";
+  return "skill";
+}
+
+function titleCaseToken(value: string) {
+  return value
+    .replace(/[-_]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function promptTokenLabel(rawToken: string) {
+  const token = rawToken.trim();
+  if (token.startsWith("@")) {
+    const name = token.slice(1).split(/[\\/]/).filter(Boolean).pop() || token.slice(1);
+    return name || token;
+  }
+  const normalized = token.slice(1).replace(/^["']|["']$/g, "").trim();
+  const lower = normalized.toLowerCase();
+  if (lower.startsWith("mcp:") || lower.startsWith("plugin:")) {
+    return titleCaseToken(normalized.slice(normalized.indexOf(":") + 1)) || normalized;
+  }
+  return normalized || token;
+}
+
+function UserMessageText({ text }: { text: string }) {
+  const value = String(text || "");
+  const tokenPattern = /(^|\s)(\$"[^"]+"|\$'[^']+'|\$[^\s]+|@[^\s]+)/gi;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+
+  function pushText(part: string, keyPrefix: string) {
+    const lines = part.split("\n");
+    lines.forEach((line, index) => {
+      if (index > 0) {
+        parts.push(<br key={`${keyPrefix}-br-${index}-${parts.length}`} />);
+      }
+      if (line) {
+        parts.push(line);
+      }
+    });
+  }
+
+  for (const match of value.matchAll(tokenPattern)) {
+    const leading = match[1] || "";
+    const rawToken = match[2] || "";
+    const tokenStart = (match.index || 0) + leading.length;
+    pushText(value.slice(cursor, tokenStart), `text-${cursor}`);
+    parts.push(
+      <span className={`prompt-token ${promptTokenKind(rawToken)}`} aria-label={rawToken} key={`token-${tokenStart}-${rawToken}`}>
+        {promptTokenLabel(rawToken)}
+      </span>,
+    );
+    cursor = tokenStart + rawToken.length;
+  }
+  pushText(value.slice(cursor), `text-${cursor}`);
+
+  return <p className="react-message-text prompt-line">{parts.length ? parts : value}</p>;
+}
+
 function messageKindBadge(kind: ChatMessage["kind"]) {
   if (kind === "steering") {
     return { className: "steering", label: "스티어링" };
@@ -858,7 +922,7 @@ export function MessageList() {
                 ) : message.terminal ? (
                   <TerminalCommandMessage message={message} />
                 ) : (
-                  <p className="react-message-text">{message.text}</p>
+                  <UserMessageText text={message.text} />
                 )}
               </div>
             </article>

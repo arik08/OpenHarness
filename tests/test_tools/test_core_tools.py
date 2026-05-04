@@ -318,7 +318,10 @@ def test_ask_user_question_schema_discourages_unnecessary_follow_ups():
     assert "avoid approval-only questions" in AskUserQuestionTool.description
     assert "After the user answers, continue the original task" in AskUserQuestionTool.description
     assert "without restating the plan" in AskUserQuestionTool.description
+    assert "Do not ask another clarification immediately after the user answers" in AskUserQuestionTool.description
+    assert "label each item as (1/N)" in AskUserQuestionTool.description
     assert "Batch all necessary clarification" in schema["properties"]["question"]["description"]
+    assert "(1/N)" in schema["properties"]["question"]["description"]
 
 
 @pytest.mark.asyncio

@@ -1,13 +1,15 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "../Composer";
+import { MessageList } from "../MessageList";
 import { ModalHost } from "../ModalHost";
 import { AppStateProvider } from "../../state/app-state";
 import { initialAppState } from "../../state/reducer";
 import { cancelMessage, sendBackendRequest, sendMessage } from "../../api/messages";
+import { startSession } from "../../api/session";
 
 vi.mock("../../api/messages", () => ({
   cancelMessage: vi.fn().mockResolvedValue({ ok: true }),
@@ -15,11 +17,17 @@ vi.mock("../../api/messages", () => ({
   sendMessage: vi.fn().mockResolvedValue({ ok: true }),
 }));
 
+vi.mock("../../api/session", () => ({
+  startSession: vi.fn().mockResolvedValue({ sessionId: "session-new" }),
+}));
+
 describe("Composer", () => {
   beforeEach(() => {
     vi.mocked(cancelMessage).mockClear();
     vi.mocked(sendMessage).mockClear();
     vi.mocked(sendBackendRequest).mockClear();
+    vi.mocked(startSession).mockClear();
+    vi.mocked(startSession).mockResolvedValue({ sessionId: "session-new" });
     document.documentElement.style.removeProperty("--composer-stack-height");
   });
 
@@ -146,6 +154,81 @@ describe("Composer", () => {
 
     await user.keyboard("{Enter}");
     expect(input).toHaveProperty("value", "/review");
+  });
+
+  it("shows every enabled skill suggestion when the draft starts with dollar", async () => {
+    const user = userEvent.setup();
+    const skills = Array.from({ length: 10 }, (_, index) => ({
+      name: `skill-${index + 1}`,
+      description: `Skill ${index + 1}`,
+      enabled: true,
+    }));
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          skills,
+        }}
+      >
+        <Composer />
+      </AppStateProvider>,
+    );
+
+    const input = screen.getByPlaceholderText("메세지를 입력하세요...");
+    await user.type(input, "$");
+
+    expect(screen.getAllByRole("option")).toHaveLength(skills.length);
+    expect(screen.getByRole("option", { name: /\$skill-10/ })).toBeTruthy();
+  });
+
+  it("shows skill suggestions when dollar is typed in the middle of the draft", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          skills: [
+            { name: "design-review", description: "디자인 점검", enabled: true },
+            { name: "document-release", description: "릴리즈 문서", enabled: true },
+          ],
+        }}
+      >
+        <Composer />
+      </AppStateProvider>,
+    );
+
+    const input = screen.getByPlaceholderText("메세지를 입력하세요...");
+    await user.type(input, "본문 중간 $des");
+
+    expect(screen.getByRole("option", { name: /\$design-review/ })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: /\$document-release/ })).toBeNull();
+  });
+
+  it("replaces only the active file token when applying a middle-of-draft suggestion", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          composer: { ...initialAppState.composer, draft: "이 파일 참고 @rep 해줘" },
+          artifacts: [
+            { path: "outputs/report.md", name: "report.md", kind: "file" },
+            { path: "outputs/notes.md", name: "notes.md", kind: "file" },
+          ],
+        }}
+      >
+        <Composer />
+      </AppStateProvider>,
+    );
+
+    const input = screen.getByPlaceholderText("메세지를 입력하세요...") as HTMLTextAreaElement;
+    input.focus();
+    input.setSelectionRange("이 파일 참고 @rep".length, "이 파일 참고 @rep".length);
+    fireEvent.select(input);
+    await user.click(screen.getByRole("option", { name: /@report\.md/ }));
+
+    expect(input).toHaveProperty("value", "이 파일 참고 @outputs/report.md 해줘");
   });
 
   it("grows the input and composer frame for multiline drafts", async () => {
@@ -281,6 +364,35 @@ describe("Composer", () => {
       clientId: "client-1",
       line: "2",
       suppressUserTranscript: false,
+    }));
+  });
+
+  it("starts a fresh backend only when sending after an idle new chat", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-old",
+          clientId: "client-1",
+          pendingFreshChat: true,
+          workspacePath: "C:/demo",
+        }}
+      >
+        <Composer />
+      </AppStateProvider>,
+    );
+
+    await user.type(screen.getByPlaceholderText("메세지를 입력하세요..."), "새 질문");
+    await user.click(screen.getByRole("button", { name: "메시지 보내기" }));
+
+    await waitFor(() => expect(startSession).toHaveBeenCalledWith({
+      clientId: "client-1",
+      cwd: "C:/demo",
+    }));
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-new",
+      line: "새 질문",
     }));
   });
 
@@ -509,7 +621,7 @@ describe("Composer", () => {
     }
   });
 
-  it("turns completed assistant confirmation questions into inline quick replies", async () => {
+  it("turns completed assistant confirmation questions into inline quick replies without repeating the question", async () => {
     const user = userEvent.setup();
     render(
       <AppStateProvider
@@ -527,6 +639,7 @@ describe("Composer", () => {
           ],
         }}
       >
+        <MessageList />
         <Composer />
       </AppStateProvider>,
     );
@@ -535,7 +648,9 @@ describe("Composer", () => {
     const composerBox = document.querySelector(".composer-box");
     expect(card).toBeTruthy();
     expect(card?.nextElementSibling).toBe(composerBox);
-    expect(screen.getByText("질문: 이 방향으로 바로 진행해도 될까요?")).toBeTruthy();
+    expect(screen.getByText("답변 선택")).toBeTruthy();
+    expect(screen.getByText("이 방향으로 바로 진행해도 될까요?")).toBeTruthy();
+    expect(screen.queryByText("질문: 이 방향으로 바로 진행해도 될까요?")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: /네, 진행해주세요/ }));
 
@@ -545,6 +660,95 @@ describe("Composer", () => {
       line: "네, 진행해주세요",
       suppressUserTranscript: false,
     }));
+  });
+
+  it("turns completed assistant open-ended clarification questions into inline replies", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-1",
+          clientId: "client-1",
+          messages: [
+            {
+              id: "assistant-1",
+              role: "assistant",
+              text: "진행 전에 한 가지만 확인하겠습니다.\n\n보고서의 대상 독자는 누구인가요?",
+              isComplete: true,
+            },
+          ],
+        }}
+      >
+        <MessageList />
+        <Composer />
+      </AppStateProvider>,
+    );
+
+    const card = document.querySelector(".inline-question-card");
+    expect(card).toBeTruthy();
+    expect(screen.getByText("답변 선택")).toBeTruthy();
+    expect(screen.getByText("보고서의 대상 독자는 누구인가요?")).toBeTruthy();
+    expect(screen.queryByText("질문: 보고서의 대상 독자는 누구인가요?")).toBeNull();
+    expect(screen.getByPlaceholderText("직접 답변 입력...")).toBeTruthy();
+  });
+
+  it("shows progress for batched assistant clarification questions", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-1",
+          clientId: "client-1",
+          messages: [
+            {
+              id: "assistant-1",
+              role: "assistant",
+              text: [
+                "(1/3) 보고서의 대상 독자는 누구인가요?",
+                "(2/3) 원하는 톤은 어떻게 할까요?",
+                "(3/3) 분량은 어느 정도가 좋을까요?",
+              ].join("\n"),
+              isComplete: true,
+            },
+          ],
+        }}
+      >
+        <MessageList />
+        <Composer />
+      </AppStateProvider>,
+    );
+
+    expect(screen.getByText("답변 선택 (1/3)")).toBeTruthy();
+    expect(document.body.textContent || "").toContain("(1/3) 보고서의 대상 독자는 누구인가요?");
+    expect(screen.getByPlaceholderText("직접 답변 입력...")).toBeTruthy();
+  });
+
+  it("shows progress for batched backend clarification questions", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-1",
+          clientId: "client-1",
+          modal: {
+            kind: "backend",
+            payload: {
+              kind: "question",
+              request_id: "question-1",
+              question: [
+                "보고서의 대상 독자는 누구인가요?",
+                "원하는 톤은 어떻게 할까요?",
+                "분량은 어느 정도가 좋을까요?",
+              ].join("\n"),
+            },
+          },
+        }}
+      >
+        <Composer />
+      </AppStateProvider>,
+    );
+
+    expect(screen.getByText(/질문 \(1\/3\):/)).toBeTruthy();
   });
 
   it("does not turn markdown answer headings into inline follow-up questions", () => {

@@ -2,7 +2,7 @@
   "model": "gpt-5.5",
   "max_tokens": 16384,
   "base_url": null,
-  "timeout": 30.0,
+  "timeout": 180.0,
   "context_window_tokens": null,
   "auto_compact_threshold_tokens": null,
   "api_format": "openai",

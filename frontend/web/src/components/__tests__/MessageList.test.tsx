@@ -112,6 +112,29 @@ describe("MessageList", () => {
     expect(screen.queryByText("MyHarness")).toBeNull();
   });
 
+  it("renders prompt mentions as inline pills in user messages", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          messages: [
+            { id: "user-1", role: "user", text: "안녕하세요 $gstack-autoplan 당신은 누구입니까 $plugin:vercel 나는 @outputs/report.md" },
+          ],
+        }}
+      >
+        <MessageList />
+      </AppStateProvider>,
+    );
+
+    const skill = screen.getByText("gstack-autoplan");
+    const plugin = screen.getByText("Vercel");
+    const file = screen.getByText("report.md");
+    expect(skill.className).toContain("prompt-token skill");
+    expect(plugin.className).toContain("prompt-token plugin");
+    expect(file.className).toContain("prompt-token file");
+    expect(document.querySelector(".react-message-text")?.textContent).toContain("당신은 누구입니까");
+  });
+
   it("renders legacy badges for steering and queued user messages", () => {
     render(
       <AppStateProvider
@@ -524,6 +547,55 @@ describe("MessageList", () => {
     expect(document.querySelector(".workflow-list + .workflow-output-list .workflow-output-preview")).toBeTruthy();
     expect(document.querySelector(".workflow-step .workflow-output-preview")).toBeFalsy();
     expect(document.querySelector(".workflow-card")?.hasAttribute("open")).toBe(true);
+  });
+
+  it("collapses long write tool content in the workflow output preview body", async () => {
+    const user = userEvent.setup();
+    const longContent = [
+      "첫 줄입니다.",
+      ...Array.from({ length: 24 }, (_, index) => `긴 본문 ${index + 1}번째 줄입니다.`),
+      "</html>",
+    ].join("\n");
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          workflowAnchorMessageId: "user-1",
+          messages: [
+            { id: "user-1", role: "user", text: "긴 HTML 파일 만들어줘" },
+          ],
+          workflowEvents: [
+            {
+              id: "workflow-1",
+              toolName: "write_file",
+              title: "write_file",
+              detail: "outputs/long-report.html",
+              status: "done",
+              level: "child",
+              toolInput: {
+                path: "outputs/long-report.html",
+                content: longContent,
+              },
+            },
+          ],
+        }}
+      >
+        <MessageList />
+      </AppStateProvider>,
+    );
+
+    const body = document.querySelector(".workflow-output-body") as HTMLElement;
+    expect(body.textContent).not.toBe(longContent);
+    expect(body.textContent).toContain("첫 줄입니다.");
+    expect(body.textContent).toContain("긴 본문 10번째 줄입니다.");
+    expect(body.textContent).not.toContain("긴 본문 11번째 줄입니다.");
+    expect(screen.getByRole("button", { name: "더 보기" })).toBeTruthy();
+    expect(screen.getByText(/\d+ 토큰 \(26줄\)/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "더 보기" }));
+    expect(body.textContent).toBe(longContent);
+    expect(screen.getByRole("button", { name: "접기" })).toBeTruthy();
   });
 
   it("renders edit previews as colored diff rows", () => {

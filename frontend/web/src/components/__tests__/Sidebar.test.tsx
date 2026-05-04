@@ -31,6 +31,16 @@ function WorkspaceProbe() {
   return <output data-testid="workspace">{state.workspaceName}</output>;
 }
 
+function ChatStateProbe() {
+  const { state } = useAppState();
+  return (
+    <>
+      <output data-testid="message-count">{state.messages.length}</output>
+      <output data-testid="pending-fresh-chat">{state.pendingFreshChat ? "yes" : "no"}</output>
+    </>
+  );
+}
+
 describe("Sidebar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -374,6 +384,56 @@ describe("Sidebar", () => {
       cwd: "C:/demo",
     }));
     expect(restartSession).not.toHaveBeenCalled();
+  });
+
+  it("switches an idle new chat immediately without restarting the backend", async () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-active",
+          clientId: "client-1",
+          busy: false,
+          messages: [{ id: "message-1", role: "user", text: "이전 질문" }],
+        }}
+      >
+        <Sidebar />
+        <ChatStateProbe />
+      </AppStateProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "새 채팅" }));
+
+    expect(screen.getByTestId("message-count").textContent).toBe("0");
+    expect(screen.getByTestId("pending-fresh-chat").textContent).toBe("yes");
+    expect(startSession).not.toHaveBeenCalled();
+    expect(restartSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Restart action as an explicit backend restart", async () => {
+    vi.mocked(restartSession).mockResolvedValue({ sessionId: "session-new" });
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-active",
+          clientId: "client-1",
+          workspaceName: "Default",
+          workspacePath: "C:/demo",
+        }}
+      >
+        <Sidebar />
+      </AppStateProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Restart" }));
+
+    await waitFor(() => expect(restartSession).toHaveBeenCalledWith({
+      sessionId: "session-active",
+      clientId: "client-1",
+      cwd: "C:/demo",
+    }));
   });
 
   it("keeps the selected workspace after restarting the session", async () => {

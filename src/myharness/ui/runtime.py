@@ -174,6 +174,7 @@ def _resolve_api_client_from_settings(settings) -> SupportsStreamingMessages:
         return CodexApiClient(
             auth_token=auth.value,
             base_url=settings.base_url,
+            timeout=settings.timeout,
         )
     if settings.provider == "anthropic_claude":
         return AnthropicApiClient(

@@ -85,10 +85,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -c "import importlib.util, sys; required=['myharness','anthropic','openai','tiktoken','rich','prompt_toolkit','textual','typer','pydantic','httpx','feedparser','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi']; missing=[name for name in required if importlib.util.find_spec(name) is None]; sys.exit(1 if missing else 0)" >nul 2>nul
+"%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -c "import importlib.util, sys; required=['myharness','anthropic','openai','tiktoken','rich','prompt_toolkit','textual','typer','pydantic','httpx','feedparser','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi']; missing=[name for name in required if importlib.util.find_spec(name) is None]; sys.exit(1 if missing else 0)" >nul 2>nul
 if errorlevel 1 (
   echo [INFO] Missing Python dependencies detected. Installing now...
-  call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install -e .
+  "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install -e .
   if errorlevel 1 (
     echo.
     echo [ERROR] Python dependency installation failed.
@@ -185,7 +185,7 @@ exit /b 1
 :try_bootstrap_python
 set "PY_CANDIDATE=%~1"
 set "PY_CANDIDATE_ARGS=%~2"
-call "%PY_CANDIDATE%" %PY_CANDIDATE_ARGS% -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+"%PY_CANDIDATE%" %PY_CANDIDATE_ARGS% -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
 if errorlevel 1 exit /b 1
 set "MYHARNESS_BOOTSTRAP_PYTHON=%PY_CANDIDATE%"
 set "MYHARNESS_BOOTSTRAP_PYTHON_ARGS=%PY_CANDIDATE_ARGS%"
@@ -203,13 +203,19 @@ if exist "%POSCO_CA_BUNDLE%" (
 )
 set "NODE_EXTRA_CA_CERTS=C:\POSCO_CA.crt"
 set "npm_config_cafile=C:\POSCO_CA.crt"
+if "%NODE_OPTIONS%"=="" (
+  set "NODE_OPTIONS=--tls-cipher-list=DEFAULT@SECLEVEL=1"
+) else (
+  set "NODE_OPTIONS=--tls-cipher-list=DEFAULT@SECLEVEL=1 %NODE_OPTIONS%"
+)
 echo [INFO] POSCO certificate detected: C:\POSCO_CA.crt
+echo [INFO] Node TLS compatibility mode enabled for POSCO CA.
 exit /b 0
 
 :upgrade_posco_bundle
 if not exist "C:\POSCO_CA.crt" exit /b 0
 echo [INFO] Building POSCO Python CA bundle...
-call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% "%CD%\scripts\build_posco_ca_bundle.py"
+"%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% "%CD%\scripts\build_posco_ca_bundle.py"
 if errorlevel 1 exit /b 1
 set "POSCO_CA_BUNDLE=%CD%\certs\posco-ca-bundle.pem"
 set "SSL_CERT_FILE=%POSCO_CA_BUNDLE%"

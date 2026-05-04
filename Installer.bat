@@ -81,47 +81,10 @@ if not exist "%MYHARNESS_SETTINGS%" (
 )
 
 echo [INFO] Upgrading pip...
-call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install --upgrade pip
+"%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install --upgrade pip
 if errorlevel 1 (
   echo.
   echo [ERROR] Failed to upgrade pip.
-  pause
-  exit /b 1
-)
-
-echo [INFO] Installing MyHarness Python package and dependencies...
-set "PYTHONPATH=%MYHARNESS_PROJECT_DIR%\src;%PYTHONPATH%"
-call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install -e .
-if errorlevel 1 (
-  echo.
-  echo [ERROR] Python package installation failed.
-  pause
-  exit /b 1
-)
-
-echo [INFO] Installing Python-pptx for PowerPoint document generation...
-call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install --upgrade python-pptx
-if errorlevel 1 (
-  echo.
-  echo [ERROR] Python-pptx installation failed.
-  pause
-  exit /b 1
-)
-
-echo [INFO] Installing pytest for local verification...
-call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install --upgrade pytest
-if errorlevel 1 (
-  echo.
-  echo [ERROR] pytest installation failed.
-  pause
-  exit /b 1
-)
-
-echo [INFO] Verifying Python runtime...
-call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -c "import importlib.util, sys; required=['myharness','anthropic','openai','tiktoken','rich','prompt_toolkit','textual','typer','pydantic','httpx','feedparser','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi','pptx','pytest']; missing=[name for name in required if importlib.util.find_spec(name) is None]; print('Missing: ' + ', '.join(missing)) if missing else None; sys.exit(1 if missing else 0)"
-if errorlevel 1 (
-  echo.
-  echo [ERROR] Python dependency verification failed.
   pause
   exit /b 1
 )
@@ -166,8 +129,45 @@ if errorlevel 1 (
 )
 popd
 
+echo [INFO] Installing MyHarness Python package and dependencies...
+set "PYTHONPATH=%MYHARNESS_PROJECT_DIR%\src;%PYTHONPATH%"
+"%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install -e .
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Python package installation failed.
+  pause
+  exit /b 1
+)
+
+echo [INFO] Installing Python-pptx for PowerPoint document generation...
+"%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install --upgrade python-pptx
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Python-pptx installation failed.
+  pause
+  exit /b 1
+)
+
+echo [INFO] Installing pytest for local verification...
+"%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -m pip install --upgrade pytest
+if errorlevel 1 (
+  echo.
+  echo [ERROR] pytest installation failed.
+  pause
+  exit /b 1
+)
+
+echo [INFO] Verifying Python runtime...
+"%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -c "import importlib.util, sys; required=['myharness','anthropic','openai','tiktoken','rich','prompt_toolkit','textual','typer','pydantic','httpx','feedparser','websockets','mcp','pyperclip','yaml','questionary','watchfiles','croniter','slack_sdk','telegram','discord','lark_oapi','pptx','pytest']; missing=[name for name in required if importlib.util.find_spec(name) is None]; print('Missing: ' + ', '.join(missing)) if missing else None; sys.exit(1 if missing else 0)"
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Python dependency verification failed.
+  pause
+  exit /b 1
+)
+
 echo [INFO] Verifying provider defaults...
-call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -c "from myharness.config.settings import load_settings; s=load_settings(); print(f'Provider: {s.provider} / {s.api_format} / {s.model}')"
+"%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% -c "from myharness.config.settings import load_settings; s=load_settings(); print(f'Provider: {s.provider} / {s.api_format} / {s.model}')"
 if errorlevel 1 (
   echo.
   echo [ERROR] Provider settings verification failed.
@@ -214,7 +214,7 @@ exit /b 1
 :try_bootstrap_python
 set "PY_CANDIDATE=%~1"
 set "PY_CANDIDATE_ARGS=%~2"
-call "%PY_CANDIDATE%" %PY_CANDIDATE_ARGS% -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+"%PY_CANDIDATE%" %PY_CANDIDATE_ARGS% -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
 if errorlevel 1 exit /b 1
 set "MYHARNESS_BOOTSTRAP_PYTHON=%PY_CANDIDATE%"
 set "MYHARNESS_BOOTSTRAP_PYTHON_ARGS=%PY_CANDIDATE_ARGS%"
@@ -232,13 +232,19 @@ if exist "%POSCO_CA_BUNDLE%" (
 )
 set "NODE_EXTRA_CA_CERTS=C:\POSCO_CA.crt"
 set "npm_config_cafile=C:\POSCO_CA.crt"
+if "%NODE_OPTIONS%"=="" (
+  set "NODE_OPTIONS=--tls-cipher-list=DEFAULT@SECLEVEL=1"
+) else (
+  set "NODE_OPTIONS=--tls-cipher-list=DEFAULT@SECLEVEL=1 %NODE_OPTIONS%"
+)
 echo [INFO] POSCO certificate detected: C:\POSCO_CA.crt
+echo [INFO] Node TLS compatibility mode enabled for POSCO CA.
 exit /b 0
 
 :upgrade_posco_bundle
 if not exist "C:\POSCO_CA.crt" exit /b 0
 echo [INFO] Building POSCO Python CA bundle...
-call "%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% "%MYHARNESS_PROJECT_DIR%\scripts\build_posco_ca_bundle.py"
+"%MYHARNESS_BOOTSTRAP_PYTHON%" %MYHARNESS_BOOTSTRAP_PYTHON_ARGS% "%MYHARNESS_PROJECT_DIR%\scripts\build_posco_ca_bundle.py"
 if errorlevel 1 exit /b 1
 set "POSCO_CA_BUNDLE=%MYHARNESS_PROJECT_DIR%\certs\posco-ca-bundle.pem"
 set "SSL_CERT_FILE=%POSCO_CA_BUNDLE%"

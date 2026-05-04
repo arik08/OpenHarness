@@ -227,6 +227,45 @@ async def test_codex_client_streams_text(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_codex_client_uses_configurable_timeout(monkeypatch):
+    sink: dict[str, Any] = {}
+    captured: dict[str, Any] = {}
+    response = _FakeStreamResponse(
+        lines=[
+            'data: {"type":"response.output_text.delta","delta":"ok"}',
+            "",
+            'data: {"type":"response.completed","response":{"status":"completed"}}',
+            "",
+        ]
+    )
+
+    def _fake_async_client(*args, **kwargs):
+        captured.update(kwargs)
+        return _FakeAsyncClient(response, sink)
+
+    monkeypatch.setattr("myharness.api.codex_client.httpx.AsyncClient", _fake_async_client)
+
+    client = CodexApiClient(_fake_codex_token(), timeout=240.0)
+    events = [
+        event
+        async for event in client.stream_message(
+            ApiMessageRequest(
+                model="gpt-5.5",
+                messages=[ConversationMessage.from_user_text("hi")],
+                system_prompt="Be helpful.",
+            )
+        )
+    ]
+
+    assert events
+    timeout = captured["timeout"]
+    assert timeout.read == 240.0
+    assert timeout.connect == 30.0
+    assert timeout.write == 60.0
+    assert captured["follow_redirects"] is True
+
+
+@pytest.mark.asyncio
 async def test_codex_client_retries_incomplete_chunked_read(monkeypatch):
     sink: dict[str, Any] = {}
     first_response = _FakeStreamResponse(

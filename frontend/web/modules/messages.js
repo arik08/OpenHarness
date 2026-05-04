@@ -88,6 +88,31 @@ function formatWorkflowContentCount(text, tokens) {
   return `${formatWorkflowTokenCount(tokens)} (${countWorkflowPreviewLines(text).toLocaleString()}줄)`;
 }
 
+const workflowPreviewBodyLineSummaryThreshold = 10;
+const workflowPreviewBodyCharSummaryThreshold = 4000;
+const workflowPreviewCollapsedLines = 11;
+const workflowPreviewCollapsedChars = 1200;
+
+function workflowPreviewBodyDisplay(text, kind = "content", expanded = false) {
+  const value = String(text || "");
+  const shouldCollapse = kind !== "diff"
+    && value
+    && (value.length > workflowPreviewBodyCharSummaryThreshold
+      || countWorkflowPreviewLines(value) >= workflowPreviewBodyLineSummaryThreshold);
+  if (
+    !shouldCollapse
+    || expanded
+  ) {
+    return { text: value, canCollapse: Boolean(shouldCollapse) };
+  }
+  const lines = value.replace(/\r\n/g, "\n").split("\n");
+  let preview = lines.slice(0, workflowPreviewCollapsedLines).join("\n").trimEnd();
+  if (preview.length > workflowPreviewCollapsedChars) {
+    preview = preview.slice(0, workflowPreviewCollapsedChars).trimEnd();
+  }
+  return { text: `${preview}...`, canCollapse: true };
+}
+
 function workflowInputValue(input, keys) {
   for (const key of keys) {
     if (Object.prototype.hasOwnProperty.call(input || {}, key) && input[key] !== null && input[key] !== undefined) {
@@ -269,10 +294,23 @@ function renderWorkflowPreviewBody(preview, text) {
   if (!preview?.body) {
     return;
   }
+  preview.node?.querySelector(".workflow-output-toggle")?.remove();
   preview.body.classList.toggle("diff", preview.kind === "diff");
   preview.body.textContent = "";
   if (preview.kind !== "diff") {
-    preview.body.textContent = text;
+    const display = workflowPreviewBodyDisplay(text, preview.kind, Boolean(preview.expanded));
+    preview.body.textContent = display.text;
+    if (display.canCollapse) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "workflow-output-toggle";
+      toggle.textContent = preview.expanded ? "접기" : "더 보기";
+      toggle.addEventListener("click", () => {
+        preview.expanded = !preview.expanded;
+        renderWorkflowPreviewBody(preview, text);
+      });
+      preview.node.append(toggle);
+    }
     return;
   }
   for (const line of String(text || "").split(/\r?\n/)) {
@@ -834,12 +872,14 @@ function prettifyPromptToken(rawToken) {
     .slice(1)
     .replace(/^["']|["']$/g, "")
     .trim();
-  const name = (normalized.includes(":") ? normalized.split(":")[0] : normalized)
-    .replace(/[-_]+/g, " ")
-    .trim();
-  return name
-    ? name.replace(/\b\w/g, (char) => char.toUpperCase())
-    : token;
+  const normalizedLower = normalized.toLowerCase();
+  if (normalizedLower.startsWith("mcp:") || normalizedLower.startsWith("plugin:")) {
+    const name = normalized.slice(normalized.indexOf(":") + 1)
+      .replace(/[-_]+/g, " ")
+      .trim();
+    return name ? name.replace(/\b\w/g, (char) => char.toUpperCase()) : normalized;
+  }
+  return normalized || token;
 }
 
 function appendTextWithLineBreaks(parent, text) {

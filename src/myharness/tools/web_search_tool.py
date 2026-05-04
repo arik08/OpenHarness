@@ -13,6 +13,9 @@ from myharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
 from myharness.utils.network_guard import NetworkGuardError, fetch_public_http_response
 
 
+REQUEST_TIMEOUT_SECONDS = 45.0
+
+
 class WebSearchToolInput(BaseModel):
     """Arguments for a web search."""
 
@@ -47,7 +50,7 @@ class WebSearchTool(BaseTool):
                 endpoint,
                 params={"q": arguments.query},
                 headers={"User-Agent": "MyHarness/0.1"},
-                timeout=20.0,
+                timeout=REQUEST_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
         except (httpx.HTTPError, NetworkGuardError) as exc:

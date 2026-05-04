@@ -407,6 +407,9 @@ class OpenAICompatibleClient:
             return True
         if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
             return True
+        marker = f"{exc.__class__.__name__} {exc}".lower()
+        if any(term in marker for term in ("timeout", "timed out", "connection", "network")):
+            return True
         return False
 
     @staticmethod

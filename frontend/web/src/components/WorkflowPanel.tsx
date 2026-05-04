@@ -27,6 +27,11 @@ function formatDuration(seconds: number) {
   return formatElapsed(seconds).replace(/\s*경과$/, "");
 }
 
+const workflowPreviewBodyLineSummaryThreshold = 10;
+const workflowPreviewBodyCharSummaryThreshold = 4000;
+const workflowPreviewCollapsedLines = 11;
+const workflowPreviewCollapsedChars = 1200;
+
 function estimateTextTokens(text: string) {
   const value = String(text || "");
   if (!value) {
@@ -60,6 +65,26 @@ function countWorkflowPreviewLines(text: string) {
 function formatWorkflowContentCount(text: string) {
   const lines = countWorkflowPreviewLines(text);
   return `${formatWorkflowTokenCount(estimateTextTokens(text))} (${lines.toLocaleString()}줄)`;
+}
+
+function workflowPreviewBodyDisplay(text: string, kind: WorkflowPreviewSource["kind"], expanded: boolean) {
+  const value = String(text || "");
+  const shouldCollapse = kind !== "diff"
+    && Boolean(value)
+    && (value.length > workflowPreviewBodyCharSummaryThreshold
+      || countWorkflowPreviewLines(value) >= workflowPreviewBodyLineSummaryThreshold);
+  if (
+    !shouldCollapse
+    || expanded
+  ) {
+    return { text: value, canCollapse: shouldCollapse };
+  }
+  const lines = value.replace(/\r\n/g, "\n").split("\n");
+  let preview = lines.slice(0, workflowPreviewCollapsedLines).join("\n").trimEnd();
+  if (preview.length > workflowPreviewCollapsedChars) {
+    preview = preview.slice(0, workflowPreviewCollapsedChars).trimEnd();
+  }
+  return { text: `${preview}...`, canCollapse: true };
 }
 
 function workflowPreviewFileName(path: string) {
@@ -276,8 +301,10 @@ function isWorkflowOutputTool(toolName: string) {
 
 function WorkflowOutputPreview({ event, source }: { event: WorkflowEvent; source: WorkflowPreviewSource }) {
   const bodyRef = useRef<HTMLPreElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const done = event.status !== "running";
   const fileName = workflowPreviewFileName(source.path);
+  const bodyDisplay = workflowPreviewBodyDisplay(source.content, source.kind, expanded);
   const prefix = source.kind === "diff"
     ? done ? "수정 완료" : "수정 미리보기"
     : done ? "작성 완료" : "작성 중인 결과물";
@@ -296,6 +323,10 @@ function WorkflowOutputPreview({ event, source }: { event: WorkflowEvent; source
     body.scrollTop = body.scrollHeight;
   }, [event.status, source.content]);
 
+  useEffect(() => {
+    setExpanded(false);
+  }, [source.content, source.kind]);
+
   return (
     <div className="workflow-output-preview">
       <div className="workflow-output-title">
@@ -308,7 +339,13 @@ function WorkflowOutputPreview({ event, source }: { event: WorkflowEvent; source
             {line || " "}
           </span>
         ))
-        : source.content}</pre>
+        : bodyDisplay.text}</pre>
+      {bodyDisplay.canCollapse ? (
+        <button className="workflow-output-toggle" type="button" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "접기" : "더 보기"}
+          <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
+        </button>
+      ) : null}
     </div>
   );
 }

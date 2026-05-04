@@ -118,6 +118,9 @@ def test_build_system_prompt_discourages_repeated_clarification_rounds():
     assert 'A short numeric reply like "2" counts as choosing' in prompt
     assert "Do not restate the full plan, table of contents, or alternative approaches" in prompt
     assert "unless the answer creates a new concrete blocker or risky action" in prompt
+    assert "Do not ask another clarification immediately after the user answers" in prompt
+    assert "batch them into one question" in prompt
+    assert "(1/N)" in prompt
 
 
 def test_build_system_prompt_guides_chat_html_rendering_and_report_charts():

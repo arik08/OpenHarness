@@ -81,7 +81,6 @@ exclude = [
 "frontend/web/script.js" = "myharness/_web/script.js"
 "frontend/web/server.mjs" = "myharness/_web/server.mjs"
 "frontend/web/styles.css" = "myharness/_web/styles.css"
-"frontend/web/dist" = "myharness/_web/dist"
 "frontend/web/modules" = "myharness/_web/modules"
 
 [tool.pytest.ini_options]

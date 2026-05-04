@@ -27,7 +27,8 @@ class AskUserQuestionToolInput(BaseModel):
     question: str = Field(
         description=(
             "The exact question to ask the user. Batch all necessary clarification into this "
-            "one question instead of asking a series of small follow-ups."
+            "one question instead of asking a series of small follow-ups. If there are multiple "
+            "items, label each item as (1/N), (2/N), etc."
         )
     )
     choices: list[AskUserQuestionChoice] = Field(
@@ -49,9 +50,12 @@ class AskUserQuestionTool(BaseTool):
         "when the missing information would make the work meaningfully wrong, destructive, "
         "or wasteful. If a reasonable default exists, state the assumption and proceed. When "
         "a question is necessary, batch the choices into one prompt and avoid approval-only "
-        "questions like asking whether to proceed after a reasonable plan. After the user "
+        "questions like asking whether to proceed after a reasonable plan. If several "
+        "clarifications are needed, label each item as (1/N), (2/N), etc. After the user "
         "answers, continue the original task without restating the plan or asking for another "
-        "confirmation unless there is a new concrete blocker."
+        "confirmation unless there is a new concrete blocker. Do not ask another clarification "
+        "immediately after the user answers unless proceeding would be impossible, destructive, "
+        "or clearly wrong."
     )
     input_model = AskUserQuestionToolInput
 

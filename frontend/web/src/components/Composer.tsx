@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ClipboardEvent, FormEvent, KeyboardEvent } from "react";
 import { cancelMessage, sendMessage } from "../api/messages";
+import { startSession } from "../api/session";
 import { useAppState } from "../state/app-state";
 import type { ArtifactSummary, Attachment, CommandItem, SkillItem } from "../types/backend";
 import { InlineQuestion } from "./InlineQuestion";
@@ -13,6 +14,13 @@ type Suggestion =
   | { kind: "command"; value: string; label: string; description: string }
   | { kind: "skill"; value: string; label: string; description: string }
   | { kind: "file"; value: string; label: string; description: string };
+
+type ActiveSuggestionToken = {
+  trigger: "/" | "$" | "@";
+  query: string;
+  start: number;
+  end: number;
+};
 
 function fileToAttachment(file: File): Promise<Attachment> {
   return new Promise((resolve, reject) => {
@@ -48,7 +56,6 @@ function skillSuggestions(skills: SkillItem[], query: string): Suggestion[] {
   const normalized = query.replace(/^\$/, "").toLowerCase();
   return skills
     .filter((skill) => skill.enabled !== false && skill.name.toLowerCase().includes(normalized))
-    .slice(0, 8)
     .map((skill) => ({
       kind: "skill",
       value: `$${skill.name}`,
@@ -70,10 +77,26 @@ function fileSuggestions(artifacts: ArtifactSummary[], query: string): Suggestio
     }));
 }
 
+function activeSuggestionToken(value: string, cursorOffset: number): ActiveSuggestionToken | null {
+  const end = Math.max(0, Math.min(cursorOffset, value.length));
+  const beforeCursor = value.slice(0, end);
+  const tokenStart = Math.max(beforeCursor.lastIndexOf(" "), beforeCursor.lastIndexOf("\n"), beforeCursor.lastIndexOf("\t")) + 1;
+  const query = beforeCursor.slice(tokenStart);
+
+  if (!query) return null;
+  if (query.startsWith("$")) return { trigger: "$", query, start: tokenStart, end };
+  if (query.startsWith("@")) return { trigger: "@", query, start: tokenStart, end };
+  if (query.startsWith("/") && value.slice(0, tokenStart).trim() === "") {
+    return { trigger: "/", query, start: tokenStart, end };
+  }
+  return null;
+}
+
 export function Composer() {
   const { state, dispatch } = useAppState();
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
   const [isMultiline, setIsMultiline] = useState(false);
+  const [cursorOffset, setCursorOffset] = useState(0);
   const composerRef = useRef<HTMLFormElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -84,14 +107,14 @@ export function Composer() {
   const canSend = Boolean(state.sessionId && hasPayload && !state.busy);
   const canSteer = Boolean(state.sessionId && state.busy && fullLine().trim() && state.composer.attachments.length === 0);
   const showStop = Boolean(state.busy && !canSteer);
+  const suggestionToken = useMemo(() => activeSuggestionToken(draft, cursorOffset), [draft, cursorOffset]);
   const suggestions = useMemo(() => {
-    const trimmed = draft.trimStart();
-    if (!trimmed || /\s/.test(trimmed)) return [];
-    if (trimmed.startsWith("/")) return commandSuggestions(state.commands, trimmed);
-    if (trimmed.startsWith("$")) return skillSuggestions(state.skills, trimmed);
-    if (trimmed.startsWith("@")) return fileSuggestions(state.artifacts, trimmed);
+    if (!suggestionToken) return [];
+    if (suggestionToken.trigger === "/") return commandSuggestions(state.commands, suggestionToken.query);
+    if (suggestionToken.trigger === "$") return skillSuggestions(state.skills, suggestionToken.query);
+    if (suggestionToken.trigger === "@") return fileSuggestions(state.artifacts, suggestionToken.query);
     return [];
-  }, [draft, state.artifacts, state.commands, state.skills]);
+  }, [state.artifacts, state.commands, state.skills, suggestionToken]);
   const activeSuggestionIndex = suggestions.length ? Math.min(selectedSuggestionIndex, suggestions.length - 1) : 0;
 
   useEffect(() => {
@@ -103,6 +126,15 @@ export function Composer() {
       submittingRef.current = false;
     }
   }, [state.busy]);
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) {
+      setCursorOffset(draft.length);
+      return;
+    }
+    setCursorOffset(document.activeElement === input ? input.selectionStart ?? draft.length : draft.length);
+  }, [draft]);
 
   useEffect(() => {
     activeSuggestionRef.current?.scrollIntoView?.({ block: "nearest" });
@@ -190,7 +222,26 @@ export function Composer() {
   }
 
   function applySuggestion(suggestion: Suggestion) {
-    dispatch({ type: "set_draft", value: suggestion.value });
+    if (!suggestionToken) {
+      dispatch({ type: "set_draft", value: suggestion.value });
+      return;
+    }
+
+    const input = inputRef.current;
+    const replaceEnd = Math.max(suggestionToken.end, input?.selectionEnd ?? suggestionToken.end);
+    const nextDraft = `${draft.slice(0, suggestionToken.start)}${suggestion.value}${draft.slice(replaceEnd)}`;
+    const nextCursorOffset = suggestionToken.start + suggestion.value.length;
+    dispatch({ type: "set_draft", value: nextDraft });
+    window.requestAnimationFrame(() => {
+      const nextInput = inputRef.current;
+      nextInput?.focus();
+      nextInput?.setSelectionRange(nextCursorOffset, nextCursorOffset);
+      setCursorOffset(nextCursorOffset);
+    });
+  }
+
+  function syncCursorFromInput(input: HTMLTextAreaElement) {
+    setCursorOffset(input.selectionStart ?? input.value.length);
   }
 
   async function cancelCurrent() {
@@ -243,28 +294,45 @@ export function Composer() {
     }
 
     submittingRef.current = true;
-    dispatch({ type: "set_busy", value: true });
     const shellShortcut = line.trim().startsWith("!") && state.composer.attachments.length === 0;
-    dispatch({
-      type: "append_message",
-      message: shellShortcut
-        ? {
-            role: "log",
-            text: line,
-            toolName: "shell-shortcut",
-            terminal: { command: line.trim().slice(1).trim(), status: "running" },
-          }
-        : { role: "user", text: line || "(이미지 첨부)" },
-    });
-    dispatch({ type: "clear_composer" });
+    const attachments = state.composer.attachments;
+    let targetSessionId = state.sessionId;
+    dispatch({ type: "set_busy", value: true });
 
     try {
+      if (state.pendingFreshChat) {
+        const session = await startSession({
+          clientId: state.clientId,
+          cwd: state.workspacePath || undefined,
+        });
+        targetSessionId = session.sessionId;
+        dispatch({
+          type: "session_started",
+          sessionId: session.sessionId,
+          clientId: state.clientId,
+        });
+        if (session.workspace) {
+          dispatch({ type: "set_workspace", workspace: session.workspace });
+        }
+      }
+      dispatch({
+        type: "append_message",
+        message: shellShortcut
+          ? {
+              role: "log",
+              text: line,
+              toolName: "shell-shortcut",
+              terminal: { command: line.trim().slice(1).trim(), status: "running" },
+            }
+          : { role: "user", text: line || "(이미지 첨부)" },
+      });
+      dispatch({ type: "clear_composer" });
       await sendMessage({
-        sessionId: state.sessionId,
+        sessionId: targetSessionId,
         clientId: state.clientId,
         line,
-        attachments: state.composer.attachments,
-        suppressUserTranscript: shellShortcut || state.composer.attachments.length > 0,
+        attachments,
+        suppressUserTranscript: shellShortcut || attachments.length > 0,
         systemPrompt: state.systemPrompt.trim() || undefined,
       });
     } catch (error) {
@@ -418,9 +486,15 @@ export function Composer() {
           autoComplete="off"
           spellCheck={false}
           value={draft}
-          onChange={(event) => dispatch({ type: "set_draft", value: event.currentTarget.value })}
+          onChange={(event) => {
+            syncCursorFromInput(event.currentTarget);
+            dispatch({ type: "set_draft", value: event.currentTarget.value });
+          }}
+          onClick={(event) => syncCursorFromInput(event.currentTarget)}
           onKeyDown={handleKeyDown}
+          onKeyUp={(event) => syncCursorFromInput(event.currentTarget)}
           onPaste={handlePaste}
+          onSelect={(event) => syncCursorFromInput(event.currentTarget)}
         />
         <button
           className={`plan-mode-indicator${isPlanMode(state.permissionMode) ? "" : " hidden"}`}

@@ -26,6 +26,7 @@ JWT_CLAIM_PATH = "https://api.openai.com/auth"
 MAX_RETRIES = 3
 BASE_DELAY_SECONDS = 1.0
 MAX_DELAY_SECONDS = 30.0
+DEFAULT_CODEX_TIMEOUT_SECONDS = 180.0
 CODEX_REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
 
 
@@ -221,10 +222,17 @@ def _translate_status_error(status_code: int, message: str) -> MyHarnessApiError
 class CodexApiClient:
     """Client for ChatGPT/Codex subscription-backed Codex Responses."""
 
-    def __init__(self, auth_token: str, *, base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        auth_token: str,
+        *,
+        base_url: str | None = None,
+        timeout: float = DEFAULT_CODEX_TIMEOUT_SECONDS,
+    ) -> None:
         self._auth_token = auth_token
         self._base_url = base_url
         self._url = _resolve_codex_url(base_url)
+        self._timeout = timeout
 
     async def stream_message(self, request: ApiMessageRequest) -> AsyncIterator[ApiStreamEvent]:
         last_error: Exception | None = None
@@ -275,7 +283,13 @@ class CodexApiClient:
         current_tool_name: str | None = None
 
         headers = _build_codex_headers(self._auth_token)
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        timeout = httpx.Timeout(
+            self._timeout,
+            connect=min(self._timeout, 30.0),
+            write=min(self._timeout, 60.0),
+            pool=30.0,
+        )
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             async with client.stream("POST", self._url, headers=headers, json=body) as response:
                 if response.status_code >= 400:
                     payload = await response.aread()

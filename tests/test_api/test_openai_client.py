@@ -314,6 +314,13 @@ def test_openai_client_init_passes_timeout(monkeypatch):
     assert captured["timeout"] == 45.0
 
 
+def test_openai_client_retries_sdk_timeout_errors():
+    class APITimeoutError(Exception):
+        pass
+
+    assert OpenAICompatibleClient._is_retryable(APITimeoutError("read timed out")) is True
+
+
 
 class TestStreamMessageTokenParams:
     @pytest.mark.asyncio

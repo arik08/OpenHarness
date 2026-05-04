@@ -343,12 +343,16 @@ test("streamed write_file arguments create workflow previews before tool start",
   assert.equal(previewBody.textContent, "hello world");
 });
 
-test("write_file workflow previews keep full long content", async () => {
+test("write_file workflow previews collapse long content", async () => {
   installBrowserGlobals();
   const { createMessages } = await import("../modules/messages.js");
   const ctx = createContext();
   const messages = createMessages(ctx);
-  const longContent = `${"a".repeat(12050)}\n</html>`;
+  const longContent = [
+    "첫 줄입니다.",
+    ...Array.from({ length: 24 }, (_, index) => `긴 본문 ${index + 1}번째 줄입니다.`),
+    "</html>",
+  ].join("\n");
 
   messages.appendWorkflowEvent({
     type: "tool_started",
@@ -361,8 +365,14 @@ test("write_file workflow previews keep full long content", async () => {
   messages.finalizeWorkflowSummary();
 
   const previewBody = ctx.els.messages.querySelector(".workflow-output-body");
+  const toggle = ctx.els.messages.querySelector(".workflow-output-toggle");
   assert.ok(previewBody);
-  assert.equal(previewBody.textContent, longContent);
+  assert.ok(toggle);
+  assert.notEqual(previewBody.textContent, longContent);
+  assert.match(previewBody.textContent, /첫 줄입니다/);
+  assert.match(previewBody.textContent, /긴 본문 10번째 줄입니다/);
+  assert.doesNotMatch(previewBody.textContent, /긴 본문 11번째 줄입니다/);
+  assert.equal(toggle.textContent, "더 보기");
 });
 
 test("streamed notebook_edit arguments create workflow previews from new_source", async () => {

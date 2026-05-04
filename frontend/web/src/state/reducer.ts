@@ -36,6 +36,7 @@ export type AppAction =
   | { type: "set_workspace"; workspace: Workspace }
   | { type: "set_history"; history: HistoryItem[] }
   | { type: "set_history_loading"; value: boolean }
+  | { type: "begin_new_chat" }
   | { type: "begin_history_restore"; sessionId: string }
   | { type: "finish_history_restore" }
   | { type: "set_artifacts"; artifacts: ArtifactSummary[] }
@@ -197,6 +198,7 @@ export const initialAppState: AppState = {
   historyRefreshKey: 0,
   activeHistoryId: null,
   restoringHistory: false,
+  pendingFreshChat: false,
   artifacts: [],
   artifactPanelOpen: false,
   activeArtifact: null,
@@ -887,6 +889,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         sessionId: action.sessionId,
         clientId: action.clientId || state.clientId,
         history: removeLiveHistoryRowsForSession(state.history, action.sessionId),
+        pendingFreshChat: false,
         status: "ready",
         statusText: "준비됨",
       };
@@ -926,6 +929,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         workflowInputBuffers: {},
         activeHistoryId: null,
         restoringHistory: false,
+        pendingFreshChat: false,
         artifacts: [],
         artifactPanelOpen: false,
         activeArtifact: null,
@@ -1044,11 +1048,36 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "set_history_loading":
       return { ...state, historyLoading: action.value };
 
+    case "begin_new_chat":
+      return {
+        ...state,
+        chatTitle: "MyHarness",
+        busy: false,
+        status: state.sessionId ? "ready" : state.status,
+        statusText: state.sessionId ? "준비됨" : state.statusText,
+        messages: [],
+        workflowAnchorMessageId: null,
+        workflowEventsByMessageId: {},
+        workflowDurationSecondsByMessageId: {},
+        workflowInputBuffers: {},
+        activeHistoryId: null,
+        restoringHistory: false,
+        pendingFreshChat: Boolean(state.sessionId),
+        artifactPanelOpen: false,
+        activeArtifact: null,
+        activeArtifactPayload: null,
+        todoMarkdown: "",
+        todoCollapsed: false,
+        workflowEvents: [],
+        workflowDurationSeconds: null,
+      };
+
     case "begin_history_restore":
       return {
         ...state,
         activeHistoryId: action.sessionId,
         restoringHistory: true,
+        pendingFreshChat: false,
       };
 
     case "finish_history_restore":
@@ -1302,6 +1331,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           workflowEvents,
           workflowDurationSeconds: workflowAnchorMessageId ? workflowDurationSecondsByMessageId[workflowAnchorMessageId] ?? null : null,
           restoringHistory: true,
+          pendingFreshChat: false,
           busy: false,
           status: "ready",
           statusText: "준비됨",
@@ -1330,6 +1360,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ...state,
           activeHistoryId,
           restoringHistory: false,
+          pendingFreshChat: false,
         };
       }
 

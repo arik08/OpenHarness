@@ -36,8 +36,38 @@ export function Sidebar() {
 
   async function startFreshChat(workspace?: Workspace) {
     const nextWorkspace = workspace || (state.workspacePath ? { name: state.workspaceName, path: state.workspacePath } : undefined);
+    if (!workspace && state.sessionId && !state.busy) {
+      window.dispatchEvent(new Event("myharness:saveMessageScroll"));
+      dispatch({ type: "begin_new_chat" });
+      return;
+    }
     try {
       if (state.busy || !state.sessionId) {
+        const session = await startSession({
+          clientId: state.clientId,
+          cwd: nextWorkspace?.path || undefined,
+        });
+        dispatch({ type: "session_replaced", sessionId: session.sessionId, workspace: session.workspace || nextWorkspace });
+        return;
+      }
+      const session = await restartSession({
+        sessionId: state.sessionId,
+        clientId: state.clientId,
+        cwd: nextWorkspace?.path || undefined,
+      });
+      dispatch({ type: "session_replaced", sessionId: session.sessionId, workspace: session.workspace || nextWorkspace });
+    } catch (error) {
+      dispatch({
+        type: "open_modal",
+        modal: { kind: "error", message: error instanceof Error ? error.message : String(error) },
+      });
+    }
+  }
+
+  async function restartActiveSession() {
+    const nextWorkspace = state.workspacePath ? { name: state.workspaceName, path: state.workspacePath } : undefined;
+    try {
+      if (!state.sessionId) {
         const session = await startSession({
           clientId: state.clientId,
           cwd: nextWorkspace?.path || undefined,
@@ -561,7 +591,7 @@ export function Sidebar() {
       <section className="history-panel" aria-label="Chat History">
         <div className="history-heading">
           <span className="section-label">Chat History</span>
-          <button className="history-refresh" type="button" onClick={() => void startFreshChat()}>
+          <button className="history-refresh" type="button" onClick={() => void restartActiveSession()}>
             Restart
           </button>
         </div>

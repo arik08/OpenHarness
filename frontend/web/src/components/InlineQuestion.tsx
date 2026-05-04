@@ -21,10 +21,12 @@ export function InlineQuestion() {
   ), [payload, state.busy, state.composer.draft, state.messages]);
   const kind = String(payload?.kind || "");
   const requestId = String(payload?.request_id || "");
+  const isAssistantFollowUp = Boolean(assistantQuestion);
   const isQuestion = kind === "question" || Boolean(assistantQuestion);
   const isPermission = kind === "permission";
   const question = (assistantQuestion?.question || String(payload?.question || payload?.reason || payload?.message || "")).trim()
     || (isPermission ? "이 도구 실행을 허용할까요?" : "추가 정보가 필요합니다.");
+  const questionProgress = useMemo(() => questionProgressLabel(question), [question]);
   const choices = useMemo(() => (
     isQuestion
       ? normalizeQuestionChoices(payload, question, assistantQuestion?.choices, {
@@ -157,9 +159,9 @@ export function InlineQuestion() {
     <section className="inline-question-card" role="group" aria-live="polite" data-request-id={requestId}>
       <div className="inline-question-header">
         <strong>
-          <span className="inline-question-label-copy">질문: {conciseQuestion}</span>
+          <span className="inline-question-label-copy">{isAssistantFollowUp ? `답변 선택${questionProgress}` : `질문${questionProgress}: ${conciseQuestion}`}</span>
         </strong>
-        <small>에이전트가 답변을 기다리고 있습니다.</small>
+        <small>{isAssistantFollowUp ? "마지막 질문에 바로 답변할 수 있습니다." : "에이전트가 답변을 기다리고 있습니다."}</small>
       </div>
       {choices.length ? (
         <div className="inline-question-choices">
@@ -308,6 +310,27 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function questionProgressLabel(question: string) {
+  const text = String(question || "").trim();
+  const explicit = text.match(/(?:^|\s)[(（]\s*(\d+)\s*[\/／]\s*(\d+)\s*[)）]/);
+  if (explicit) {
+    const current = Number.parseInt(explicit[1], 10);
+    const total = Number.parseInt(explicit[2], 10);
+    if (Number.isFinite(current) && Number.isFinite(total) && total > 1 && current >= 1 && current <= total) {
+      return ` (${current}/${total})`;
+    }
+  }
+  const questionLines = text.split(/\r?\n/).map((line) => line.trim()).filter(isQuestionLikeLine);
+  const punctuationCount = text.match(/[?？]/g)?.length || 0;
+  const total = Math.max(questionLines.length, punctuationCount);
+  return total > 1 ? ` (1/${Math.min(total, 9)})` : "";
+}
+
+function isQuestionLikeLine(line: string) {
+  const value = line.replace(/^[(（]|[)）]$/g, "").trim();
+  return /[?？]\s*$/.test(value) || /(할까요|될까요|괜찮을까요|원하시나요|맞나요)\s*$/.test(value);
+}
+
 function assistantFollowUpQuestion(messages: Array<{ role: string; text: string; isComplete?: boolean; isError?: boolean }>, draft = "") {
   if (draft.trim()) {
     return null;
@@ -322,7 +345,10 @@ function assistantFollowUpQuestion(messages: Array<{ role: string; text: string;
   }
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const trailingLines = lines.slice(-3);
-  const question = [...trailingLines].reverse().find(isFollowUpQuestionLine) || "";
+  const batchedQuestions = trailingLines.filter(isFollowUpQuestionLine);
+  const question = batchedQuestions.length > 1
+    ? batchedQuestions.join("\n")
+    : [...trailingLines].reverse().find(isFollowUpQuestionLine) || "";
   if (!question) {
     return null;
   }
@@ -340,5 +366,7 @@ function isFollowUpQuestionLine(line: string) {
   if (!/[?？]\s*$/.test(value) && !/(할까요|될까요|괜찮을까요|원하시나요|맞나요)\s*$/.test(value)) {
     return false;
   }
-  return /(진행|시작|만들|수정|적용|확정|선택|원하|괜찮|좋을까요|될까요|할까요|should i|would you like|proceed|continue)/i.test(value);
+  return isOpenEndedQuestion(value)
+    || isAlternativeQuestion(value)
+    || /(진행|시작|만들|수정|적용|확정|선택|원하|괜찮|좋을까요|될까요|할까요|should i|would you like|proceed|continue)/i.test(value);
 }
