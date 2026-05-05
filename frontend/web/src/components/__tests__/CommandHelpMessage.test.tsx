@@ -87,4 +87,66 @@ describe("CommandHelpMessage", () => {
     expect(screen.queryByRole("option", { name: /\$ship/ })).toBeNull();
     expect(screen.getByRole("option", { name: /\$review/ })).toBeTruthy();
   });
+
+  it("adds full skill descriptions to the shared tooltip layer", () => {
+    const helpText = [
+      "사용 가능한 스킬:",
+      "- dispatching-parallel-agents [project] [활성]: 공유 상태나 순차 의존성이 없는 2개 이상의 독립 작업을 병렬로 처리합니다.",
+      "",
+      "사용 가능한 명령어:",
+      "- /help 도움말",
+    ].join("\n");
+
+    render(
+      <AppStateProvider initialState={{ ...initialAppState, sessionId: "session-1" }}>
+        <CommandHelpMessage text={helpText} />
+      </AppStateProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: /dispatching-parallel-agents/ }).getAttribute("data-tooltip")).toBe(
+      "dispatching-parallel-agents\n공유 상태나 순차 의존성이 없는 2개 이상의 독립 작업을 병렬로 처리합니다.",
+    );
+  });
+
+  it("disables plugin-owned skills in the help view when their plugin is toggled off", async () => {
+    const user = userEvent.setup();
+    const helpText = [
+      "사용 가능한 스킬:",
+      "- using-superpowers [plugin] [활성]: 스킬을 찾고 사용하는 방식을 정합니다.",
+      "",
+      "플러그인:",
+      "- superpowers [활성]: Superpowers skills",
+      "",
+      "사용 가능한 명령어:",
+      "- /help 도움말",
+    ].join("\n");
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-1",
+          skills: [
+            {
+              name: "using-superpowers",
+              description: "스킬을 찾고 사용하는 방식을 정합니다.",
+              source: "plugin:superpowers",
+              enabled: true,
+            },
+          ],
+        }}
+      >
+        <CommandHelpMessage text={helpText} />
+      </AppStateProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: /^superpowers/ }));
+
+    expect(sendBackendRequest).toHaveBeenCalledWith(
+      "session-1",
+      expect.any(String),
+      { type: "set_plugin_enabled", value: "superpowers", enabled: false },
+    );
+    expect(screen.getByRole("button", { name: /using-superpowers/ }).textContent).toContain("Inactive");
+  });
 });

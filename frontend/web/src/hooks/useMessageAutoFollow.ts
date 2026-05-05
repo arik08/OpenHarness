@@ -6,6 +6,7 @@ import type { AppState, ChatMessage } from "../types/ui";
 const nearBottomPx = 96;
 const streamingRejoinBottomPx = 260;
 const scrollStorageKey = "myharness:scrollPositions";
+const maxStreamFollowLeadPx = 220;
 
 function easeInOutCubic(progress: number) {
   return progress < 0.5
@@ -73,6 +74,7 @@ export function useMessageAutoFollow({
   const isActiveWorkflowGrowing = state.busy && Boolean(state.workflowAnchorMessageId && state.workflowEvents.length);
   const shouldFollowGrowingTail = isLastAssistantStreaming || isActiveWorkflowGrowing;
   const scrollSessionId = state.activeHistoryId || state.sessionId;
+  const streamFollowLeadPx = Math.max(0, Math.min(maxStreamFollowLeadPx, state.appSettings.streamFollowLeadPx));
 
   function stopAutoFollow(container = messagesRef.current) {
     if (animationFrameRef.current) {
@@ -145,18 +147,19 @@ export function useMessageAutoFollow({
         const rawTarget = Math.max(0, liveContainer.scrollHeight - liveContainer.clientHeight);
         const elapsed = Math.min(64, Math.max(0, now - previousFrameAt));
         previousFrameAt = now;
-        const targetMs = Math.max(180, Math.min(520, duration * 0.22));
+        const leadRatio = streamFollowLeadPx / maxStreamFollowLeadPx;
+        const targetMs = Math.max(120, Math.min(460, duration * (0.2 - leadRatio * 0.06)));
         const targetBlend = elapsed > 0 ? 1 - Math.exp(-elapsed / targetMs) : 0;
         bufferedTarget += (Math.max(rawTarget, bufferedTarget, liveContainer.scrollTop) - bufferedTarget) * targetBlend;
         const dt = elapsed / 1000;
         const distance = bufferedTarget - liveContainer.scrollTop;
-        const responseMs = Math.max(420, Math.min(960, duration * 0.32));
+        const responseMs = Math.max(300, Math.min(900, duration * (0.3 - leadRatio * 0.08)));
         const omega = (1000 / responseMs) * 2.6;
         const acceleration = distance * omega * omega - followVelocity * 2 * omega;
-        const maxAcceleration = Math.max(14000, Math.min(36000, liveContainer.clientHeight * 80));
+        const maxAcceleration = Math.max(16000, Math.min(42000, liveContainer.clientHeight * (84 + leadRatio * 28)));
         const boundedAcceleration = Math.max(-maxAcceleration, Math.min(maxAcceleration, acceleration));
         followVelocity += boundedAcceleration * dt;
-        const maxVelocity = Math.max(360, Math.min(3600, liveContainer.clientHeight * 4.4 + Math.abs(distance) * 4.5));
+        const maxVelocity = Math.max(420, Math.min(4600, liveContainer.clientHeight * (4.6 + leadRatio * 1.1) + Math.abs(distance) * (4.8 + leadRatio)));
         followVelocity = Math.max(0, Math.min(maxVelocity, followVelocity));
         const nextTop = liveContainer.scrollTop + followVelocity * dt;
         liveContainer.scrollTop = Math.max(liveContainer.scrollTop, Math.min(rawTarget, nextTop));
@@ -205,12 +208,12 @@ export function useMessageAutoFollow({
     const userScrolling = Date.now() <= userScrollIntentUntilRef.current;
     const remaining = container.scrollHeight - container.clientHeight - container.scrollTop;
     const threshold = shouldFollowGrowingTail ? Math.max(nearBottomPx, streamingRejoinBottomPx) : nearBottomPx;
-    if (remaining <= threshold) {
+    if (movedUp) {
+      stopAutoFollow(container);
+    } else if (remaining <= threshold) {
       resumeAutoFollow(container);
-    } else if (userScrolling || movedUp) {
-      if (userScrolling || Date.now() >= autoScrollUntilRef.current) {
-        stopAutoFollow(container);
-      }
+    } else if (userScrolling) {
+      stopAutoFollow(container);
     } else if (Date.now() < autoScrollUntilRef.current) {
       autoFollowRef.current = true;
     } else {
@@ -224,14 +227,14 @@ export function useMessageAutoFollow({
     if (!container || !autoFollowRef.current || state.restoringHistory) {
       return;
     }
-    container.style.setProperty("--stream-follow-lead", `${Math.max(0, Math.min(220, state.appSettings.streamFollowLeadPx))}px`);
+    container.style.setProperty("--stream-follow-lead", `${streamFollowLeadPx}px`);
     container.classList.toggle("streaming-follow", Boolean(shouldFollowGrowingTail));
     scrollMessagesToBottom({
       smooth: true,
       duration: state.appSettings.streamScrollDurationMs,
       continuous: shouldFollowGrowingTail,
     });
-  }, [state.messages.length, lastMessage?.text, lastMessage?.isComplete, activeWorkflowFollowSignature, state.appSettings.streamScrollDurationMs, state.appSettings.streamFollowLeadPx, isLastAssistantStreaming, shouldFollowGrowingTail, state.restoringHistory]);
+  }, [state.messages.length, lastMessage?.text, lastMessage?.isComplete, activeWorkflowFollowSignature, state.appSettings.streamScrollDurationMs, streamFollowLeadPx, isLastAssistantStreaming, shouldFollowGrowingTail, state.restoringHistory]);
 
   useLayoutEffect(() => {
     const container = messagesRef.current;

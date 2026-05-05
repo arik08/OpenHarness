@@ -49,6 +49,12 @@ function promptTokenKind(rawToken: string) {
   return "skill";
 }
 
+function splitPromptToken(rawToken: string) {
+  const token = String(rawToken || "");
+  const match = token.match(/^(.+?)([.,;:)\]]+)$/);
+  return match ? { token: match[1], trailing: match[2] } : { token, trailing: "" };
+}
+
 function titleCaseToken(value: string) {
   return value
     .replace(/[-_]+/g, " ")
@@ -71,19 +77,20 @@ function promptTokenLabel(rawToken: string) {
 }
 
 function createPromptToken(rawToken: string) {
+  const { token } = splitPromptToken(rawToken);
   const span = document.createElement("span");
-  span.className = `prompt-token ${promptTokenKind(rawToken)}`;
-  span.setAttribute("aria-label", rawToken);
-  span.textContent = promptTokenLabel(rawToken);
+  span.className = `prompt-token ${promptTokenKind(token)}`;
+  span.setAttribute("aria-label", token);
+  span.textContent = promptTokenLabel(token);
   return span;
 }
 
 function promptTokenPattern() {
-  return /(^|\s)(\$"[^"]+"|\$'[^']+'|\$[A-Za-z][A-Za-z0-9_.:-]*|@[A-Za-z0-9_.\\/:-]+)/g;
+  return /(^|\s)(\$"[^"]+"|\$'[^']+'|\$[A-Za-z][A-Za-z0-9_.:-]*|@[A-Za-z0-9_][A-Za-z0-9_.\\/-]*)/g;
 }
 
 function isSinglePromptToken(value: string) {
-  return /^(\$"[^"]+"|\$'[^']+'|\$[A-Za-z][A-Za-z0-9_.:-]*|@[A-Za-z0-9_.\\/:-]+)$/.test(value.trim());
+  return /^(\$"[^"]+"|\$'[^']+'|\$[A-Za-z][A-Za-z0-9_.:-]*|@[A-Za-z0-9_][A-Za-z0-9_.\\/-]*)$/.test(value.trim());
 }
 
 function replacePromptTokensInTextNode(node: Text) {
@@ -103,7 +110,11 @@ function replacePromptTokensInTextNode(node: Text) {
     if (before) {
       fragment.append(document.createTextNode(before));
     }
-    fragment.append(createPromptToken(rawToken));
+    const { token, trailing } = splitPromptToken(rawToken);
+    fragment.append(createPromptToken(token));
+    if (trailing) {
+      fragment.append(document.createTextNode(trailing));
+    }
     cursor = tokenStart + rawToken.length;
   }
   const after = value.slice(cursor);
@@ -124,7 +135,13 @@ function enhancePromptTokens(root: HTMLElement | null) {
     }
     const value = code.textContent || "";
     if (isSinglePromptToken(value)) {
-      code.replaceWith(createPromptToken(value.trim()));
+      const { token, trailing } = splitPromptToken(value.trim());
+      const fragment = document.createDocumentFragment();
+      fragment.append(createPromptToken(token));
+      if (trailing) {
+        fragment.append(document.createTextNode(trailing));
+      }
+      code.replaceWith(fragment);
     }
   });
 
@@ -327,12 +344,14 @@ function deferTrailingMarkdownTable(markdown: string) {
     tableEnd = cursor;
   }
 
-  if (tableStart < 0 || tableEnd < lines.length) {
+  const trailingLines = tableEnd >= 0 ? lines.slice(tableEnd) : [];
+  const hasOnlyTrailingBlankLines = trailingLines.every((line) => line.trim() === "");
+  if (tableStart < 0 || (tableEnd < lines.length && !hasOnlyTrailingBlankLines)) {
     return source;
   }
 
   const before = lines.slice(0, tableStart).join("\n").trimEnd();
-  const pendingTable = lines.slice(tableStart).join("\n").trimEnd();
+  const pendingTable = lines.slice(tableStart, tableEnd).join("\n").trimEnd();
   if (!pendingTable) {
     return source;
   }

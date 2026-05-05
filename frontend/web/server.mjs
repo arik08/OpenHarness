@@ -16,6 +16,15 @@ import {
   nextAvailableRelativePath,
   normalizeProjectFilePath,
 } from "./modules/projectFiles.js";
+import {
+  appendRawSessionEvent,
+  canReplayFromLastEventId,
+  createSessionReplayState,
+  rawEventsAfterLastEventId,
+  replayEventsForState,
+  shouldReplayRawEvent,
+  updateSessionReplayState,
+} from "./modules/sessionReplay.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = normalize(join(root, "../.."));
@@ -2751,19 +2760,29 @@ function normalizeAttachment(attachment) {
   };
 }
 
-function emit(session, event) {
-  session.events.push(event);
-  if (session.events.length > 400) {
-    session.events.splice(0, session.events.length - 400);
+function writeSseEvent(client, event, id = null) {
+  if (id !== null && id !== undefined) {
+    client.write(`id: ${id}\n`);
   }
+  client.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+function emit(session, event) {
+  updateSessionReplayState(session.replayState, event);
+  const eventId = session.nextEventId;
+  session.nextEventId += 1;
+  appendRawSessionEvent(session.events, eventId, event);
   for (const client of session.clients) {
-    client.write(`data: ${JSON.stringify(event)}\n\n`);
+    writeSseEvent(client, event, eventId);
   }
 }
 
 function shouldReplayEvent(event) {
-  const type = String(event?.type || "");
-  return !["modal_request", "select_request"].includes(type);
+  return shouldReplayRawEvent(event);
+}
+
+function lastEventIdFromRequest(request, params) {
+  return String(request.headers["last-event-id"] || params.get("lastEventId") || "").trim();
 }
 
 function killProcessTree(child) {
@@ -2859,6 +2878,8 @@ async function createBackendSession(options = {}) {
     process: child,
     clients: new Set(),
     events: [],
+    nextEventId: 1,
+    replayState: createSessionReplayState(),
     createdAt: Date.now(),
     workspace,
     clientId,
@@ -3312,8 +3333,16 @@ async function handleApi(request, response, pathname) {
       clearTimeout(session.clientCloseTimer);
       session.clientCloseTimer = null;
     }
-    for (const event of session.events.filter(shouldReplayEvent)) {
-      response.write(`data: ${JSON.stringify(event)}\n\n`);
+    const lastEventId = lastEventIdFromRequest(request, params);
+    if (lastEventId && canReplayFromLastEventId(session.events, lastEventId)) {
+      for (const entry of rawEventsAfterLastEventId(session.events, lastEventId)) {
+        writeSseEvent(response, entry.event, entry.id);
+      }
+    } else {
+      writeSseEvent(response, { type: "clear_transcript" });
+      for (const event of replayEventsForState(session.replayState).filter(shouldReplayEvent)) {
+        writeSseEvent(response, event);
+      }
     }
     request.on("close", () => {
       session.clients.delete(response);

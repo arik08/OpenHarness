@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import hljs from "highlight.js/lib/common";
 import type { ArtifactSummary } from "../types/backend";
 import type { ArtifactPayload } from "../types/ui";
@@ -170,13 +171,80 @@ function escapeHtml(value: string) {
     .replace(/"/g, "&quot;");
 }
 
+function isEditableKeyTarget(target: EventTarget | null) {
+  const element = target instanceof HTMLElement ? target : null;
+  if (!element) {
+    return false;
+  }
+  const tagName = element.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select" || element.isContentEditable;
+}
+
+function nodeIsInside(root: HTMLElement, node: Node | null) {
+  if (!node) {
+    return false;
+  }
+  return root.contains(node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+}
+
+function selectElementText(element: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 function HighlightedArtifactSource({ artifact, content }: { artifact: ArtifactSummary; content: string }) {
+  const sourceRef = useRef<HTMLPreElement | null>(null);
   const language = sourceLanguageForArtifact(artifact.path);
   const highlighted = hljs.getLanguage(language)
     ? hljs.highlight(content, { language, ignoreIllegals: true }).value
     : escapeHtml(content);
+
+  useEffect(() => {
+    function handleSelectAll(event: KeyboardEvent) {
+      if ((!event.ctrlKey && !event.metaKey) || event.altKey || event.key.toLowerCase() !== "a") {
+        return;
+      }
+      if (isEditableKeyTarget(event.target)) {
+        return;
+      }
+      const source = sourceRef.current;
+      if (!source?.isConnected) {
+        return;
+      }
+      const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const selection = window.getSelection();
+      const selectionIsInSource = nodeIsInside(source, selection?.anchorNode || null);
+      const focusIsInArtifactPanel = Boolean(activeElement?.closest(".artifact-panel"));
+      const focusIsDocumentBody = activeElement === document.body;
+      if (!selectionIsInSource && !focusIsInArtifactPanel && !focusIsDocumentBody) {
+        return;
+      }
+      event.preventDefault();
+      selectElementText(source.querySelector("code") || source);
+    }
+
+    document.addEventListener("keydown", handleSelectAll, true);
+    return () => {
+      document.removeEventListener("keydown", handleSelectAll, true);
+    };
+  }, []);
+
   return (
-    <pre className="artifact-text artifact-source">
+    <pre
+      ref={sourceRef}
+      className="artifact-text artifact-source"
+      tabIndex={0}
+      aria-label={`${artifact.name} 코드 원문`}
+      onMouseDown={(event) => {
+        event.currentTarget.focus();
+      }}
+    >
       <code
         className={`hljs language-${language}`}
         data-highlighted="yes"

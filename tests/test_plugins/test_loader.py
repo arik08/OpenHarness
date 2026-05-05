@@ -154,7 +154,7 @@ def test_plugin_skills_and_hooks_are_merged(tmp_path: Path, monkeypatch):
 
     settings = Settings(allow_project_plugins=True)
     skills = load_skill_registry(project, settings=settings).list_skills()
-    assert any(skill.name == "Deploy" and skill.source == "plugin" for skill in skills)
+    assert any(skill.name == "Deploy" and skill.source == "plugin:example" for skill in skills)
 
     plugins = load_plugins(settings, project)
     hooks = load_hook_registry(settings, plugins)

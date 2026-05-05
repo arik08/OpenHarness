@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { sendBackendRequest, sendMessage } from "../api/messages";
 import { useAppState } from "../state/app-state";
 import type { SkillItem } from "../types/backend";
@@ -169,20 +169,6 @@ function formatHelpIntro(text: string) {
     .replace(/^자주 쓰는 기능:\s*$/gm, "**자주 쓰는 기능**");
 }
 
-function mergeSkillState(items: ToggleEntry[], skills: SkillItem[]) {
-  const byName = new Map(skills.map((skill) => [skill.name.toLowerCase(), skill]));
-  return items.map((item) => {
-    const snapshot = byName.get(item.name.toLowerCase());
-    if (!snapshot) return item;
-    return {
-      ...item,
-      enabled: snapshot.enabled !== false,
-      description: snapshot.description || item.description,
-      source: snapshot.source || item.source,
-    };
-  });
-}
-
 function optimisticSkillSnapshot(skills: SkillItem[], items: ToggleEntry[], name: string, enabled: boolean): SkillItem[] {
   const source = skills.length
     ? skills
@@ -199,8 +185,44 @@ function optimisticSkillSnapshot(skills: SkillItem[], items: ToggleEntry[], name
   ));
 }
 
+function pluginNameFromSkillSource(source: string) {
+  const match = String(source || "").trim().match(/^plugin:(.+)$/i);
+  return match?.[1]?.trim().toLowerCase() || "";
+}
+
+function mergeSkillState(
+  items: ToggleEntry[],
+  skills: SkillItem[],
+  pluginEnabledByName: Map<string, boolean>,
+) {
+  const byName = new Map(skills.map((skill) => [skill.name.toLowerCase(), skill]));
+  return items.map((item) => {
+    const snapshot = byName.get(item.name.toLowerCase());
+    const source = snapshot?.source || item.source;
+    const pluginName = pluginNameFromSkillSource(source);
+    const pluginEnabled = pluginName ? pluginEnabledByName.get(pluginName) : undefined;
+    if (!snapshot) {
+      return pluginEnabled === false ? { ...item, enabled: false } : item;
+    }
+    return {
+      ...item,
+      enabled: pluginEnabled === false ? false : snapshot.enabled !== false,
+      description: snapshot.description || item.description,
+      source,
+    };
+  });
+}
+
+function catalogTooltip(item: ToggleEntry, fallback: string) {
+  return [
+    item.name,
+    item.description || item.source || fallback,
+  ].filter(Boolean).join("\n");
+}
+
 export function CommandHelpMessage({ text }: { text: string }) {
   const { state, dispatch } = useAppState();
+  const [toggleOverrides, setToggleOverrides] = useState<Record<string, boolean>>({});
   const parsed = useMemo(() => {
     const commands = parseCommandCatalog(text);
     return {
@@ -214,7 +236,24 @@ export function CommandHelpMessage({ text }: { text: string }) {
       hasPlugins: hasNamedCatalog(text, "Plugins:", "플러그인:"),
     };
   }, [text]);
-  const skillItems = useMemo(() => mergeSkillState(parsed.skills, state.skills), [parsed.skills, state.skills]);
+  const pluginItems = useMemo(
+    () => parsed.plugins.map((item) => ({
+      ...item,
+      enabled: toggleOverrides[`plugin:${item.name.toLowerCase()}`] ?? item.enabled,
+    })),
+    [parsed.plugins, toggleOverrides],
+  );
+  const pluginEnabledByName = useMemo(
+    () => new Map(pluginItems.map((item) => [item.name.toLowerCase(), item.enabled])),
+    [pluginItems],
+  );
+  const skillItems = useMemo(
+    () => mergeSkillState(parsed.skills, state.skills, pluginEnabledByName).map((item) => ({
+      ...item,
+      enabled: toggleOverrides[`skill:${item.name.toLowerCase()}`] ?? item.enabled,
+    })),
+    [parsed.skills, pluginEnabledByName, state.skills, toggleOverrides],
+  );
 
   const describeCommand = (name: string, fallback: string) =>
     state.commands.find((command) => command.name === name)?.description || fallback || "명령어를 실행합니다";
@@ -235,6 +274,14 @@ export function CommandHelpMessage({ text }: { text: string }) {
 
   const toggleItem = async (requestType: string, name: string, enabled: boolean) => {
     if (!state.sessionId) return;
+    const overrideKey = requestType === "set_plugin_enabled"
+      ? `plugin:${name.toLowerCase()}`
+      : requestType === "set_skill_enabled"
+        ? `skill:${name.toLowerCase()}`
+        : "";
+    if (overrideKey) {
+      setToggleOverrides((current) => ({ ...current, [overrideKey]: !enabled }));
+    }
     try {
       await sendBackendRequest(state.sessionId, state.clientId, { type: requestType, value: name, enabled: !enabled });
       if (requestType === "set_skill_enabled") {
@@ -247,6 +294,9 @@ export function CommandHelpMessage({ text }: { text: string }) {
         });
       }
     } catch (error) {
+      if (overrideKey) {
+        setToggleOverrides((current) => ({ ...current, [overrideKey]: enabled }));
+      }
       dispatch({
         type: "open_modal",
         modal: { kind: "error", message: error instanceof Error ? error.message : String(error) },
@@ -280,7 +330,7 @@ export function CommandHelpMessage({ text }: { text: string }) {
       {parsed.hasPlugins ? (
         <ToggleCatalog
           label="Plugins"
-          items={parsed.plugins}
+          items={pluginItems}
           emptyText="No plugins discovered"
           onToggle={(item) => void toggleItem("set_plugin_enabled", item.name, item.enabled)}
         />
@@ -328,6 +378,7 @@ function ToggleCatalog({
             className={`command-pill skill-toggle-pill${item.enabled ? "" : " disabled"}`}
             type="button"
             aria-pressed={item.enabled}
+            data-tooltip={catalogTooltip(item, label)}
             key={`${label}:${item.name}`}
             onClick={() => onToggle(item)}
           >

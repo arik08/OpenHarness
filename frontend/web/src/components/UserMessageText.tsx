@@ -8,6 +8,12 @@ function promptTokenKind(rawToken: string) {
   return "skill";
 }
 
+function splitPromptToken(rawToken: string) {
+  const token = String(rawToken || "");
+  const match = token.match(/^(.+?)([.,;:)\]]+)$/);
+  return match ? { token: match[1], trailing: match[2] } : { token, trailing: "" };
+}
+
 function titleCaseToken(value: string) {
   return value
     .replace(/[-_]+/g, " ")
@@ -31,7 +37,7 @@ function promptTokenLabel(rawToken: string) {
 
 export function UserMessageText({ text }: { text: string }) {
   const value = String(text || "");
-  const tokenPattern = /(^|\s)(\$"[^"]+"|\$'[^']+'|\$[^\s]+|@[^\s]+)/gi;
+  const tokenPattern = /(^|\s)(\$"[^"]+"|\$'[^']+'|\$[^\s]+|@[A-Za-z0-9_][A-Za-z0-9_.\\/-]*)/gi;
   const parts: ReactNode[] = [];
   let cursor = 0;
 
@@ -52,11 +58,15 @@ export function UserMessageText({ text }: { text: string }) {
     const rawToken = match[2] || "";
     const tokenStart = (match.index || 0) + leading.length;
     pushText(value.slice(cursor, tokenStart), `text-${cursor}`);
+    const { token, trailing } = splitPromptToken(rawToken);
     parts.push(
-      <span className={`prompt-token ${promptTokenKind(rawToken)}`} aria-label={rawToken} key={`token-${tokenStart}-${rawToken}`}>
-        {promptTokenLabel(rawToken)}
+      <span className={`prompt-token ${promptTokenKind(token)}`} aria-label={token} key={`token-${tokenStart}-${rawToken}`}>
+        {promptTokenLabel(token)}
       </span>,
     );
+    if (trailing) {
+      parts.push(trailing);
+    }
     cursor = tokenStart + rawToken.length;
   }
   pushText(value.slice(cursor), `text-${cursor}`);

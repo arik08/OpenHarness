@@ -1836,19 +1836,19 @@ a:focus-visible {
 .tooltip-layer {
   z-index: 1000;
   width: max-content;
-  max-width: min(220px, calc(100vw - 16px));
+  max-width: min(360px, calc(100vw - 16px));
   padding: 7px 9px;
   background: var(--tooltip-bg);
   border-radius: 7px;
   color: var(--tooltip-ink);
   font-size: 12px;
-  font-weight: 700;
-  line-height: 1.15;
+  font-weight: 650;
+  line-height: 1.35;
   opacity: 1;
   overflow-wrap: anywhere;
   pointer-events: none;
-  text-align: center;
-  white-space: normal;
+  text-align: left;
+  white-space: pre-line;
 }
 
 .artifact-action svg {
@@ -2785,11 +2785,26 @@ a:focus-visible {
   }
 }
 
-.artifact-cards {
+.artifact-cards,
+.assistant-artifact-inline {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
+}
+
+.assistant-artifact-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.assistant-artifact-content .markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-artifact-inline {
+  margin-top: 0;
 }
 
 .artifact-card {

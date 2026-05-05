@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageList } from "../MessageList";
@@ -192,6 +192,25 @@ describe("MessageList", () => {
     expect(document.querySelector(".react-message-text")?.textContent).toContain("당신은 누구입니까");
   });
 
+  it("does not render a bare @ shortcut marker as a file mention", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          messages: [
+            { id: "user-1", role: "user", text: "@: 현재 프로젝트 파일을 선택합니다." },
+            { id: "assistant-1", role: "assistant", text: "입력 단축키\n\n- @: 현재 프로젝트 파일을 선택합니다.\n- @outputs/report.md: 파일 참조" },
+          ],
+        }}
+      >
+        <MessageList />
+      </AppStateProvider>,
+    );
+
+    expect([...document.querySelectorAll(".prompt-token.file")].map((node) => node.textContent)).toEqual(["report.md"]);
+    expect(document.body.textContent).toContain("@: 현재 프로젝트 파일을 선택합니다.");
+  });
+
   it("renders skill tokens as inline pills in assistant markdown", () => {
     render(
       <AppStateProvider
@@ -263,6 +282,30 @@ describe("MessageList", () => {
     expect(articles[1]).toContain("최종 답변");
     expect(articles[1]).not.toContain("지우기");
     expect(articles[2]).toContain("테스트 결과입니다.");
+  });
+
+  it("does not render workflow chrome for the help command turn", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          workflowAnchorMessageId: "user-1",
+          messages: [
+            { id: "user-1", role: "user", text: "/help" },
+            { id: "assistant-1", role: "assistant", text: "사용 가능한 명령어:\n- /help 도움말" },
+          ],
+          workflowEvents: [
+            { id: "workflow-1", toolName: "", title: "요청 이해", detail: "사용자 요청을 확인했습니다.", status: "done", level: "parent" },
+            { id: "workflow-2", toolName: "", title: "작업 계획 수립", detail: "필요한 맥락과 진행 방향을 정리합니다.", status: "done", level: "parent" },
+          ],
+        }}
+      >
+        <MessageList />
+      </AppStateProvider>,
+    );
+
+    expect(document.querySelector(".workflow-message")).toBeNull();
+    expect(screen.getByText("사용 가능한 명령어")).toBeTruthy();
   });
 
   it("renders workflow purpose groups as explicit parent and child structure", () => {
@@ -1182,7 +1225,7 @@ describe("MessageList", () => {
     expect(screen.getByLabelText("본문 저장")).toBeTruthy();
   });
 
-  it("renders resolved artifact cards below completed assistant answers and opens the preview panel", async () => {
+  it("renders resolved artifact cards at the file reference and opens the preview panel", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
       if (url.startsWith("/api/artifact/resolve?")) {
@@ -1220,7 +1263,7 @@ describe("MessageList", () => {
             {
               id: "assistant-1",
               role: "assistant",
-              text: "완료했습니다.\n\n파일: outputs/super-ai-worm-game.html",
+              text: "완료했습니다.\n\n파일: `outputs/super-ai-worm-game.html`\n\n포함 내용입니다.",
               isComplete: true,
             },
           ],
@@ -1232,7 +1275,12 @@ describe("MessageList", () => {
     );
 
     const card = await screen.findByRole("button", { name: "super-ai-worm-game.html 미리보기 열기" });
-    expect(card.closest(".artifact-cards")).toBeTruthy();
+    expect(card.closest(".assistant-artifact-inline")).toBeTruthy();
+    expect(document.body.textContent || "").not.toContain("파일: outputs/super-ai-worm-game.html");
+    expect(document.body.textContent || "").not.toContain("파일: `");
+    const assistantContent = document.querySelector(".assistant-artifact-content")?.textContent || "";
+    expect(assistantContent.indexOf("완료했습니다.")).toBeLessThan(assistantContent.indexOf("super-ai-worm-game.html"));
+    expect(assistantContent.indexOf("super-ai-worm-game.html")).toBeLessThan(assistantContent.indexOf("포함 내용입니다."));
 
     await userEvent.click(card);
 
@@ -1355,16 +1403,80 @@ describe("MessageList", () => {
       vi.advanceTimersByTime(initialAppState.appSettings.streamStartBufferMs);
     });
 
-    const firstTextNode = document.querySelector(".stream-live-text p")?.firstChild;
-    expect(firstTextNode?.textContent).toBe("스트리밍 답변");
+    const firstParagraph = document.querySelector(".stream-live-text p");
+    expect(firstParagraph?.textContent).toBe("스트리밍 답변");
+    expect(document.querySelector(".stream-reveal-sentence")?.textContent).toBe("리밍 답변");
 
     act(() => {
       vi.advanceTimersByTime(80);
     });
 
     expect(document.body.textContent || "").toContain("스트리밍 답변입니다.");
-    expect(document.querySelector(".stream-live-text p")?.firstChild).toBe(firstTextNode);
-    expect(document.querySelector(".stream-reveal-sentence")).toBeNull();
+    expect(document.querySelector(".stream-reveal-sentence")?.textContent).toBe("입니다.");
+  });
+
+  it("uses the reveal duration setting to pace horizontal streaming updates", () => {
+    vi.useFakeTimers();
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          busy: true,
+          appSettings: {
+            ...initialAppState.appSettings,
+            streamRevealDurationMs: 600,
+          },
+        }}
+      >
+        <StreamingDeltaProbe />
+        <MessageList />
+      </AppStateProvider>,
+    );
+
+    act(() => {
+      screen.getByText("delta one").click();
+    });
+    act(() => {
+      screen.getByText("delta two").click();
+    });
+    act(() => {
+      vi.advanceTimersByTime(initialAppState.appSettings.streamStartBufferMs);
+    });
+    expect(document.querySelector(".stream-live-text p")?.textContent).toBe("스트리밍 답변");
+
+    act(() => {
+      vi.advanceTimersByTime(80);
+    });
+    expect(document.querySelector(".stream-live-text p")?.textContent).toBe("스트리밍 답변");
+
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    expect(document.querySelector(".stream-live-text p")?.textContent).toBe("스트리밍 답변입니다.");
+  });
+
+  it("applies the follow lead setting while streaming", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          busy: true,
+          appSettings: {
+            ...initialAppState.appSettings,
+            streamFollowLeadPx: 120,
+          },
+          messages: [
+            { id: "assistant-1", role: "assistant", text: "스트리밍 중", isComplete: false },
+          ],
+        }}
+      >
+        <MessageList />
+      </AppStateProvider>,
+    );
+
+    const messages = document.querySelector(".messages") as HTMLElement;
+    expect(messages.classList.contains("streaming-follow")).toBe(true);
+    expect(messages.style.getPropertyValue("--stream-follow-lead")).toBe("120px");
   });
 
   it("keeps completed streaming blocks rendered as markdown before the answer completes", () => {
@@ -1438,6 +1550,33 @@ describe("MessageList", () => {
     expect(document.querySelector(".markdown-pending-table")).toBeNull();
     expect(document.querySelector(".markdown-body table")).toBeTruthy();
     expect(screen.getByText("항목")).toBeTruthy();
+  });
+
+  it("keeps a trailing streaming markdown table with a final newline as raw text", () => {
+    const tableMarkdown = [
+      "| 항목 | 값 |",
+      "| --- | --- |",
+      "| A | 1 |",
+      "",
+    ].join("\n");
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          busy: true,
+          messages: [
+            { id: "assistant-1", role: "assistant", text: tableMarkdown },
+          ],
+        }}
+      >
+        <MessageList />
+      </AppStateProvider>,
+    );
+
+    expect(document.querySelector(".markdown-pending-table")).toBeTruthy();
+    expect(document.querySelector(".markdown-body table")).toBeNull();
+    expect(document.body.textContent || "").toContain("| 항목 | 값 |");
   });
 
   it("renders a completed answer immediately even when it finished before the buffer flushed", () => {
@@ -1527,6 +1666,72 @@ describe("MessageList", () => {
       });
 
       expect(messages.scrollTop).toBe(340);
+    } finally {
+      if (originalScrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", originalScrollHeight);
+      if (originalClientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);
+      if (originalScrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", originalScrollTop);
+    }
+  });
+
+  it("stops following when the user scrolls upward near the streaming tail", () => {
+    const scrollHeights = new WeakMap<Element, number>();
+    const clientHeights = new WeakMap<Element, number>();
+    const scrollTopValues = new WeakMap<Element, number>();
+    const originalScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    const originalScrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get() {
+        return scrollHeights.get(this) ?? originalScrollHeight?.get?.call(this) ?? 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return clientHeights.get(this) ?? originalClientHeight?.get?.call(this) ?? 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() {
+        return scrollTopValues.get(this) ?? originalScrollTop?.get?.call(this) ?? 0;
+      },
+      set(value: number) {
+        scrollTopValues.set(this, value);
+      },
+    });
+
+    try {
+      render(
+        <AppStateProvider
+          initialState={{
+            ...initialAppState,
+            busy: true,
+            messages: [
+              { id: "assistant-1", role: "assistant", text: "스트리밍 중", isComplete: false },
+            ],
+            appSettings: {
+              ...initialAppState.appSettings,
+              streamScrollDurationMs: 0,
+            },
+          }}
+        >
+          <MessageList />
+        </AppStateProvider>,
+      );
+
+      const messages = document.querySelector(".messages") as HTMLElement;
+      clientHeights.set(messages, 200);
+      scrollHeights.set(messages, 1000);
+      messages.scrollTop = 720;
+      messages.dataset.lastScrollTop = "880";
+
+      fireEvent.scroll(messages);
+
+      expect(messages.scrollTop).toBe(720);
+      expect(messages.classList.contains("streaming-follow")).toBe(false);
     } finally {
       if (originalScrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", originalScrollHeight);
       if (originalClientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);

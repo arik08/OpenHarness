@@ -973,6 +973,7 @@ class ReactBackendHost:
             await self._emit(BackendEvent(type="error", message=f"Unknown plugin: {name}"))
             return
         set_project_plugin_enabled(self._bundle.cwd, name, enabled is not False, settings)
+        await self._emit(BackendEvent.skills_snapshot(self._skill_snapshots()))
         await self._emit(self._status_snapshot())
 
     def _line_with_forced_skill(self, line: str) -> str:

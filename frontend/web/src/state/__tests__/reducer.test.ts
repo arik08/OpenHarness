@@ -79,6 +79,42 @@ describe("appReducer", () => {
     expect(answerEvent?.detail).toContain("수신 중");
   });
 
+  it("rebuilds a live streaming answer and workflow from replayed snapshot events", () => {
+    const cleared = appReducer(
+      {
+        ...initialAppState,
+        messages: [{ id: "old", role: "assistant", text: "다른 세션 화면" }],
+      },
+      { type: "backend_event", event: { type: "clear_transcript" } as any },
+    );
+    const withUser = appReducer(cleared, {
+      type: "backend_event",
+      event: { type: "transcript_item", item: { role: "user", text: "실시간 파일 작성해줘" } },
+    });
+    const withPreview = appReducer(withUser, {
+      type: "backend_event",
+      event: {
+        type: "tool_input_delta",
+        tool_name: "write_file",
+        tool_call_index: 0,
+        arguments_delta: "{\"path\":\"outputs/live.html\",\"content\":\"hello",
+      },
+    });
+    const streaming = appReducer(withPreview, {
+      type: "backend_event",
+      event: { type: "assistant_delta", message: "진행 중인 답변" },
+    });
+
+    expect(streaming.messages.map((message) => [message.role, message.text])).toEqual([
+      ["user", "실시간 파일 작성해줘"],
+      ["assistant", "진행 중인 답변"],
+    ]);
+    expect(streaming.workflowAnchorMessageId).toBe(streaming.messages[0].id);
+    expect(streaming.workflowEvents.find((event) => event.toolName === "write_file")?.status).toBe("running");
+    expect(streaming.busy).toBe(true);
+    expect(streaming.status).toBe("processing");
+  });
+
   it("accepts legacy assistant delta value payloads", () => {
     const next = appReducer(initialAppState, {
       type: "backend_event",
@@ -113,6 +149,22 @@ describe("appReducer", () => {
     expect(completed.messages[0].text).toBe("도구 호출 준비");
     expect(completed.messages[0].isComplete).toBe(false);
     expect(completed.busy).toBe(true);
+  });
+
+  it("starts a fresh assistant message when final answer streams after a tool-use handoff", () => {
+    const handoff = appReducer(initialAppState, {
+      type: "backend_event",
+      event: { type: "assistant_complete", message: "도구 호출 준비", has_tool_uses: true },
+    });
+    const streaming = appReducer(handoff, {
+      type: "backend_event",
+      event: { type: "assistant_delta", message: "최종 답변" },
+    });
+
+    expect(streaming.messages.map((message) => [message.role, message.text, message.isComplete])).toEqual([
+      ["assistant", "도구 호출 준비", false],
+      ["assistant", "최종 답변", undefined],
+    ]);
   });
 
   it("ignores duplicate regular backend user transcript because the composer already rendered it", () => {
@@ -707,6 +759,44 @@ describe("appReducer", () => {
     expect(shellEvent?.status).toBe("done");
     expect(shellEvent?.detail).toContain("pass");
     expect(completed.artifactRefreshKey).toBe(progressed.artifactRefreshKey + 1);
+  });
+
+  it("uses the Korean skill snapshot description in workflow progress", () => {
+    const withSkills = appReducer(initialAppState, {
+      type: "backend_event",
+      event: {
+        type: "skills_snapshot",
+        skills: [
+          {
+            name: "insane-search",
+            description: "차단된 웹사이트를 자동으로 우회하기 위해 가능한 방법을 순차적으로 시도합니다.",
+            enabled: true,
+          },
+        ],
+      },
+    });
+    const started = appReducer(withSkills, {
+      type: "backend_event",
+      event: { type: "tool_started", tool_name: "skill", tool_input: { name: "insane-search" } },
+    });
+    const completed = appReducer(started, {
+      type: "backend_event",
+      event: {
+        type: "tool_completed",
+        tool_name: "skill",
+        output: "Skill: insane-search\nDescription: Try bypass methods in order.\n\n# Skill",
+      },
+    });
+
+    const startedSkill = started.workflowEvents.find((event) => event.toolName === "skill");
+    const completedSkill = completed.workflowEvents.find((event) => event.toolName === "skill");
+
+    expect(started.statusText).toBe("스킬 확인 중");
+    expect(startedSkill?.title).toBe("skill");
+    expect(startedSkill?.detail).toContain("insane-search");
+    expect(startedSkill?.detail).toContain("차단된 웹사이트");
+    expect(completedSkill?.detail).toContain("차단된 웹사이트");
+    expect(completedSkill?.detail).not.toContain("Try bypass methods");
   });
 
   it("keeps parallel same-named tool steps matched to their backend call ids", () => {

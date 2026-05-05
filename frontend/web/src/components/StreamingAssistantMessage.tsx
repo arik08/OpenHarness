@@ -7,8 +7,10 @@ function useStreamingText(
   targetText: string,
   visuallyStreaming: boolean,
   startBufferMs: number,
+  revealDurationMs: number,
 ) {
   const [visibleText, setVisibleText] = useState(targetText);
+  const [revealFrom, setRevealFrom] = useState<number | null>(null);
   const visibleTextRef = useRef(visibleText);
   const pendingTextRef = useRef("");
   const flushTimerRef = useRef<number | null>(null);
@@ -27,6 +29,9 @@ function useStreamingText(
 
   function streamingRevealCount(pendingChars: string[], flushAll = false) {
     if (flushAll) {
+      return pendingChars.length;
+    }
+    if (pendingChars.length <= 4) {
       return pendingChars.length;
     }
     const text = pendingChars.join("");
@@ -48,7 +53,8 @@ function useStreamingText(
     if (flushTimerRef.current !== null) {
       return;
     }
-    const delay = displayStartedRef.current ? 36 : Math.max(0, Math.min(2000, startBufferMs));
+    const revealDelay = Math.max(44, Math.min(96, Math.max(0, revealDurationMs) * 0.16));
+    const delay = displayStartedRef.current ? revealDelay : Math.max(0, Math.min(2000, startBufferMs));
     flushTimerRef.current = window.setTimeout(flushStreamingText, delay);
   }
 
@@ -62,6 +68,7 @@ function useStreamingText(
     const revealCount = streamingRevealCount(pendingChars);
     const nextText = pendingChars.slice(0, revealCount).join("");
     pendingTextRef.current = pendingChars.slice(revealCount).join("");
+    setRevealFrom(visibleTextRef.current.length);
     visibleTextRef.current = `${visibleTextRef.current}${nextText}`;
     setVisibleText(visibleTextRef.current);
     if (pendingTextRef.current) {
@@ -79,6 +86,7 @@ function useStreamingText(
       pendingTextRef.current = "";
       displayStartedRef.current = false;
       visibleTextRef.current = targetText;
+      setRevealFrom(null);
       setVisibleText(targetText);
       return;
     }
@@ -105,11 +113,13 @@ function useStreamingText(
     pendingTextRef.current = "";
     displayStartedRef.current = false;
     visibleTextRef.current = targetText;
+    setRevealFrom(null);
     setVisibleText(targetText);
-  }, [targetText, visuallyStreaming, startBufferMs]);
+  }, [targetText, visuallyStreaming, startBufferMs, revealDurationMs]);
 
   return {
     visibleText,
+    revealFrom,
   };
 }
 
@@ -184,26 +194,42 @@ function isStructuredLiveMarkdown(text: string) {
   return false;
 }
 
+function StreamingPlainText({ text, revealFrom }: { text: string; revealFrom: number | null }) {
+  if (revealFrom === null || revealFrom < 0 || revealFrom >= text.length) {
+    return <p>{text}</p>;
+  }
+  return (
+    <p>
+      {text.slice(0, revealFrom)}
+      <span className="stream-reveal-sentence">{text.slice(revealFrom)}</span>
+    </p>
+  );
+}
+
 function StreamingMarkdownMessage({
   text,
+  revealFrom,
 }: {
   text: string;
+  revealFrom: number | null;
 }) {
   const { prefix, liveTail } = useMemo(() => splitStreamingMarkdown(text), [text]);
   const renderLiveTailAsMarkdown = isStructuredLiveMarkdown(liveTail);
+  const prefixRevealFrom = revealFrom !== null && revealFrom < prefix.length ? revealFrom : null;
+  const liveTailRevealFrom = revealFrom !== null ? Math.max(0, revealFrom - prefix.length) : null;
 
   return (
     <>
       {prefix ? (
-        <MarkdownMessage text={prefix} deferIncompleteTables />
+        <MarkdownMessage text={prefix} revealFrom={prefixRevealFrom} deferIncompleteTables />
       ) : null}
       {liveTail && renderLiveTailAsMarkdown ? (
         <div className="stream-live-text">
-          <MarkdownMessage text={liveTail} deferIncompleteTables />
+          <MarkdownMessage text={liveTail} revealFrom={liveTailRevealFrom} deferIncompleteTables />
         </div>
       ) : liveTail ? (
         <div className="markdown-body react-markdown stream-live-text">
-          <p>{liveTail}</p>
+          <StreamingPlainText text={liveTail} revealFrom={liveTailRevealFrom} />
         </div>
       ) : null}
     </>
@@ -222,10 +248,11 @@ export function StreamingAssistantMessage({
   onVisibleTextChange?: () => void;
 }) {
   const visuallyStreaming = active && !message.isComplete;
-  const { visibleText } = useStreamingText(
+  const { visibleText, revealFrom } = useStreamingText(
     message.text,
     visuallyStreaming,
     settings.streamStartBufferMs,
+    settings.streamRevealDurationMs,
   );
   const style = useMemo(() => ({
     "--stream-reveal-duration": `${Math.max(0, Math.min(2000, settings.streamRevealDurationMs))}ms`,
@@ -241,7 +268,7 @@ export function StreamingAssistantMessage({
   return (
     <div className={visuallyStreaming ? "react-streaming-text streaming-text" : undefined} style={style}>
       {visuallyStreaming ? (
-        <StreamingMarkdownMessage text={visibleText} />
+        <StreamingMarkdownMessage text={visibleText} revealFrom={revealFrom} />
       ) : (
         <MarkdownMessage text={message.text} />
       )}

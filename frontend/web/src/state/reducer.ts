@@ -382,15 +382,17 @@ function initialWorkflowEvents(): WorkflowEvent[] {
 }
 
 function workflowTitle(toolName: string) {
+  const lower = toolName.toLowerCase();
   if (!toolName) return "도구 실행";
-  if (toolName.includes("shell") || toolName.includes("bash") || toolName.includes("powershell")) return "명령 실행";
-  if (toolName.includes("apply_patch")) return "파일 수정";
-  if (toolName.includes("read") || toolName.includes("open")) return "파일 확인";
+  if (lower.includes("shell") || lower.includes("bash") || lower.includes("powershell")) return "명령 실행";
+  if (lower.includes("apply_patch")) return "파일 수정";
+  if (lower.includes("read") || lower.includes("open")) return "파일 확인";
   return toolName;
 }
 
 function compactToolStatus(toolName: string, fallback = "처리 중") {
   const lower = toolName.toLowerCase();
+  if (lower === "skill") return "스킬 확인 중";
   if (lower.includes("bash") || lower.includes("shell") || lower === "cmd") return "명령 실행 중";
   if (lower.includes("web_fetch")) return "웹 페이지 확인 중";
   if (lower.includes("web_search")) return "웹 검색 중";
@@ -411,6 +413,55 @@ function workflowDetailFromInput(input?: Record<string, unknown> | null) {
     }
   }
   return "";
+}
+
+function workflowOutputFirstLine(output: string, fallback: string) {
+  return output.split(/\r?\n/).find((line) => line.trim()) || fallback;
+}
+
+function skillNameFromInput(input?: Record<string, unknown> | null) {
+  const value = input?.name;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function skillNameFromOutput(output: string) {
+  return output.match(/^Skill:\s*(.+)$/m)?.[1]?.trim() || "";
+}
+
+function skillDescriptionFromOutput(output: string) {
+  return output.match(/^Description:\s*(.+)$/m)?.[1]?.trim() || "";
+}
+
+function workflowSkillDetail(skills: SkillItem[], input?: Record<string, unknown> | null, output = "") {
+  const requestedName = skillNameFromInput(input);
+  const outputName = skillNameFromOutput(output);
+  const name = requestedName || outputName;
+  if (!name) {
+    return "";
+  }
+  const skill = skills.find((item) => item.name.toLowerCase() === name.toLowerCase());
+  const displayName = skill?.name || name;
+  const description = skill?.description || skillDescriptionFromOutput(output);
+  return description ? `${displayName} · ${description}` : displayName;
+}
+
+function workflowToolDetail(
+  skills: SkillItem[],
+  toolName: string,
+  input?: Record<string, unknown> | null,
+  output = "",
+  fallback = "",
+) {
+  if (toolName.toLowerCase() === "skill") {
+    const skillDetail = workflowSkillDetail(skills, input, output);
+    if (skillDetail) {
+      return skillDetail;
+    }
+  }
+  if (output) {
+    return workflowOutputFirstLine(output, `${toolName || "도구"} 완료`);
+  }
+  return workflowDetailFromInput(input) || fallback;
 }
 
 function splitWorkflowPreviewLines(value: string) {
@@ -1421,6 +1472,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           if (type === "tool_started") {
             const toolName = String(record.tool_name || "");
             const toolInput = recordOrNull(record.tool_input);
+            const detail = workflowToolDetail(state.skills, toolName, toolInput);
             const toolCallId = typeof record.tool_call_id === "string" && record.tool_call_id ? record.tool_call_id : null;
             const rawToolCallIndex = Number(record.tool_call_index);
             const toolCallIndex = Number.isFinite(rawToolCallIndex) ? rawToolCallIndex : null;
@@ -1428,7 +1480,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             workflowEvents = appendWorkflowEvent(purpose.events, {
               toolName,
               title: workflowTitle(toolName),
-              detail: workflowDetailFromInput(toolInput),
+              detail,
               status: "running",
               level: "child",
               groupId: purpose.groupId,
@@ -1446,8 +1498,20 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             const output = String(record.output || "");
             const isError = record.is_error === true;
             const completionStatus = workflowCompletionStatus(toolName, isError);
+            const lastToolInput = [...workflowEvents]
+              .reverse()
+              .find((workflowEvent) => {
+                if (toolCallId) {
+                  return workflowEvent.toolCallId === toolCallId && workflowEvent.toolInput;
+                }
+                if (toolCallIndex !== null) {
+                  return workflowEvent.toolName === toolName && workflowEvent.toolCallIndex === toolCallIndex && workflowEvent.toolInput;
+                }
+                return workflowEvent.toolName === toolName && workflowEvent.toolInput;
+              })?.toolInput || null;
+            const detail = workflowToolDetail(state.skills, toolName, lastToolInput, output, `${toolName || "도구"} 완료`);
             let nextEvents = updateLatestWorkflowEvent(workflowEvents, toolName, {
-              detail: output.split(/\r?\n/).find((line) => line.trim()) || `${toolName || "도구"} 완료`,
+              detail,
               output,
               status: completionStatus,
               toolCallId,
@@ -1458,7 +1522,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
               nextEvents = appendWorkflowEvent(purpose.events, {
                 toolName,
                 title: workflowTitle(toolName),
-                detail: output.split(/\r?\n/).find((line) => line.trim()) || `${toolName || "도구"} 완료`,
+                detail,
                 output,
                 status: completionStatus,
                 level: "child",
@@ -1539,6 +1603,23 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           if (isDuplicateActiveUserTranscript(state, text)) {
             return state;
           }
+          const message = createMessage({
+            role: item.role,
+            text,
+            kind: item.kind || undefined,
+            toolName: item.tool_name || undefined,
+            isError: item.is_error === true,
+          });
+          return {
+            ...state,
+            messages: [...state.messages, message],
+            workflowAnchorMessageId: message.id,
+            workflowEventsByMessageId: workflowSnapshotMap(state),
+            workflowDurationSecondsByMessageId: workflowDurationSnapshotMap(state),
+            workflowEvents: initialWorkflowEvents(),
+            workflowDurationSeconds: null,
+            workflowStartedAtMs: Date.now(),
+          };
         }
         return {
           ...state,
@@ -1555,9 +1636,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (event.type === "assistant_delta") {
         const value = String(event.message ?? event.value ?? "");
         const last = state.messages[state.messages.length - 1];
-        const characterCount = (last?.role === "assistant" ? last.text.length : 0) + value.length;
+        const shouldAppendToLastAssistant = last?.role === "assistant" && last.isComplete !== false;
+        const characterCount = (shouldAppendToLastAssistant ? last.text.length : 0) + value.length;
         const workflowEvents = startFinalAnswerStep(state.workflowEvents.length ? state.workflowEvents : initialWorkflowEvents(), characterCount);
-        if (last?.role === "assistant") {
+        if (shouldAppendToLastAssistant) {
           return {
             ...state,
             busy: true,
@@ -1612,6 +1694,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         const toolInput = recordOrNull(event.tool_input);
         const toolCallId = backendToolCallId(event);
         const toolCallIndex = backendToolCallIndex(event);
+        const detail = workflowToolDetail(state.skills, toolName, toolInput);
         const purpose = ensurePurposeEvent(
           completePlanning(removeWorkflowEventsByRole(state.workflowEvents.length ? state.workflowEvents : initialWorkflowEvents(), "activity")),
           toolName,
@@ -1621,7 +1704,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ? updateLatestTerminalMessage(state.messages, command, { command, status: "running" }) || state.messages
           : state.messages;
         const startedWorkflowEvents = updateLatestWorkflowEvent(purpose.events, toolName, {
-          detail: workflowDetailFromInput(toolInput),
+          detail,
           status: "running",
           toolCallId,
           toolCallIndex,
@@ -1629,7 +1712,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         }, { toolCallId, toolCallIndex }) || appendWorkflowEvent(purpose.events, {
           toolName,
           title: workflowTitle(toolName),
-          detail: workflowDetailFromInput(toolInput),
+          detail,
           status: "running",
           level: "child",
           groupId: purpose.groupId,
@@ -1758,8 +1841,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
               status: isError ? "error" : "done",
             }) || state.messages
           : state.messages;
+        const detail = workflowToolDetail(state.skills, toolName, lastToolInput, output, `${toolName || "도구"} 완료`);
         let workflowEvents = updateLatestWorkflowEvent(state.workflowEvents, toolName, {
-          detail: output.split(/\r?\n/).find((line) => line.trim()) || `${toolName || "도구"} 완료`,
+          detail,
           output,
           status: completionStatus,
           toolCallId,
@@ -1770,7 +1854,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           workflowEvents = appendWorkflowEvent(purpose.events, {
             toolName,
             title: workflowTitle(toolName),
-            detail: output.split(/\r?\n/).find((line) => line.trim()) || `${toolName || "도구"} 완료`,
+            detail,
             output,
             status: completionStatus,
             level: "child",

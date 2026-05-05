@@ -3,9 +3,8 @@ import { useMessageAutoFollow } from "../hooks/useMessageAutoFollow";
 import { useAppState } from "../state/app-state";
 import type { AppState, ChatMessage, WorkflowEvent } from "../types/ui";
 import { AssistantActions } from "./AssistantActions";
-import { AssistantArtifactCards } from "./AssistantArtifactCards";
+import { AssistantArtifactContent } from "./AssistantArtifactCards";
 import { CommandHelpMessage, isCommandCatalog } from "./CommandHelpMessage";
-import { StreamingAssistantMessage } from "./StreamingAssistantMessage";
 import { UserMessageText } from "./UserMessageText";
 import { WebInvestigationSources, webInvestigationSummary, WorkflowPanel } from "./WorkflowPanel";
 
@@ -43,6 +42,10 @@ function workflowDurationForMessageId(state: AppState, messageId: string) {
   return messageId === state.workflowAnchorMessageId
     ? state.workflowDurationSeconds
     : state.workflowDurationSecondsByMessageId[messageId] ?? null;
+}
+
+function isQuietCommandTurn(message: ChatMessage) {
+  return message.role === "user" && /^\/help\b/i.test(message.text.trim());
 }
 
 export function MessageList() {
@@ -118,7 +121,7 @@ export function MessageList() {
         const commandCatalog = isCommandCatalog(message.text);
         const kindBadge = message.role === "user" ? messageKindBadge(message.kind) : null;
         const workflowEvents = workflowEventsForMessageId(state, message.id);
-        const showWorkflowHere = workflowEvents.length > 0;
+        const showWorkflowHere = workflowEvents.length > 0 && !isQuietCommandTurn(message);
         const answerWebSources = message.role === "assistant" && message.isComplete
           ? webInvestigationSummary(webSourceEventsForAssistant(messageIndex))
           : { sources: [], queries: [] };
@@ -133,7 +136,7 @@ export function MessageList() {
                   <CommandHelpMessage text={message.text} />
                 ) : message.role === "assistant" ? (
                   <>
-                    <StreamingAssistantMessage
+                    <AssistantArtifactContent
                       message={message}
                       settings={state.appSettings}
                       active={isLastAssistantStreaming && message.id === lastMessage?.id}
@@ -142,7 +145,6 @@ export function MessageList() {
                     <AssistantActions message={message}>
                       <WebInvestigationSources sources={answerWebSources.sources} queries={answerWebSources.queries} />
                     </AssistantActions>
-                    <AssistantArtifactCards message={message} />
                   </>
                 ) : message.terminal ? (
                   <TerminalCommandMessage message={message} />

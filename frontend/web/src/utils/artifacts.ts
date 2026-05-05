@@ -208,48 +208,112 @@ export function sourceLanguageForArtifact(path: string) {
   return aliases[ext] || ext || "plaintext";
 }
 
-export function collectArtifactCandidates(text: string) {
+export type ArtifactReference = ArtifactSummary & {
+  start: number;
+  end: number;
+};
+
+function artifactReferenceKey(path: string) {
+  return normalizeArtifactPath(path).toLowerCase();
+}
+
+function trimArtifactCandidateRange(value: string, start: number, end: number) {
+  let nextStart = start;
+  let nextEnd = end;
+  while (nextStart < nextEnd && /\s/.test(value[nextStart])) {
+    nextStart += 1;
+  }
+  while (nextEnd > nextStart && /[\s`.,;:)\]]/.test(value[nextEnd - 1])) {
+    nextEnd -= 1;
+  }
+  return { start: nextStart, end: nextEnd };
+}
+
+function expandFileLabelLine(value: string, start: number, end: number) {
+  const lineStart = value.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+  const nextNewline = value.indexOf("\n", end);
+  const lineEnd = nextNewline >= 0 ? nextNewline : value.length;
+  const line = value.slice(lineStart, lineEnd);
+  const localStart = start - lineStart;
+  const localEnd = end - lineStart;
+  const before = line.slice(0, localStart);
+  const after = line.slice(localEnd);
+  const fileLabelOnly = /^\s*(?:[-*+]\s*)?(?:파일|file)\s*:\s*["'`]*\s*$/i.test(before) && /^[\s"'`.,;:)\]]*$/.test(after);
+  if (!fileLabelOnly) {
+    return { start, end };
+  }
+  return {
+    start: lineStart,
+    end: nextNewline >= 0 ? nextNewline + 1 : lineEnd,
+  };
+}
+
+function artifactReferenceFromRange(value: string, start: number, end: number, replaceStart = start, replaceEnd = end): ArtifactReference | null {
+  const trimmed = trimArtifactCandidateRange(value, start, end);
+  const path = normalizeArtifactPath(value.slice(trimmed.start, trimmed.end));
+  if (!path || !isKnownArtifactPath(path) || /^https?:\/\//i.test(path)) {
+    return null;
+  }
+  const expanded = expandFileLabelLine(value, replaceStart, replaceEnd);
+  const kind = artifactKind(path);
+  return {
+    path,
+    name: artifactName(path),
+    kind,
+    label: artifactLabelForPath(path, kind),
+    start: expanded.start,
+    end: expanded.end,
+  };
+}
+
+export function collectArtifactReferences(text: string) {
   const value = String(text || "");
-  const candidates: string[] = [];
-  const push = (candidate: string) => {
-    const normalized = normalizeArtifactPath(candidate);
-    if (!normalized || !isKnownArtifactPath(normalized) || /^https?:\/\//i.test(normalized)) {
+  const references: ArtifactReference[] = [];
+  const occupiedRanges: Array<{ start: number; end: number }> = [];
+  const push = (start: number, end: number, replaceStart = start, replaceEnd = end) => {
+    const reference = artifactReferenceFromRange(value, start, end, replaceStart, replaceEnd);
+    if (!reference) {
       return;
     }
-    candidates.push(normalized);
+    if (occupiedRanges.some((range) => reference.start < range.end && reference.end > range.start)) {
+      return;
+    }
+    occupiedRanges.push({ start: reference.start, end: reference.end });
+    references.push(reference);
   };
 
   for (const match of value.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
-    push(match[1]);
+    const rawPath = match[1] || "";
+    const pathStart = (match.index || 0) + match[0].lastIndexOf(rawPath);
+    push(pathStart, pathStart + rawPath.length, match.index || 0, (match.index || 0) + match[0].length);
   }
   const backtickPattern = new RegExp(`\`([^\`\\n]+\\.(?:${artifactPathExtensionPattern}))\``, "gi");
   const pathPattern = new RegExp(`(?:^|[\\s(["'])((?:[A-Za-z]:)?[^\\s<>"'()]*\\.(?:${artifactPathExtensionPattern}))`, "gim");
 
   for (const match of value.matchAll(backtickPattern)) {
-    push(match[1]);
+    const rawPath = match[1] || "";
+    const start = (match.index || 0) + 1;
+    push(start, start + rawPath.length);
   }
   for (const match of value.matchAll(pathPattern)) {
-    push(match[1]);
+    const rawPath = match[1] || "";
+    const start = (match.index || 0) + match[0].length - rawPath.length;
+    push(start, start + rawPath.length);
   }
 
   const seen = new Set<string>();
-  return candidates
-    .filter((path) => {
-      const key = path.toLowerCase();
+  return references
+    .filter((reference) => {
+      const key = artifactReferenceKey(reference.path);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     })
-    .slice(0, 8)
-    .map((path) => {
-      const kind = artifactKind(path);
-      return {
-        path,
-        name: artifactName(path),
-        kind,
-        label: artifactLabelForPath(path, kind),
-      } satisfies ArtifactSummary;
-    });
+    .slice(0, 8);
+}
+
+export function collectArtifactCandidates(text: string) {
+  return collectArtifactReferences(text).map(({ start: _start, end: _end, ...artifact }) => artifact);
 }
 
 export function dedupeArtifactsByResolvedPath(artifacts: ArtifactSummary[]) {

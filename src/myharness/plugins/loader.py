@@ -163,7 +163,7 @@ def load_plugin(path: Path, enabled_plugins: dict[str, bool]) -> LoadedPlugin | 
         return None
     enabled = enabled_plugins.get(manifest.name, manifest.enabled_by_default)
 
-    skills = _load_plugin_skills(path / manifest.skills_dir)
+    skills = _load_plugin_skills(path / manifest.skills_dir, manifest.name)
     commands = _load_plugin_commands(path, manifest)
     agents = _load_plugin_agents(path, manifest)
     tools = _load_plugin_tools(path, manifest) if enabled else []
@@ -276,7 +276,7 @@ def _command_name_from_file(file_path: Path, base_dir: Path, plugin_name: str) -
     )
 
 
-def _load_plugin_skills(path: Path) -> list[SkillDefinition]:
+def _load_plugin_skills(path: Path, plugin_name: str) -> list[SkillDefinition]:
     """Load plugin skills using Claude Code's directory SKILL.md layout."""
     if not path.exists():
         return []
@@ -290,7 +290,7 @@ def _load_plugin_skills(path: Path) -> list[SkillDefinition]:
                 name=name,
                 description=description,
                 content=content,
-                source="plugin",
+                source=f"plugin:{plugin_name}",
                 path=str(direct_skill),
             )
         )
@@ -308,7 +308,7 @@ def _load_plugin_skills(path: Path) -> list[SkillDefinition]:
                 name=name,
                 description=description,
                 content=content,
-                source="plugin",
+                source=f"plugin:{plugin_name}",
                 path=str(skill_path),
             )
         )

@@ -25,12 +25,39 @@ function Stop-ChildProcess {
     $Process.WaitForExit(5000) | Out-Null
 }
 
+function Stop-ListeningPort {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $connection) {
+        return
+    }
+
+    $ownerPid = [int]$connection.OwningProcess
+    if ($ownerPid -eq $PID) {
+        return
+    }
+
+    Write-Host "[INFO] Port $Port for $Label is already in use by PID $ownerPid. Closing the existing process..."
+    Stop-ProcessTree -ProcessId $ownerPid
+    Start-Sleep -Milliseconds 500
+
+    $stillListening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($stillListening) {
+        throw "Port $Port is still in use after trying to close PID $ownerPid."
+    }
+}
+
 function Stop-All {
     Stop-ChildProcess -Process $script:ViteProcess
     Stop-ChildProcess -Process $script:BackendProcess
 }
 
 function Start-BackendLauncher {
+    Stop-ListeningPort -Port $backendPort -Label "backend"
     Write-Host "[INFO] Starting MyHarness backend launcher on http://localhost:$env:PORT ..."
     return Start-Process -FilePath "powershell.exe" -ArgumentList @(
         "-NoProfile",
@@ -42,8 +69,9 @@ function Start-BackendLauncher {
 }
 
 function Start-ViteServer {
+    Stop-ListeningPort -Port 5173 -Label "Vite dev"
     Write-Host "[INFO] Starting Vite React dev server on http://127.0.0.1:5173 ..."
-    return Start-Process -FilePath "node.exe" -ArgumentList @("node_modules/vite/bin/vite.js", "--host", "127.0.0.1") -NoNewWindow -PassThru
+    return Start-Process -FilePath "node.exe" -ArgumentList @("node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "5173", "--strictPort") -NoNewWindow -PassThru
 }
 
 [Console]::add_CancelKeyPress({
@@ -55,6 +83,10 @@ function Start-ViteServer {
     Write-Host "[INFO] Stop requested. Stopping backend and Vite dev server..."
     Stop-All
 })
+
+$backendPort = if ($env:PORT) { [int]$env:PORT } else { 4173 }
+Stop-ListeningPort -Port $backendPort -Label "backend"
+Stop-ListeningPort -Port 5173 -Label "Vite dev"
 
 $script:BackendProcess = Start-BackendLauncher
 

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const gap = 8;
 const edgePadding = 8;
+const showDelayMs = 260;
 
 type TooltipState = {
   text: string;
@@ -54,14 +55,38 @@ export function TooltipLayer() {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const targetRef = useRef<HTMLElement | null>(null);
+  const showTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    function showForTarget(target: HTMLElement | null) {
+    function clearShowTimer() {
+      if (showTimerRef.current !== null) {
+        window.clearTimeout(showTimerRef.current);
+        showTimerRef.current = null;
+      }
+    }
+
+    function showForTarget(target: HTMLElement | null, immediate = false) {
+      clearShowTimer();
       targetRef.current = target;
-      setTooltip(target ? getTooltipState(target) : null);
+      if (!target) {
+        setTooltip(null);
+        return;
+      }
+      if (immediate) {
+        setTooltip(getTooltipState(target));
+        return;
+      }
+      setTooltip(null);
+      showTimerRef.current = window.setTimeout(() => {
+        showTimerRef.current = null;
+        if (targetRef.current === target) {
+          setTooltip(getTooltipState(target));
+        }
+      }, showDelayMs);
     }
 
     function hideTooltip() {
+      clearShowTimer();
       targetRef.current = null;
       setTooltip(null);
     }
@@ -91,7 +116,7 @@ export function TooltipLayer() {
     }
 
     function handleFocusIn(event: FocusEvent) {
-      showForTarget(findTooltipTarget(event.target));
+      showForTarget(findTooltipTarget(event.target), true);
     }
 
     function handleFocusOut(event: FocusEvent) {
@@ -126,6 +151,7 @@ export function TooltipLayer() {
       document.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("resize", refreshTooltip);
       window.removeEventListener("scroll", refreshTooltip, true);
+      clearShowTimer();
     };
   }, []);
 

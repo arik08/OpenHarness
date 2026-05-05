@@ -385,6 +385,60 @@ describe("ArtifactPanel", () => {
     expect(code?.textContent).toContain("<h1>Hello</h1>");
   });
 
+  it("selects the highlighted artifact source instead of the whole page on Ctrl+A", async () => {
+    const source = "<!doctype html>\n<html><body><h1>Hello</h1></body></html>";
+    vi.mocked(listProjectFiles).mockResolvedValueOnce({
+      scope: "default",
+      files: [
+        {
+          path: "outputs/report.html",
+          name: "report.html",
+          kind: "html",
+          size: 42,
+        },
+      ],
+    });
+    vi.mocked(readArtifact).mockResolvedValueOnce({
+      kind: "html",
+      content: source,
+    });
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          artifactPanelOpen: true,
+          artifacts: [
+            {
+              path: "outputs/report.html",
+              name: "report.html",
+              kind: "html",
+              size: 42,
+            },
+          ],
+        }}
+      >
+        <p>페이지의 다른 텍스트</p>
+        <ArtifactPanel />
+      </AppStateProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "report.html 열기" }));
+    await screen.findByTitle("report.html");
+    await userEvent.click(screen.getByRole("button", { name: "원문보기" }));
+
+    const event = new KeyboardEvent("keydown", {
+      key: "a",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(window.getSelection()?.toString()).toBe(source);
+  });
+
   it("highlights Python project files in the preview", async () => {
     vi.mocked(listProjectFiles).mockResolvedValueOnce({
       scope: "default",
