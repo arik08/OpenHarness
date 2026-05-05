@@ -278,6 +278,27 @@ describe("MessageList", () => {
     expect(screen.getByText(/요건 범위화/)).toBeTruthy();
   });
 
+  it("keeps a one-node streaming workflow fence as plain live text", () => {
+    render(
+      <StreamingAssistantMessage
+        active
+        settings={{ ...initialAppState.appSettings, streamStartBufferMs: 0, streamRevealDurationMs: 0 }}
+        message={{
+          id: "assistant-1",
+          role: "assistant",
+          text: [
+            "```",
+            "[범위 설정] 2025~2026 데이터센터 산업 현황·오라클 포함",
+          ].join("\n")}
+        }
+      />,
+    );
+
+    expect(document.querySelector(".stream-live-text pre")).toBeNull();
+    expect(document.querySelector(".assistant-workflow-diagram")).toBeNull();
+    expect(screen.getByText(/범위 설정/)).toBeTruthy();
+  });
+
   it("collapses long user messages and lets them expand again", async () => {
     const user = userEvent.setup();
     const longText = [
@@ -551,6 +572,41 @@ describe("MessageList", () => {
     expect(document.body.textContent || "").toContain("example.com");
   });
 
+  it("reveals the initial planning step shortly after request understanding", () => {
+    vi.useFakeTimers();
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          busy: true,
+          workflowAnchorMessageId: "user-1",
+          messages: [{ id: "user-1", role: "user", text: "작업해줘" }],
+          workflowEvents: [
+            { id: "workflow-1", toolName: "", title: "요청 이해", detail: "사용자 요청을 확인했습니다.", status: "done", level: "parent" },
+            { id: "workflow-2", toolName: "", title: "작업 계획 수립", detail: "필요한 맥락과 진행 방향을 정리합니다.", status: "running", level: "parent", role: "planning" },
+          ],
+        }}
+      >
+        <MessageList />
+      </AppStateProvider>,
+    );
+
+    expect(screen.getByText("요청 이해")).toBeTruthy();
+    expect(screen.queryByText("작업 계획 수립")).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(90);
+    });
+
+    expect(screen.queryByText("작업 계획 수립")).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(130);
+    });
+
+    expect(screen.getByText("작업 계획 수립")).toBeTruthy();
+  });
+
   it("renders active answer drafting workflow before the streaming assistant answer", () => {
     render(
       <AppStateProvider
@@ -609,7 +665,7 @@ describe("MessageList", () => {
     );
 
     act(() => {
-      vi.advanceTimersByTime(270);
+      vi.advanceTimersByTime(490);
     });
 
     const workflowText = document.querySelector(".workflow-message")?.textContent || "";
@@ -1586,6 +1642,53 @@ describe("MessageList", () => {
     expect(assistantContent).not.toContain("`");
   });
 
+  it("collapses a separate file location wrapper to only the artifact card", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/artifact/resolve?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            path: "데이터센터_산업_웹보고서.html",
+            name: "데이터센터_산업_웹보고서.html",
+            kind: "html",
+            size: 16_589,
+          }),
+        } as Response;
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-a",
+          clientId: "client-a",
+          messages: [
+            {
+              id: "assistant-1",
+              role: "assistant",
+              text: "다시 작성했습니다.\n\n파일 위치:\n`\n데이터센터_산업_웹보고서.html\n`\n\n변경 방향은 다음과 같습니다.",
+              isComplete: true,
+            },
+          ],
+        }}
+      >
+        <MessageList />
+      </AppStateProvider>,
+    );
+
+    const card = await screen.findByRole("button", { name: "데이터센터_산업_웹보고서.html 미리보기 열기" });
+    expect(card.closest(".assistant-artifact-inline")).toBeTruthy();
+    const assistantContent = document.querySelector(".assistant-artifact-content")?.textContent || "";
+    expect(assistantContent).toContain("다시 작성했습니다.");
+    expect(assistantContent).toContain("데이터센터_산업_웹보고서.html");
+    expect(assistantContent).toContain("변경 방향은 다음과 같습니다.");
+    expect(assistantContent).not.toContain("파일 위치");
+    expect(assistantContent).not.toContain("`");
+  });
+
   it("renders shell shortcut input and output as one terminal block", () => {
     render(
       <AppStateProvider
@@ -1911,6 +2014,32 @@ describe("MessageList", () => {
     expect(document.querySelector(".markdown-pending-table")).toBeNull();
     expect(document.querySelector(".markdown-body table")).toBeTruthy();
     expect(screen.getByText("항목")).toBeTruthy();
+  });
+
+  it.each(["|", "| A |"])("does not render a streaming markdown table when the next row is only partially received: %s", (partialRow) => {
+    const tableMarkdown = [
+      "| 항목 | 값 |",
+      "| --- | --- |",
+      partialRow,
+    ].join("\n");
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          busy: true,
+          messages: [
+            { id: "assistant-1", role: "assistant", text: tableMarkdown },
+          ],
+        }}
+      >
+        <MessageList />
+      </AppStateProvider>,
+    );
+
+    expect(document.querySelector(".markdown-pending-table")).toBeTruthy();
+    expect(document.querySelector(".markdown-body table")).toBeNull();
+    expect(document.body.textContent || "").toContain(partialRow);
   });
 
   it("keeps a trailing streaming markdown table with a final newline as raw text", () => {

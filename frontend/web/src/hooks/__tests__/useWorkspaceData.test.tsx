@@ -192,4 +192,51 @@ describe("useWorkspaceData", () => {
       expect(history[0]).toMatchObject({ value: "saved-current", description: "나무위키 역사 PPTX" });
     });
   });
+
+  it("keeps the visible history order stable while a saved chat is restoring", async () => {
+    vi.mocked(listHistory).mockResolvedValue({
+      options: [
+        { value: "session-second", label: "5/4 09:59 2 msg", description: "두 번째 대화" },
+        { value: "session-top", label: "5/4 10:00 2 msg", description: "최상단 대화" },
+      ],
+    });
+    vi.mocked(listLiveSessions).mockResolvedValue({
+      sessions: [{
+        sessionId: "web-previous",
+        savedSessionId: "",
+        title: "이전 진행 중인 대화",
+        workspace: { name: "Default", path: "C:/demo" },
+        busy: true,
+        createdAt: 3,
+      }],
+    });
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "web-restoring",
+          activeHistoryId: "session-second",
+          clientId: "client-1",
+          busy: true,
+          workspaceName: "Default",
+          workspacePath: "C:/demo",
+          history: [
+            { value: "session-top", label: "5/4 10:00 2 msg", description: "최상단 대화" },
+            { value: "session-second", label: "5/4 09:59 2 msg", description: "두 번째 대화" },
+          ],
+        }}
+      >
+        <Probe />
+      </AppStateProvider>,
+    );
+
+    await waitFor(() => expect(listWorkspaces).toHaveBeenCalled());
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    const history = JSON.parse(screen.getByTestId("history").textContent || "[]");
+    expect(listHistory).not.toHaveBeenCalled();
+    expect(listLiveSessions).not.toHaveBeenCalled();
+    expect(history.map((item: { value: string }) => item.value)).toEqual(["session-top", "session-second"]);
+  });
 });

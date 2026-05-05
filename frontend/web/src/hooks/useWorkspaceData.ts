@@ -92,6 +92,11 @@ export function useWorkspaceData() {
         cancelled = true;
       };
     }
+    if (state.busy && state.activeHistoryId) {
+      return () => {
+        cancelled = true;
+      };
+    }
 
     dispatch({ type: "set_history_loading", value: true });
     void Promise.all([
@@ -120,7 +125,16 @@ export function useWorkspaceData() {
     return () => {
       cancelled = true;
     };
-  }, [dispatch, state.clientId, state.historyRefreshKey, state.sessionId, state.workspaceName, state.workspacePath]);
+  }, [
+    dispatch,
+    state.activeHistoryId,
+    state.busy,
+    state.clientId,
+    state.historyRefreshKey,
+    state.sessionId,
+    state.workspaceName,
+    state.workspacePath,
+  ]);
 
   useEffect(() => {
     let cancelled = false;

@@ -183,6 +183,7 @@ type WorkflowRow =
   | { type: "group"; parent: WorkflowEvent; children: WorkflowEvent[] };
 
 const workflowEventStaggerMs = 90;
+const workflowPlanningStaggerMs = 220;
 
 type WebInvestigationSource = {
   url: string;
@@ -530,7 +531,7 @@ function quietCompletedStep(event: WorkflowEvent, latestVisibleEventId: string) 
 }
 
 function isImmediateWorkflowEvent(event: WorkflowEvent) {
-  return !event.toolName && event.role !== "purpose";
+  return !event.toolName && event.role !== "purpose" && event.role !== "planning";
 }
 
 function visibleStaggeredWorkflowEvents(events: WorkflowEvent[], staggeredCount: number) {
@@ -545,6 +546,21 @@ function visibleStaggeredWorkflowEvents(events: WorkflowEvent[], staggeredCount:
     remaining -= 1;
     return true;
   });
+}
+
+function nextWorkflowRevealDelay(events: WorkflowEvent[], visibleCount: number) {
+  let remaining = visibleCount;
+  for (const event of events) {
+    if (isImmediateWorkflowEvent(event)) {
+      continue;
+    }
+    if (remaining > 0) {
+      remaining -= 1;
+      continue;
+    }
+    return event.role === "planning" ? workflowPlanningStaggerMs : workflowEventStaggerMs;
+  }
+  return workflowEventStaggerMs;
 }
 
 function useStaggeredWorkflowEvents(events: WorkflowEvent[], enabled: boolean) {
@@ -585,14 +601,30 @@ function useStaggeredWorkflowEvents(events: WorkflowEvent[], enabled: boolean) {
     if (visibleCountRef.current >= staggeredEventCount) {
       return undefined;
     }
-    const timer = window.setInterval(() => {
-      setVisibleCount((current) => {
-        const next = Math.min(staggeredEventCount, current + 1);
-        visibleCountRef.current = next;
-        return next;
-      });
-    }, workflowEventStaggerMs);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer = 0;
+    const scheduleNext = (currentCount: number) => {
+      timer = window.setTimeout(() => {
+        if (cancelled) {
+          return;
+        }
+        let scheduledCount = currentCount;
+        setVisibleCount((current) => {
+          const next = Math.min(staggeredEventCount, current + 1);
+          visibleCountRef.current = next;
+          scheduledCount = next;
+          return next;
+        });
+        if (scheduledCount < staggeredEventCount) {
+          scheduleNext(scheduledCount);
+        }
+      }, nextWorkflowRevealDelay(events, currentCount));
+    };
+    scheduleNext(visibleCountRef.current);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [enabled, events]);
 
   return enabled ? visibleStaggeredWorkflowEvents(events, visibleCount) : events;
@@ -675,7 +707,8 @@ export function WorkflowPanel({
   const { state } = useAppState();
   const rawEvents = eventOverride || state.workflowEvents;
   const events = useMemo(() => dedupeRunningWorkflowOutputEvents(rawEvents), [rawEvents]);
-  const animateActiveWorkflow = state.busy && !state.restoringHistory && !eventOverride;
+  const isActiveWorkflow = !eventOverride || eventOverride === state.workflowEvents;
+  const animateActiveWorkflow = state.busy && !state.restoringHistory && isActiveWorkflow;
   const visibleEvents = useStaggeredWorkflowEvents(events, animateActiveWorkflow);
   const totalDurationSeconds = durationSeconds ?? (!eventOverride ? state.workflowDurationSeconds : null);
   const [now, setNow] = useState(() => Date.now());

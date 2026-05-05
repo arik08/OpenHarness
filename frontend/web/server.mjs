@@ -1719,14 +1719,44 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function sameWorkspacePath(left, right) {
+  const leftPath = normalize(String(left || ""));
+  const rightPath = normalize(String(right || ""));
+  if (!leftPath || !rightPath) {
+    return false;
+  }
+  return process.platform === "win32"
+    ? leftPath.toLowerCase() === rightPath.toLowerCase()
+    : leftPath === rightPath;
+}
+
+function sessionUsesWorkspace(session, workspace) {
+  return sameWorkspacePath(session?.workspace?.path, workspace?.path);
+}
+
+async function stopSessionsForWorkspace(workspace) {
+  const targetSessions = [...sessions.values()].filter((session) => sessionUsesWorkspace(session, workspace));
+  if (!targetSessions.length) {
+    return;
+  }
+  for (const session of targetSessions) {
+    if (!session.shuttingDown) {
+      shutdownSession(session, "workspace delete");
+    }
+    killProcessTree(session.process);
+  }
+  const deadline = Date.now() + 2500;
+  while (
+    Date.now() < deadline
+    && [...sessions.values()].some((session) => sessionUsesWorkspace(session, workspace))
+  ) {
+    await sleep(50);
+  }
+}
+
 async function deleteWorkspace(name, scope = defaultWorkspaceScope()) {
   const workspace = workspacePathFromName(name, scope);
-  const activeSession = [...sessions.values()].find(
-    (session) => session.workspace?.path === workspace.path && !session.shuttingDown
-  );
-  if (activeSession) {
-    throw new Error("Cannot delete a project while it has an active session");
-  }
+  await stopSessionsForWorkspace(workspace);
   const retryableCodes = new Set(["EBUSY", "ENOTEMPTY", "EPERM"]);
   const delays = [0, 120, 300, 700, 1200];
   for (let attempt = 0; attempt < delays.length; attempt += 1) {
@@ -2121,6 +2151,7 @@ function detachDeletedSavedSession(workspace, sessionId) {
       continue;
     }
     session.savedSessionId = "";
+    session.title = "";
     try {
       sendBackend(session, { type: "delete_session", value: cleanId });
     } catch (error) {

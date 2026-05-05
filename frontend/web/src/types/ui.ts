@@ -79,6 +79,7 @@ export type AppState = {
   workspaceScope: WorkspaceScope;
   workspaces: Workspace[];
   history: HistoryItem[];
+  deletedHistoryIds: string[];
   historyLoading: boolean;
   historyRefreshKey: number;
   activeHistoryId: string | null;

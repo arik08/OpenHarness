@@ -1538,6 +1538,44 @@ describe("appReducer", () => {
     expect(completed.messages[0].text).toBe("v22.15.0\n");
   });
 
+  it("shows cmd tool commands as one-line workflow details", () => {
+    const withUser = appReducer(initialAppState, {
+      type: "append_message",
+      message: { role: "user", text: "명령 실행해줘" },
+    });
+    const busy = appReducer(withUser, { type: "set_busy", value: true });
+    const started = appReducer(busy, {
+      type: "backend_event",
+      event: {
+        type: "tool_started",
+        tool_name: "cmd",
+        tool_input: { cmd: "cmd /c echo hello\ncmd /c echo world" },
+      },
+    });
+
+    const startedToolEvent = started.workflowEvents.find((event) => event.toolName === "cmd");
+    expect(startedToolEvent).toMatchObject({
+      title: "명령 실행",
+      detail: "cmd /c echo hello cmd /c echo world",
+    });
+
+    const completed = appReducer(started, {
+      type: "backend_event",
+      event: {
+        type: "tool_completed",
+        tool_name: "cmd",
+        output: "hello\nworld\n",
+        is_error: false,
+      },
+    });
+    const completedToolEvent = completed.workflowEvents.find((event) => event.toolName === "cmd");
+    expect(completedToolEvent).toMatchObject({
+      title: "명령 실행",
+      detail: "cmd /c echo hello cmd /c echo world",
+      status: "done",
+    });
+  });
+
   it("stores shell ui preferences in state", () => {
     const themed = appReducer(initialAppState, { type: "set_theme", themeId: "dark" });
     const collapsed = appReducer(themed, { type: "set_sidebar_collapsed", value: true });

@@ -20,7 +20,6 @@ from myharness.api.client import ApiMessageCompleteEvent, ApiMessageRequest, Sup
 from myharness.auth.manager import AuthManager
 from myharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, Settings, resolve_model_setting
 from myharness.bridge import get_bridge_manager
-from myharness.coordinator.coordinator_mode import is_coordinator_mode
 from myharness.mcp.config import load_mcp_server_configs
 from myharness.mcp.types import McpConnectionStatus
 from myharness.themes import list_themes
@@ -80,10 +79,11 @@ _SWARM_DELEGATION_HINT = (
     "The user explicitly asked to divide the work across roles or an AI team. "
     "First sketch a lightweight workflow/DAG: identify which roles can run in parallel now, "
     "which roles depend on earlier evidence, and where you will merge results. "
-    "Show that workflow in a fenced `workflow` block with bracketed nodes and arrows. "
+    "Show that workflow in a fenced `mermaid` block using `flowchart LR` or `flowchart TD`, "
+    "with labeled nodes and arrows that MyHarness can render as a chart. "
     "Use labels that fit the actual task, not a fixed 조사/정리/검토 template; e.g. "
-    "`[요건 파악] 범위 확인`, `[데이터 수집] 원천 수집 -> [정규화] 스키마 맞춤 -> [검증] 결과 확인`; "
-    "do not use an ASCII art code block for the workflow. "
+    "`flowchart LR; A[요건 파악: 범위 확인] --> B[데이터 수집: 원천 수집] --> C[정규화: 스키마 맞춤] --> D[검증: 결과 확인]`. "
+    "Do not use raw ASCII art or the old `workflow` fence for the workflow. "
     "Use the `agent` tool now only for the current independent wave of focused background workers. "
     "Do not spawn serial downstream roles prematurely: roles with unmet prerequisites wait until their inputs exist. "
     "Optimize for speed: use at most 5 workers per wave, give each worker a narrow non-overlapping scope, "
@@ -477,7 +477,7 @@ class ReactBackendHost:
         return 0
 
     def _ensure_async_agent_monitor(self) -> None:
-        if self._bundle is None or not is_coordinator_mode():
+        if self._bundle is None:
             return
         metadata = getattr(self._bundle.engine, "tool_metadata", None)
         if not pending_async_agent_entries(metadata):
@@ -1325,6 +1325,7 @@ class ReactBackendHost:
         )
         await self._emit(self._status_snapshot())
         await self._emit(BackendEvent.tasks_snapshot(get_task_manager().list_tasks()))
+        self._ensure_async_agent_monitor()
         await self._emit(BackendEvent(type="line_complete"))
 
     def _history_events_from_messages(self, messages: list[ConversationMessage]) -> list[dict[str, object]]:

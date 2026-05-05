@@ -128,6 +128,10 @@ def test_build_system_prompt_guides_chat_html_rendering_and_report_charts():
     prompt = build_system_prompt(env=env)
 
     assert "MyHarness can render fenced `html` code blocks directly in the chat" in prompt
+    assert "MyHarness can render fenced `mermaid` code blocks in chat and Markdown artifact previews" in prompt
+    assert "use Mermaid for flowcharts, sequence diagrams, state diagrams, and other compact process diagrams" in prompt
+    assert "For standalone HTML reports or web reports, use Mermaid when workflow, architecture, sequence, or dependency diagrams" in prompt
+    assert "include Mermaid via CDN only when the HTML artifact needs it" in prompt
     assert "quick charts, small data views" in prompt
     assert "Do not force inline HTML for every answer" in prompt
     assert "HTML report or 리포트" in prompt

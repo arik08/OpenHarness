@@ -7,7 +7,6 @@ import json
 import sys
 from pathlib import Path
 
-from myharness.coordinator.coordinator_mode import is_coordinator_mode
 from myharness.engine.query import MaxTurnsExceeded
 from myharness.prompts.context import build_runtime_system_prompt
 from myharness.ui.async_agents import (
@@ -429,14 +428,13 @@ async def run_print_mode(
             render_event=_render_event,
             clear_output=_clear_output,
         )
-        if is_coordinator_mode():
-            await _drain_coordinator_async_agents(
-                bundle,
-                prompt_seed=prompt,
-                output_format=output_format,
-                print_system=_print_system,
-                render_event=_render_event,
-            )
+        await _drain_coordinator_async_agents(
+            bundle,
+            prompt_seed=prompt,
+            output_format=output_format,
+            print_system=_print_system,
+            render_event=_render_event,
+        )
 
         if output_format == "json":
             result = {"type": "result", "text": collected_text.strip()}

@@ -8,6 +8,15 @@ import { SettingsModal } from "./SettingsModal";
 
 export { isLocalBrowserHostname } from "../utils/settingsLabels";
 
+function taskOutputForDisplay(value: unknown) {
+  const raw = value == null ? "" : String(value);
+  const trimmed = raw
+    .replace(/\r\n/g, "\n")
+    .replace(/^(?:[ \t]*\n)+/, "")
+    .replace(/(?:\n[ \t]*)+$/, "");
+  return trimmed || "(출력 없음)";
+}
+
 export function ModalHost() {
   const { state, dispatch } = useAppState();
   const [answer, setAnswer] = useState("");
@@ -219,7 +228,7 @@ export function ModalHost() {
     }
     if (kind === "task_output") {
       const title = String(payload.title || (payload.task_id ? `작업 결과 ${payload.task_id}` : "작업 결과"));
-      const output = String(payload.output || "(출력 없음)");
+      const output = taskOutputForDisplay(payload.output);
       return (
         <div className="modal-backdrop" data-modal-kind="task-output" onClick={(event) => handleBackdropClick(event, close)}>
           <div className="modal-card task-output-card" role="dialog" aria-modal="true" aria-label={title}>

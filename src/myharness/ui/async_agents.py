@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from myharness.coordinator.coordinator_mode import (
     TaskNotification,
     format_task_notification,
 )
+from myharness.config.paths import get_tasks_dir
 from myharness.tasks.manager import get_task_manager
 
 
@@ -66,6 +68,13 @@ async def wait_for_completed_async_agent_entries(
             task_id = str(entry.get("task_id") or "").strip()
             task = manager.get_task(task_id)
             if task is None:
+                output_file = _task_output_file(task_id)
+                if output_file is not None and output_file.exists():
+                    entry["status"] = "completed"
+                    entry["return_code"] = 0
+                    entry["output_file"] = str(output_file)
+                    completed.append(entry)
+                    continue
                 entry["notification_sent"] = True
                 entry["status"] = "missing"
                 continue
@@ -86,22 +95,62 @@ def format_completed_task_notifications(completed: list[dict[str, object]]) -> s
         agent_id = str(entry.get("agent_id") or task_id).strip()
         task = manager.get_task(task_id)
         if task is None:
-            continue
-        output = manager.read_task_output(task_id, max_bytes=8000).strip()
+            output = _read_recorded_task_output(entry, max_bytes=8000)
+            task_status = str(entry.get("status") or "completed").strip() or "completed"
+            return_code = _entry_return_code(entry)
+            if not output.strip() and task_status == "missing":
+                continue
+        else:
+            output = manager.read_task_output(task_id, max_bytes=8000).strip()
+            task_status = task.status
+            return_code = task.return_code
         notifications.append(
             format_task_notification(
                 TaskNotification(
                     task_id=agent_id,
-                    status=task.status,
+                    status=task_status,
                     summary=build_async_task_summary(
                         entry,
-                        task_status=task.status,
-                        return_code=task.return_code,
+                        task_status=task_status,
+                        return_code=return_code,
                     ),
                     result=output or None,
                 )
             )
         )
         entry["notification_sent"] = True
-        entry["notified_status"] = task.status
+        entry["notified_status"] = task_status
     return "\n\n".join(notifications)
+
+
+def _task_output_file(task_id: str) -> Path | None:
+    clean = task_id.strip()
+    if not clean or clean != Path(clean).name:
+        return None
+    return get_tasks_dir() / f"{clean}.log"
+
+
+def _entry_return_code(entry: dict[str, object]) -> int | None:
+    value = entry.get("return_code")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_recorded_task_output(entry: dict[str, object], *, max_bytes: int) -> str:
+    output_file = str(entry.get("output_file") or "").strip()
+    if output_file:
+        path = Path(output_file)
+    else:
+        task_id = str(entry.get("task_id") or "").strip()
+        path = _task_output_file(task_id) or Path()
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except (FileNotFoundError, OSError):
+        return ""
+    if max_bytes > 0 and len(content) > max_bytes:
+        return content[-max_bytes:].strip()
+    return content.strip()

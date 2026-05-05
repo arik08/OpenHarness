@@ -197,8 +197,9 @@ function isIncompleteWorkflowFence(text: string) {
   }
   const language = String(fence[2] || "").toLowerCase();
   const body = lines.slice(1).join("\n");
+  const hasWorkflowNodeSyntax = /\[(?![ xX]\])[^\]\n]{1,120}\]/.test(body);
   const hasWorkflowNodes = /\[[^\]]+\]/.test(body) && (/->|=>|→|↔/.test(body) || (body.match(/\[[^\]]+\]/g) || []).length >= 2);
-  return language === "workflow" || hasWorkflowNodes;
+  return language === "workflow" || hasWorkflowNodes || (!language && hasWorkflowNodeSyntax);
 }
 
 function isStructuredLiveMarkdown(text: string) {

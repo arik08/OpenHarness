@@ -82,6 +82,29 @@ describe("ModalHost task output", () => {
     expect(document.querySelector(".task-output-log")?.textContent).toBe("line one\nline two");
     expect(screen.queryByRole("textbox")).toBeNull();
   });
+
+  it("removes surrounding blank lines from task output logs", () => {
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          modal: {
+            kind: "backend",
+            payload: {
+              kind: "task_output",
+              title: "작업 결과 a123",
+              task_id: "a123",
+              output: "\n\n   \nline one\nline two\n\n",
+            },
+          },
+        }}
+      >
+        <ModalHost />
+      </AppStateProvider>,
+    );
+
+    expect(document.querySelector(".task-output-log")?.textContent).toBe("line one\nline two");
+  });
 });
 
 describe("ModalHost workspace deletion", () => {

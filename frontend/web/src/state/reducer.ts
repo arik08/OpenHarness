@@ -37,6 +37,7 @@ export type AppAction =
   | { type: "set_workspaces"; workspaces: Workspace[]; scope?: WorkspaceScope }
   | { type: "set_workspace"; workspace: Workspace }
   | { type: "set_history"; history: HistoryItem[] }
+  | { type: "delete_history_local"; sessionId: string }
   | { type: "set_history_loading"; value: boolean }
   | { type: "begin_new_chat" }
   | { type: "begin_history_restore"; sessionId: string }
@@ -206,6 +207,7 @@ export const initialAppState: AppState = {
   workspaceScope: { mode: "shared", name: "shared", root: "" },
   workspaces: [],
   history: [],
+  deletedHistoryIds: [],
   historyLoading: false,
   historyRefreshKey: 0,
   activeHistoryId: null,
@@ -293,9 +295,18 @@ function isShellTool(toolName: string) {
   return lower === "cmd" || lower === "bash" || lower.includes("shell_command");
 }
 
+function compactWorkflowDetail(value: string) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
 function commandFromToolInput(input?: Record<string, unknown> | null) {
-  const command = input?.command;
-  return typeof command === "string" ? command.trim() : "";
+  for (const key of ["command", "cmd", "script"]) {
+    const value = input?.[key];
+    if (typeof value === "string" && value.trim()) {
+      return compactWorkflowDetail(value);
+    }
+  }
+  return "";
 }
 
 function updateLatestTerminalMessage(
@@ -400,7 +411,7 @@ function workflowTitle(toolName: string) {
   const lower = toolName.toLowerCase();
   if (!toolName) return "도구 실행";
   if (isTodoTool(toolName)) return "작업 목록 정리";
-  if (lower.includes("shell") || lower.includes("bash") || lower.includes("powershell")) return "명령 실행";
+  if (lower === "cmd" || lower.includes("shell") || lower.includes("bash") || lower.includes("powershell")) return "명령 실행";
   if (lower.includes("apply_patch")) return "파일 수정";
   if (lower.includes("read") || lower.includes("open")) return "파일 확인";
   return toolName;
@@ -427,11 +438,11 @@ function compactToolStatus(toolName: string, fallback = "처리 중") {
 
 function workflowDetailFromInput(input?: Record<string, unknown> | null) {
   if (!input) return "";
-  const candidates = ["command", "path", "file", "cwd", "query", "pattern"];
+  const candidates = ["command", "cmd", "script", "path", "file", "cwd", "query", "pattern"];
   for (const key of candidates) {
     const value = input[key];
     if (typeof value === "string" && value.trim()) {
-      return value.trim();
+      return compactWorkflowDetail(value);
     }
   }
   return "";
@@ -490,6 +501,12 @@ function workflowToolDetail(
     const skillDetail = workflowSkillDetail(skills, input, output);
     if (skillDetail) {
       return skillDetail;
+    }
+  }
+  if (toolName.toLowerCase() === "cmd") {
+    const command = commandFromToolInput(input);
+    if (command) {
+      return command;
     }
   }
   if (output) {
@@ -1065,9 +1082,26 @@ function removeLiveHistoryRowsForSession(history: HistoryItem[], sessionId: stri
   return history.filter((item) => !isLiveOnlyHistoryItem(item, activeSessionId));
 }
 
+function rememberDeletedHistoryId(deletedHistoryIds: string[], sessionId: string) {
+  const cleanId = sessionId.trim();
+  if (!cleanId || deletedHistoryIds.includes(cleanId)) {
+    return deletedHistoryIds;
+  }
+  return [...deletedHistoryIds, cleanId].slice(-100);
+}
+
+function removeDeletedHistoryRows(history: HistoryItem[], deletedHistoryIds: string[]) {
+  if (!deletedHistoryIds.length) {
+    return history;
+  }
+  const deletedIds = new Set(deletedHistoryIds);
+  return history.filter((item) => !deletedIds.has(item.value));
+}
+
 function ensureLiveHistoryItem(state: AppState, userText: string) {
   const sessionId = state.activeHistoryId || state.sessionId;
   if (!sessionId) return state.history;
+  if (state.deletedHistoryIds.includes(sessionId)) return state.history;
   if (state.history.some((item) => item.value === sessionId)) {
     return state.history;
   }
@@ -1412,10 +1446,19 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "set_history":
       return {
         ...state,
-        history: removeLiveHistoryRowsForSession(action.history, state.sessionId),
+        history: removeLiveHistoryRowsForSession(removeDeletedHistoryRows(action.history, state.deletedHistoryIds), state.sessionId),
         historyLoading: false,
         modal: isResumeSelectModal(state.modal) ? null : state.modal,
       };
+
+    case "delete_history_local": {
+      const deletedHistoryIds = rememberDeletedHistoryId(state.deletedHistoryIds, action.sessionId);
+      return {
+        ...state,
+        deletedHistoryIds,
+        history: removeDeletedHistoryRows(state.history, deletedHistoryIds),
+      };
+    }
 
     case "set_history_loading":
       return { ...state, historyLoading: action.value };
@@ -2146,7 +2189,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             : [];
           return {
             ...state,
-            history: removeLiveHistoryRowsForSession(history, state.sessionId),
+            history: removeLiveHistoryRowsForSession(removeDeletedHistoryRows(history, state.deletedHistoryIds), state.sessionId),
             historyLoading: false,
             modal: state.modal?.kind === "backend" ? null : state.modal,
           };

@@ -119,7 +119,13 @@ test("pins history snapshots and lists pinned chats first", async (t) => {
   const app = await startWebServer({
     env: { MYHARNESS_WORKSPACE_SCOPE: "shared" },
   });
-  t.after(() => app.stop());
+  let workspacePath = "";
+  t.after(async () => {
+    await app.stop();
+    if (workspacePath) {
+      await rm(workspacePath, { recursive: true, force: true });
+    }
+  });
 
   const workspaceName = `PinTest${Date.now().toString(36)}`;
   const workspaceResponse = await fetch(`${app.baseUrl}/api/workspaces`, {
@@ -129,6 +135,7 @@ test("pins history snapshots and lists pinned chats first", async (t) => {
   });
   const workspacePayload = await workspaceResponse.json();
   const workspace = workspacePayload.workspace;
+  workspacePath = workspace?.path || "";
   assert.equal(workspaceResponse.status, 200);
   assert.ok(workspace?.path);
 
@@ -170,6 +177,49 @@ test("pins history snapshots and lists pinned chats first", async (t) => {
   assert.equal(historyResponse.status, 200);
   assert.deepEqual(historyPayload.options.map((item) => item.value), ["older", "newer"]);
   assert.equal(historyPayload.options[0].pinned, true);
+});
+
+test("deletes a project after stopping active backend sessions in that project", async (t) => {
+  const app = await startWebServer({
+    env: { MYHARNESS_WORKSPACE_SCOPE: "shared" },
+  });
+  let workspacePath = "";
+  t.after(async () => {
+    await app.stop();
+    if (workspacePath) {
+      await rm(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  const workspaceName = `DeleteLiveTest${Date.now().toString(36)}`;
+  const workspaceResponse = await fetch(`${app.baseUrl}/api/workspaces`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: workspaceName }),
+  });
+  const workspacePayload = await workspaceResponse.json();
+  const workspace = workspacePayload.workspace;
+  workspacePath = workspace?.path || "";
+  assert.equal(workspaceResponse.status, 200);
+  assert.ok(workspacePath);
+
+  const sessionResponse = await fetch(`${app.baseUrl}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ clientId: "stale-client", cwd: workspacePath }),
+  });
+  assert.equal(sessionResponse.status, 200);
+
+  const deleteResponse = await fetch(`${app.baseUrl}/api/workspaces`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: workspaceName }),
+  });
+  const deletePayload = await deleteResponse.json();
+
+  assert.equal(deleteResponse.status, 200);
+  assert.equal(deletePayload.deleted.name, workspaceName);
+  assert.equal(deletePayload.workspaces.some((item) => item.name === workspaceName), false);
 });
 
 test("lists and reclaims live sessions from the same browser address", async (t) => {

@@ -259,11 +259,16 @@ function nextLineRange(value: string, lineEnd: number) {
 }
 
 function isArtifactLabelPrefix(value: string) {
-  return /^\s*(?:[-*+]\s*)?(?:[^:\n`"'()[\]]{0,40}\s+)?(?:파일|file|산출물|결과물|artifact|output)\s*:\s*["'`]*\s*$/i.test(value);
+  return /^\s*(?:[-*+]\s*)?(?:[^:\n`"'()[\]]{0,40}\s+)?(?:파일(?:\s*(?:위치|경로|명))?|file(?:\s*(?:path|location|name))?|산출물|결과물|artifact|output)\s*:\s*["'`]*\s*$/i.test(value);
 }
 
 function isReferenceWrapperSuffix(value: string) {
   return /^[\s"'`.,;:)\]]*$/.test(value);
+}
+
+function isReferenceWrapperLine(value: string) {
+  const trimmed = String(value || "").trim();
+  return Boolean(trimmed) && /^["'`]+$/.test(trimmed);
 }
 
 function expandArtifactReferenceRange(value: string, start: number, end: number) {
@@ -286,7 +291,21 @@ function expandArtifactReferenceRange(value: string, start: number, end: number)
 
   const previousLine = previousLineRange(value, lineStart);
   if (!previousLine || !isArtifactLabelPrefix(value.slice(previousLine.lineStart, previousLine.lineEnd))) {
-    return { start, end };
+    if (!previousLine || !isReferenceWrapperLine(value.slice(previousLine.lineStart, previousLine.lineEnd))) {
+      return { start, end };
+    }
+    const labelLine = previousLineRange(value, previousLine.lineStart);
+    if (!labelLine || !isArtifactLabelPrefix(value.slice(labelLine.lineStart, labelLine.lineEnd))) {
+      return { start, end };
+    }
+    const nextLine = nextLineRange(value, lineEnd);
+    const hasClosingWrapperLine = nextLine ? isReferenceWrapperLine(value.slice(nextLine.lineStart, nextLine.lineEnd)) : false;
+    return {
+      start: labelLine.lineStart,
+      end: hasClosingWrapperLine && nextLine
+        ? (nextLine.nextNewline >= 0 ? nextLine.nextNewline + 1 : nextLine.lineEnd)
+        : (nextNewline >= 0 ? nextNewline + 1 : lineEnd),
+    };
   }
 
   const nextLine = nextLineRange(value, lineEnd);

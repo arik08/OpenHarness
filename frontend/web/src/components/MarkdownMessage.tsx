@@ -5,6 +5,9 @@ import hljs from "highlight.js/lib/common";
 
 const htmlPreviewUrlCache = new Map<string, string>();
 const htmlPreviewSourceCache = new Map<string, string>();
+const mermaidSourceCache = new Map<string, string>();
+let mermaidRenderId = 0;
+let mermaidModulePromise: Promise<typeof import("mermaid")> | null = null;
 
 function sanitizeRenderedHtml(html: string) {
   const template = document.createElement("template");
@@ -238,6 +241,14 @@ function htmlPreviewPlaceholder(id: string) {
   return `<div class="html-render-preview-placeholder" data-html-preview-id="${escapeHtml(id)}"></div>`;
 }
 
+function mermaidPreviewPlaceholder(id: string) {
+  return `<div class="mermaid-render-placeholder" data-mermaid-preview-id="${escapeHtml(id)}"></div>`;
+}
+
+function isMermaidFenceInfo(info: string) {
+  return info === "mermaid" || info === "mmd";
+}
+
 function pendingHtmlPreviewPlaceholder(source: string) {
   const label = source.trim() ? "차트 미리보기 준비 중" : "차트 미리보기 대기 중";
   return [
@@ -307,6 +318,59 @@ function replaceHtmlFencesWithPreviewPlaceholders(markdown: string) {
   return output.join("\n");
 }
 
+function replaceMermaidFencesWithPreviewPlaceholders(markdown: string) {
+  const source = String(markdown || "").replace(/\r\n/g, "\n");
+  const lines = source.split("\n");
+  const output: string[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const open = lines[index].match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (!open) {
+      output.push(lines[index]);
+      index += 1;
+      continue;
+    }
+
+    const info = String(open[2] || "").trim().toLowerCase().split(/\s+/)[0] || "";
+    if (!isMermaidFenceInfo(info)) {
+      output.push(lines[index]);
+      index += 1;
+      continue;
+    }
+
+    const marker = open[1][0];
+    const length = open[1].length;
+    const content: string[] = [];
+    let cursor = index + 1;
+    let closed = false;
+    while (cursor < lines.length) {
+      const close = lines[cursor].match(/^ {0,3}(`{3,}|~{3,})\s*$/);
+      if (close && close[1][0] === marker && close[1].length >= length) {
+        closed = true;
+        break;
+      }
+      content.push(lines[cursor]);
+      cursor += 1;
+    }
+
+    const mermaidSource = normalizeHtmlPreviewSource(content.join("\n"));
+    if (closed && mermaidSource.trim()) {
+      const id = `mermaid-preview-${mermaidSourceCache.size + 1}-${Math.random().toString(16).slice(2)}`;
+      mermaidSourceCache.set(id, mermaidSource);
+      output.push(mermaidPreviewPlaceholder(id));
+      index = cursor + 1;
+      continue;
+    }
+
+    output.push(lines[index]);
+    output.push(...content);
+    index = closed ? cursor + 1 : lines.length;
+  }
+
+  return output.join("\n");
+}
+
 function markdownTableCells(line: string) {
   const trimmed = line.trim();
   if (!trimmed.includes("|")) {
@@ -326,11 +390,16 @@ function isMarkdownTableDivider(line: string) {
   return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
 }
 
+function isPossibleStreamingTableContinuation(line: string) {
+  const trimmed = String(line || "").trim();
+  return Boolean(trimmed && trimmed.includes("|"));
+}
+
 function deferTrailingMarkdownTable(markdown: string) {
   const source = String(markdown || "").replace(/\r\n/g, "\n");
   const lines = source.split("\n");
   let tableStart = -1;
-  let tableEnd = -1;
+  let pendingEnd = -1;
 
   for (let index = 1; index < lines.length; index += 1) {
     if (!isMarkdownTableRow(lines[index - 1]) || !isMarkdownTableDivider(lines[index])) {
@@ -341,17 +410,20 @@ function deferTrailingMarkdownTable(markdown: string) {
       cursor += 1;
     }
     tableStart = index - 1;
-    tableEnd = cursor;
+    pendingEnd = cursor;
+    if (cursor < lines.length && isPossibleStreamingTableContinuation(lines[cursor])) {
+      pendingEnd = lines.length;
+    }
   }
 
-  const trailingLines = tableEnd >= 0 ? lines.slice(tableEnd) : [];
+  const trailingLines = pendingEnd >= 0 ? lines.slice(pendingEnd) : [];
   const hasOnlyTrailingBlankLines = trailingLines.every((line) => line.trim() === "");
-  if (tableStart < 0 || (tableEnd < lines.length && !hasOnlyTrailingBlankLines)) {
+  if (tableStart < 0 || (pendingEnd < lines.length && !hasOnlyTrailingBlankLines)) {
     return source;
   }
 
   const before = lines.slice(0, tableStart).join("\n").trimEnd();
-  const pendingTable = lines.slice(tableStart, tableEnd).join("\n").trimEnd();
+  const pendingTable = lines.slice(tableStart, pendingEnd).join("\n").trimEnd();
   if (!pendingTable) {
     return source;
   }
@@ -364,6 +436,10 @@ function deferTrailingMarkdownTable(markdown: string) {
 function isHtmlPreviewCodeBlock(code: Element) {
   const language = codeBlockLanguage(code);
   return language === "html" || language === "htm" || (!language && isLikelyStandaloneHtml(code.textContent || ""));
+}
+
+function isMermaidCodeBlock(code: Element) {
+  return isMermaidFenceInfo(codeBlockLanguage(code));
 }
 
 type WorkflowDiagramNode = {
@@ -592,19 +668,35 @@ function createWorkflowDiagram(source: string) {
   return diagram;
 }
 
+function workflowDiagramForPre(pre: Element) {
+  const code = pre.querySelector("code");
+  if (!code) return null;
+  const source = code.textContent || "";
+  const language = codeBlockLanguage(code);
+  if (language !== "workflow" && !looksLikeWorkflowDiagram(source)) {
+    return null;
+  }
+  return createWorkflowDiagram(source);
+}
+
+function enhanceRenderedWorkflowDiagramHtml(html: string) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  template.content.querySelectorAll("pre").forEach((pre) => {
+    const diagram = workflowDiagramForPre(pre);
+    if (diagram) {
+      pre.replaceWith(diagram);
+    }
+  });
+  return template.innerHTML;
+}
+
 function enhanceWorkflowDiagrams(root: HTMLElement | null) {
   if (!root) {
     return;
   }
   root.querySelectorAll("pre").forEach((pre) => {
-    const code = pre.querySelector("code");
-    if (!code) return;
-    const source = code.textContent || "";
-    const language = codeBlockLanguage(code);
-    if (language !== "workflow" && !looksLikeWorkflowDiagram(source)) {
-      return;
-    }
-    const diagram = createWorkflowDiagram(source);
+    const diagram = workflowDiagramForPre(pre);
     if (diagram) {
       pre.replaceWith(diagram);
     }
@@ -688,6 +780,103 @@ function createHtmlPreview(source: string) {
   return preview;
 }
 
+function mermaidCssVariable(name: string, fallback: string) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+function configureMermaid() {
+  const config = {
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: "base",
+    themeVariables: {
+      background: "transparent",
+      primaryColor: mermaidCssVariable("--panel-raised", "#ffffff"),
+      primaryTextColor: mermaidCssVariable("--ink", "#33322f"),
+      primaryBorderColor: mermaidCssVariable("--line-strong", "#c9c5bd"),
+      secondaryColor: mermaidCssVariable("--accent-soft", "#f4ebe6"),
+      secondaryTextColor: mermaidCssVariable("--ink", "#33322f"),
+      tertiaryColor: mermaidCssVariable("--sidebar-hover", "#eeeeeb"),
+      tertiaryTextColor: mermaidCssVariable("--ink", "#33322f"),
+      lineColor: mermaidCssVariable("--muted", "#74716b"),
+      textColor: mermaidCssVariable("--ink", "#33322f"),
+      noteBkgColor: mermaidCssVariable("--warning-soft", "#f8ecd5"),
+      noteTextColor: mermaidCssVariable("--ink", "#33322f"),
+      actorBkg: mermaidCssVariable("--panel-raised", "#ffffff"),
+      actorBorder: mermaidCssVariable("--line-strong", "#c9c5bd"),
+      actorTextColor: mermaidCssVariable("--ink", "#33322f"),
+      clusterBkg: mermaidCssVariable("--panel", "#ffffff"),
+      clusterBorder: mermaidCssVariable("--line", "#e1dfda"),
+    },
+    flowchart: {
+      htmlLabels: false,
+    },
+  } as const;
+  return config;
+}
+
+async function loadMermaid() {
+  if (!mermaidModulePromise) {
+    mermaidModulePromise = import("mermaid");
+  }
+  const module = await mermaidModulePromise;
+  const mermaid = module.default;
+  mermaid.initialize({
+    ...configureMermaid(),
+  });
+  return mermaid;
+}
+
+async function renderMermaidChart(chart: HTMLDivElement, source: string) {
+  try {
+    const mermaid = await loadMermaid();
+    const id = `mermaid-chart-${++mermaidRenderId}`;
+    const result = await mermaid.render(id, source);
+    if (!chart.isConnected) {
+      return;
+    }
+    chart.classList.remove("mermaid-loading");
+    chart.innerHTML = sanitizeRenderedHtml(result.svg);
+    result.bindFunctions?.(chart);
+  } catch {
+    if (!chart.isConnected) {
+      return;
+    }
+    chart.classList.remove("mermaid-loading");
+    chart.classList.add("mermaid-error");
+    chart.textContent = "Mermaid 다이어그램을 렌더링하지 못했습니다.";
+  }
+}
+
+function createMermaidChart(source: string) {
+  const chart = document.createElement("div");
+  chart.className = "mermaid-chart mermaid-loading";
+  chart.setAttribute("role", "img");
+  chart.setAttribute("aria-label", "Mermaid diagram");
+  const status = document.createElement("div");
+  status.className = "mermaid-chart-status";
+  status.textContent = "다이어그램 렌더링 중...";
+  chart.append(status);
+  void renderMermaidChart(chart, source);
+  return chart;
+}
+
+function replaceMermaidPreviewPlaceholders(root: HTMLElement | null) {
+  if (!root) {
+    return;
+  }
+  root.querySelectorAll<HTMLElement>("[data-mermaid-preview-id]").forEach((placeholder) => {
+    const id = placeholder.dataset.mermaidPreviewId || "";
+    const source = mermaidSourceCache.get(id) || "";
+    if (!source.trim()) {
+      placeholder.remove();
+      return;
+    }
+    placeholder.replaceWith(createMermaidChart(source));
+    mermaidSourceCache.delete(id);
+  });
+}
+
 function replaceHtmlPreviewPlaceholders(root: HTMLElement | null) {
   if (!root) {
     return;
@@ -718,6 +907,23 @@ function enhanceHtmlPreviews(root: HTMLElement | null) {
       return;
     }
     pre.replaceWith(createHtmlPreview(source));
+  });
+}
+
+function enhanceMermaidCharts(root: HTMLElement | null) {
+  if (!root) {
+    return;
+  }
+  root.querySelectorAll("pre").forEach((pre) => {
+    const code = pre.querySelector("code");
+    if (!code || !isMermaidCodeBlock(code)) {
+      return;
+    }
+    const source = String(code.textContent || "");
+    if (!source.trim()) {
+      return;
+    }
+    pre.replaceWith(createMermaidChart(source));
   });
 }
 
@@ -867,14 +1073,17 @@ export function MarkdownMessage({
   const ref = useRef<HTMLDivElement | null>(null);
   const html = useMemo(() => {
     const tableSafeText = deferIncompleteTables ? deferTrailingMarkdownTable(text || "") : text || "";
-    const previewMarkdown = replaceHtmlFencesWithPreviewPlaceholders(tableSafeText);
+    const mermaidMarkdown = replaceMermaidFencesWithPreviewPlaceholders(tableSafeText);
+    const previewMarkdown = replaceHtmlFencesWithPreviewPlaceholders(mermaidMarkdown);
     const rendered = marked.parse(previewMarkdown, { async: false }) as string;
-    return enhanceRenderedCodeBlockHtml(enhanceRenderedPromptTokenHtml(sanitizeRenderedHtml(rendered)));
+    return enhanceRenderedCodeBlockHtml(enhanceRenderedWorkflowDiagramHtml(enhanceRenderedPromptTokenHtml(sanitizeRenderedHtml(rendered))));
   }, [deferIncompleteTables, text]);
 
   useLayoutEffect(() => {
+    replaceMermaidPreviewPlaceholders(ref.current);
     replaceHtmlPreviewPlaceholders(ref.current);
     enhanceWorkflowDiagrams(ref.current);
+    enhanceMermaidCharts(ref.current);
     enhanceHtmlPreviews(ref.current);
     enhanceCodeBlocks(ref.current);
     enhancePromptTokens(ref.current);

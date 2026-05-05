@@ -171,6 +171,9 @@ def test_build_runtime_system_prompt_skips_coordinator_context_when_disabled(tmp
     assert 'subagent_type="worker"' in prompt
     assert "조사, 정리, 검토" in prompt
     assert "workflow/DAG" in prompt
+    assert "fenced `mermaid` block" in prompt
+    assert "flowchart" in prompt
+    assert "fenced `workflow` block" not in prompt
     assert "Do not spawn serial downstream roles prematurely" in prompt
     assert "use at most 5 workers" in prompt
     assert "narrow non-overlapping scope" in prompt

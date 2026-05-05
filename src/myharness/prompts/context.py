@@ -60,10 +60,11 @@ def _build_delegation_section() -> str:
             "or when the task clearly benefits from splitting off a focused worker.",
             "When the user asks to divide work by roles, says AI team/swarm, or names roles like 조사, 정리, 검토, "
             "first sketch a lightweight workflow/DAG before spawning workers.",
-            "When showing that workflow, use a fenced `workflow` block with bracketed nodes and arrows. "
+            "When showing that workflow, use a fenced `mermaid` block with `flowchart LR` or `flowchart TD` "
+            "so MyHarness can render it as a chart. "
             "Use labels that fit the actual task, not a fixed 조사/정리/검토 template; for example "
-            "`[요건 파악] 범위 확인`, `[데이터 수집] 원천 수집 -> [정규화] 스키마 맞춤 -> [검증] 결과 확인`; "
-            "do not use raw ASCII art for the workflow.",
+            "`flowchart LR; A[요건 파악: 범위 확인] --> B[데이터 수집: 원천 수집] --> C[정규화: 스키마 맞춤] --> D[검증: 결과 확인]`. "
+            "Do not use raw ASCII art or the old `workflow` fence for the workflow.",
             "Spawn only the current independent wave. Do not spawn serial downstream roles prematurely; "
             "roles with unmet prerequisites wait until their inputs exist.",
             "Keep delegated work fast: use at most 5 workers per wave, give each a narrow non-overlapping scope, "

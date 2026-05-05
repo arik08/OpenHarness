@@ -236,7 +236,6 @@ async def test_run_print_mode_waits_for_coordinator_async_agents(monkeypatch):
     monkeypatch.setattr("myharness.ui.app.handle_line", _handle_line)
     monkeypatch.setattr("myharness.ui.app.close_runtime", _close_runtime)
     monkeypatch.setattr("myharness.ui.async_agents.get_task_manager", lambda: fake_manager)
-    monkeypatch.setattr("myharness.ui.app.is_coordinator_mode", lambda: True)
     monkeypatch.setattr("myharness.ui.app.build_runtime_system_prompt", lambda *args, **kwargs: "coordinator")
 
     async def _sleep(_seconds):

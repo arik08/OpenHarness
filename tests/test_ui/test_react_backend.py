@@ -624,7 +624,7 @@ async def test_backend_host_enqueues_completed_async_agent_notification(monkeypa
             assert max_bytes == 8000
             return "worker result <ready>"
 
-    monkeypatch.setattr("myharness.ui.backend_host.is_coordinator_mode", lambda: True)
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
     monkeypatch.setattr("myharness.ui.async_agents.get_task_manager", lambda: _FakeTaskManager())
     host._emit = _emit  # type: ignore[method-assign]
 
@@ -684,7 +684,6 @@ async def test_backend_host_waits_to_summarize_until_all_async_agents_finish(mon
         completed_entry["notification_sent"] = True
         return "<task-notification><task-id>research@office</task-id></task-notification>"
 
-    monkeypatch.setattr("myharness.ui.backend_host.is_coordinator_mode", lambda: True)
     monkeypatch.setattr("myharness.ui.backend_host.wait_for_completed_async_agent_entries", _fake_wait)
     monkeypatch.setattr("myharness.ui.backend_host.format_completed_task_notifications", _fake_format)
     host._emit = _emit  # type: ignore[method-assign]
@@ -802,6 +801,9 @@ async def test_backend_host_steers_divided_work_to_swarm_agents(tmp_path, monkey
     assert "`agent` tool" in steering_lines[0]
     assert "조사, 정리, and 검토" in steering_lines[0]
     assert "workflow/DAG" in steering_lines[0]
+    assert "fenced `mermaid` block" in steering_lines[0]
+    assert "flowchart" in steering_lines[0]
+    assert "fenced `workflow` block" not in steering_lines[0]
     assert "Do not spawn serial downstream roles prematurely" in steering_lines[0]
     assert "at most 5 workers" in steering_lines[0]
     assert "narrow non-overlapping scope" in steering_lines[0]
@@ -849,11 +851,17 @@ async def test_backend_host_restore_history_replaces_session_metadata(tmp_path, 
     host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
     host._bundle = await build_runtime(api_client=StaticApiClient("unused"))
     events = []
+    ensure_monitor_calls = 0
 
     async def _emit(event):
         events.append(event)
 
+    def _ensure_async_agent_monitor():
+        nonlocal ensure_monitor_calls
+        ensure_monitor_calls += 1
+
     host._emit = _emit  # type: ignore[method-assign]
+    host._ensure_async_agent_monitor = _ensure_async_agent_monitor  # type: ignore[method-assign]
     await start_runtime(host._bundle)
     try:
         host._bundle.engine.tool_metadata["session_title"] = "이전 세션 제목"
@@ -890,6 +898,7 @@ async def test_backend_host_restore_history_replaces_session_metadata(tmp_path, 
         {"type": "tool_started", "tool_name": "shell_command", "tool_input": {"command": "pytest"}},
         {"type": "assistant", "text": "저장된 원본 답변"},
     ]
+    assert ensure_monitor_calls == 1
 
 
 @pytest.mark.asyncio

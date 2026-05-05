@@ -166,3 +166,136 @@
 - Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
 - Do next time: Start by applying the verified corrective path: Inspected file C:\Users\[USER]\Desktop\Documents\Python\MyHarness\.skills\learned-web-search-no-search-results-found\references\learned-patterns.md (lines 1-200)
 - Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 80459f6bdae29027
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://techcrunch.com/2025/02/06/amazon-doubles-down-on-ai-with-a-massive-100b-spending-plan-for-2025/
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence baee3bc1fbf7aec5
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://www.datacenters.com/news/cbre-north-america-data-center-trends-h1-2025
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence cf8ccc0d442d1516
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://r.jina.ai/http://r.jina.ai/http://openai.com/index/announcing-the-stargate-project/
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence c094d52c439653a5
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://www.sec.gov/Archives/edgar/data/1341439/000095017025087926/orcl-20250531.htm
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 9041b9241e158904
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://www.cushmanwakefield.com/en/singapore/insights/apac-data-centre-update
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 43692100cfd84374
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://r.jina.ai/http://r.jina.ai/http://https://www.jll.com/en/trends-and-insights/research/data-centers-2025-global-outlook
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 1e65ddbf17d7c476
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://r.jina.ai/http://r.jina.ai/http://ir.aboutamazon.com/news-release/news-release-details/2025/Amazon-com-Announces-Second-Quarter-Results/
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 6333bd0704f7e612
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://news.samsung.com/global/samsung-electronics-announces-fourth-quarter-and-fy-2024-results
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 2ffcb4d2c90d1e98
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://www.nvidia.com/en-us/data-center/gb200-nvl72/
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 4c825ef5e1aa7422
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://investors.micron.com/news-releases/news-release-details/micron-technology-inc-reports-results-second-quarter-fiscal-2026
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 4f7e7f86167964f0
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://www.nature.com/articles/s44287-023-00002-9
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 7d68b8e58cd7bb5b
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://www.nature.com/articles/s41586-021-04196-6
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence aa7dcf8eebd974b1
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Ran command python - <<'PY' from pathlib import Path p=Path('outputs/AI_칩_메모리_벽_보고서.html') text=p.read_text(encoding='utf-8') checks=[('<!doctype html>' in text.lower(),'do [file: outputs\AI_칩_메모리_벽_보고서.html]
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 0256ade5ff5139ca
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Ran command python - <<'PY' from pathlib import Path p=Path('outputs/AI_칩_메모리_벽_보고서.html') text=p.read_text(encoding='utf-8') checks=[ ('2판: 최신 산업·연구 출처 보강' in text,'2판 [file: outputs\AI_칩_메모리_벽_보고서.html]
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence ec9caa23f0a1f7ce
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://ifr.org/ifr-press-releases/news/top-5-robot-trends-2024
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence a5499d5d0b98fb2f
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://nsp.nanet.go.kr/plan/subject/detail.do?nationalPlanControlNo=PLAN0000043368
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence c8fe75a1f0efd937
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://www.marketsandmarkets.com/Market-Reports/industrial-robotics-market-643.html
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 59e3e8990be5f049
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://ifr.org/downloads/press2018/2021_10_28_WR_PK_Presentation_long_version.pdf
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.
+
+## Evidence 2f608344d6f679ec
+- Confidence: 0.95
+- Signature: `web-search-no-search-results-found`
+- Lesson: A repeated failure was observed and later verified as resolved: web_search: No search results found.
+- Do next time: Start by applying the verified corrective path: Fetched remote content from https://www.federalregister.gov/documents/2022/08/25/2022-18104/implementation-of-the-chips-act-of-2022
+- Avoid next time: Do not repeat the failing command, tool input, or assumption without checking the verified fix first.

@@ -4897,6 +4897,39 @@ a:focus-visible {
   border-radius: 0;
 }
 
+.markdown-body .mermaid-chart {
+  min-width: 0;
+  max-width: 100%;
+  overflow: auto;
+  margin: 0 0 13px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--panel-raised) 96%, var(--accent-soft) 4%);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+}
+
+.markdown-body .mermaid-chart svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.mermaid-chart-status {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.markdown-body .mermaid-chart.mermaid-error {
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 28%, var(--line));
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .html-render-frame {
   display: block;
   width: 100%;

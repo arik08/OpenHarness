@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "../Sidebar";
@@ -40,6 +41,14 @@ function ChatStateProbe() {
       <output data-testid="pending-fresh-chat">{state.pendingFreshChat ? "yes" : "no"}</output>
     </>
   );
+}
+
+function DispatchProbe({ onReady }: { onReady: (dispatch: ReturnType<typeof useAppState>["dispatch"]) => void }) {
+  const { dispatch } = useAppState();
+  useEffect(() => {
+    onReady(dispatch);
+  }, [dispatch, onReady]);
+  return null;
 }
 
 describe("Sidebar", () => {
@@ -255,6 +264,51 @@ describe("Sidebar", () => {
 
     await waitFor(() => expect(deleteHistory).toHaveBeenCalledWith("session-old", "C:/other", "Other"));
     expect(screen.queryByText("이전 대화")).toBeNull();
+  });
+
+  it("does not resurrect a deleted history item from a stale refresh", async () => {
+    let dispatch!: ReturnType<typeof useAppState>["dispatch"];
+    const deletedItem = {
+      value: "session-deleted",
+      label: "5/3 10:00 2 msg",
+      description: "삭제된 대화",
+      workspace: { name: "Default", path: "C:/demo" },
+    };
+    const keptItem = {
+      value: "session-kept",
+      label: "5/3 11:00 2 msg",
+      description: "남은 대화",
+      workspace: { name: "Default", path: "C:/demo" },
+    };
+
+    render(
+      <AppStateProvider
+        initialState={{
+          ...initialAppState,
+          sessionId: "session-active",
+          clientId: "client-1",
+          workspaceName: "Default",
+          workspacePath: "C:/demo",
+          history: [deletedItem, keptItem],
+        }}
+      >
+        <Sidebar />
+        <DispatchProbe onReady={(value) => { dispatch = value; }} />
+      </AppStateProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "삭제된 대화 작업 더보기" }));
+    await userEvent.click(screen.getByRole("button", { name: "삭제된 대화 삭제" }));
+
+    await waitFor(() => expect(deleteHistory).toHaveBeenCalledWith("session-deleted", "C:/demo", "Default"));
+    expect(screen.queryByText("삭제된 대화")).toBeNull();
+
+    act(() => {
+      dispatch({ type: "set_history", history: [deletedItem, keptItem] });
+    });
+
+    expect(screen.queryByText("삭제된 대화")).toBeNull();
+    expect(screen.getByText("남은 대화")).toBeTruthy();
   });
 
   it("closes an idle live history row instead of deleting a missing snapshot file", async () => {

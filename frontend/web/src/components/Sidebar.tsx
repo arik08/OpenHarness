@@ -196,7 +196,7 @@ export function Sidebar() {
           workspace?.name || state.workspaceName,
         );
       }
-      dispatch({ type: "set_history", history: state.history.filter((item) => item.value !== sessionId) });
+      dispatch({ type: "delete_history_local", sessionId });
     } catch (error) {
       dispatch({
         type: "open_modal",
